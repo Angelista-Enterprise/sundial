@@ -1,0 +1,30 @@
+# Mount the browser-backed web providers, and turn the shipped web tools back on.
+#
+# dsh-base mounts `tool-web` with `fetch: false` because the SHIPPED fetch
+# provider defers SSRF protection. This plugin's provider does not: it confines
+# navigation to http(s) and makes the request through the owner's own browser,
+# so fetch is safe to advertise here.
+#
+# `searchProvider`/`fetchProvider` are stated explicitly rather than left to
+# auto-selection: auto-select only fires when exactly one usable provider is
+# registered, and dsh-base also registers the DeepSeek search route.
+- insert:
+    - id: sundial-web-browser
+      name: '@sundial/dsh-web-browser'
+
+- id: web
+  config:
+    searchProvider: gnomon-browser
+    fetchProvider: gnomon-browser
+
+# `disabled: false` is load-bearing: dsh-web-app DISABLES this row (it moves the
+# web tool behind agent presets), and a patch that only restates config leaves
+# the row off — which is how every Gnomon session came to have no web_search or
+# web_fetch at all while the persona and the job briefs kept naming them
+# (found 2026-09-10 when an owner-requested research job had nothing to search
+# with).
+- id: tool-web
+  disabled: false
+  config:
+    fetch: true
+    searchTimeoutMs: 60000

@@ -1,0 +1,24 @@
+{
+  "_comment": "Copy the values you need to ~/.sundial/config.json — that's the only config file Gnomon reads (packages/helpers/src/sundial-config.ts), not a repo-root one. Every field is optional; a missing file or a partially-filled one are both completely valid.",
+
+  "privacy": {
+    "redactionTier": 2,
+    "_sensitiveApps_comment": "Additive — appended to the built-in sensitive-app list, never a replacement. Matched against the process name.",
+    "sensitiveApps": [],
+    "_hiddenApps_comment": "Additive. For these process names the free text, paths and URLs become [hidden] at ingest; the event and its time are kept.",
+    "hiddenApps": [],
+    "_shellRedactPatterns_comment": "Additive regex strings (Go/PCRE-style (?i) prefix for case-insensitive), appended to the built-in password/token/bearer patterns.",
+    "shellRedactPatterns": []
+  },
+
+  "_budgets_comment": "Per-purpose daily LLM call cap overrides, e.g. { \"extract\": 100 }. Only recognized purposes with a positive number take effect. The defaults (intent 2000, extract 300, journal 300, companion 500, chat unlimited, ...) are in packages/kernel/src/budgets.ts.",
+  "budgets": {},
+
+  "_hands_comment": "Who does Gnomon's background jobs (briefs, handoff notes, jobs you ask for). claude: true runs them on your local Claude Code (claude -p, your own login) with only Sundial's read-only MCP, web search and web fetch; no shell, no edits. The job prompt and what Claude reads from your record go to Anthropic. Off by default. claudePath if claude is not on your login shell's PATH; maxBudgetUsd caps one job.",
+  "hands": { "claude": false, "maxBudgetUsd": 1 },
+
+  "retentionDays": 180,
+  "decayFactor": 0.95,
+  "pollIntervalMs": 1000,
+  "clipboardEnabled": false
+}

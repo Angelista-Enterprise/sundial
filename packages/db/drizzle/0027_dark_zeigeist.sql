@@ -1,0 +1,1 @@
+ALTER TABLE `llm_audit` ADD `billed_prompt_tokens` integer;

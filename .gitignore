@@ -1,0 +1,20 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+.pnpm-store/
+
+# Sundial reads $SUNDIAL_HOME/.env only (packages/helpers/src/sundial-env.ts).
+# A repo-root .env should never exist; never risk committing one.
+/.env
+/.env.*
+!/env.example
+
+# A data folder or database copied into the checkout by mistake.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+
+# The Mac app build output (apps/macos/build.sh)
+apps/macos/build/

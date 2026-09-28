@@ -1,0 +1,1 @@
+ALTER TABLE `llm_audit` ADD `error_class` text;

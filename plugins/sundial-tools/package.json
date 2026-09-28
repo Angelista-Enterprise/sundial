@@ -1,0 +1,23 @@
+{
+  "name": "@sundial/dsh-tools-gnomon",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Cordis plugin: registers Gnomon's read tools (TOOL_REGISTRY + gnomon_show_view) and gnomon_assert in dsh's tool registry over the gnomonKernel/gnomonDb/gnomonMemory services, sets Gnomon's persona as the agent system prompt, and guards the agent's LLM calls with the 'ask' daily budget.",
+  "main": "index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-tools": "0.1.5-rc.1",
+    "@sundial/helpers": "workspace:*",
+    "@sundial/kernel": "workspace:*",
+    "@sundial/rules": "workspace:*"
+  },
+  "devDependencies": {
+    "@sundial/db": "workspace:*",
+    "@sundial/memory": "workspace:*",
+    "drizzle-orm": "^0.45.2"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "@sundial/dsh-sensors",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Cordis plugin: Gnomon's sensors inside dsh. Polls the Swift sidecar JSON files (never spawning TCC-gated processes), cross-wires git/shell/project detection, appends every reading through gnomonKernel.appendSignal, and hosts the loopback phone-ingest listener on 127.0.0.1:8767.",
+  "main": "index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@sundial/harness-runtime": "workspace:*"
+  }
+}

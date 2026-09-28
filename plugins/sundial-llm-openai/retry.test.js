@@ -1,0 +1,54 @@
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { OpenAICompatAdapter } from './index.js'
+
+/**
+ * The route answers 503 "temporarily unavailable" while it swaps a model in.
+ * dsh closes a turn whose step never opened with zero steps, so the owner sees
+ * an empty answer and blames the model id. The adapter retries instead.
+ */
+
+const sse = () =>
+  new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'))
+        controller.close()
+      },
+    }),
+    { status: 200 },
+  )
+
+const unavailable = () => new Response(JSON.stringify({ error: { message: 'The model is temporarily unavailable.' } }), { status: 503 })
+
+const adapter = () => new OpenAICompatAdapter({ baseUrl: 'http://route', model: 'm', resolveApiKey: async () => 'k' })
+
+const drain = async (stream) => {
+  const seen = []
+  for await (const event of stream) seen.push(event)
+  return seen
+}
+
+afterEach(() => vi.restoreAllMocks())
+
+describe('stream retries', () => {
+  it('retries a 503 and succeeds', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(unavailable()).mockResolvedValueOnce(sse())
+    vi.stubGlobal('fetch', fetchMock)
+    await drain(adapter().stream({ messages: [] }))
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('gives up after three tries and says what the route said', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(unavailable())
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(drain(adapter().stream({ messages: [] }))).rejects.toThrow(/temporarily unavailable/)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not retry a 400 — a bad request stays bad', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 400 }))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(drain(adapter().stream({ messages: [] }))).rejects.toThrow()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})

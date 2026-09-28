@@ -1,0 +1,16 @@
+{
+  "name": "@sundial/dsh-llm-openai",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "OpenAI-compatible LLM adapter plugin for dsh: Gnomon\u2019s own model plus any providers in config.json.",
+  "main": "index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-llm": "0.1.5-rc.1",
+    "@sundial/helpers": "workspace:*"
+  }
+}

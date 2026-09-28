@@ -1,0 +1,13 @@
+name: Idea
+description: Something Sundial or Gnomon should do
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: What would it need to read, and does anything leave the Mac?

@@ -1,0 +1,1 @@
+ALTER TABLE `ask_threads` ADD `figures` text;

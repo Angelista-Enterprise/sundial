@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@sundial/helpers/*": ["./packages/helpers/src/*"],
+      "@sundial/db/*": ["./packages/db/src/*"],
+      "@sundial/kernel/*": ["./packages/kernel/src/*"],
+      "@sundial/rules/*": ["./packages/rules/src/*"],
+      "@sundial/sensors/*": ["./packages/sensors/src/*"],
+      "@sundial/llm/*": ["./packages/llm/src/*"],
+      "@sundial/memory/*": ["./packages/memory/src/*"],
+      "@sundial/daemon/*": ["./apps/daemon/src/*"],
+      "@sundial/cli/*": ["./apps/cli/src/*"]
+    }
+  }
+}

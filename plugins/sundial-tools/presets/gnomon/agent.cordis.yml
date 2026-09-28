@@ -1,0 +1,76 @@
+# The Gnomon agent preset: what ONE Gnomon session adds to the host's tools.
+#
+# dsh-web-app turns the per-agent tools off on the host plane and re-mounts
+# them only inside a preset. Gnomon's agents (the pinned conversation, side
+# threads, the companion, the work session) mount this one by name from their
+# `setup` hooks. Host-global rows — every gnomon_* tool, web_search, the
+# owner's MCP services — stay where they are; this file only ADDS.
+#
+# Deliberately absent: bash, file editing, plan mode, workflow/goal tools.
+# Gnomon is a context engine, not a coding agent, and it has its own job loop
+# (the `workbench` rule) and its own goals. Delegation IS here since
+# 2026-09-23: "look into this in the background" is a chat move, not a job.
+
+# A visible plan for a long answer or a job. One thing in progress at a time:
+# Gnomon's jobs are sequential by construction.
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: false
+
+# Written procedures, loaded on demand. Only THIS directory's skills — no
+# project or home roots, so a stray ~/.dsh/skills entry cannot reach Gnomon.
+# `baseUrl` is the loader's URL for this file; same trick the shipped `cordis`
+# preset uses so the skills travel with the preset.
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    includeDefaultRoots: false
+    customSkillDirs:
+      - !!js "process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/', baseUrl))"
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
+# Handing over a FILE. Gnomon writes very few — its outputs are prose, facts,
+# figures and shelf notes — but `gnomon_run_shell` can make one when the owner
+# asks for one, and until now the reply just said where it went and left them
+# to go find it. `present` records the delivery on the session log
+# (`deliverables/presented`), which is what lets the client draw it as
+# something to open rather than a path in a sentence.
+#
+# It copies nothing: the owner opens the file where it sits, so what they get
+# is whatever is there when they click. Reads go through the sandboxed
+# `ctx.fs`, and the tool refuses anything that is not an existing regular
+# file, so a presented path has already been checked twice before the client
+# ever offers it.
+- id: tool-present
+  name: '@deepseek-ai/dsh-tool-present'
+
+# A question with choices the owner taps (the shell draws them in the chat
+# from the tool call). The seam is dsh-base's `user-questions`; the shell's
+# `user-questions/request` answerer is prepended, like its approval answerer.
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+# Background delegation. `subagent` starts a durable child that works while
+# the conversation goes on; its settlement notice wakes this agent, and the
+# shell's session watch streams the turn that follows. One level deep: a
+# helper does not hire helpers. `send_message` / `interrupt_agent` /
+# `list_agents` steer the children; `job_*` reads and stops background jobs.
+- id: tool-subagent
+  name: '@deepseek-ai/dsh-tool-subagent'
+  config:
+    provider: spawn
+    toolName: subagent
+    backgroundMode: continuable
+    maxDepth: 1
+
+- id: tool-subagent-control
+  name: '@deepseek-ai/dsh-tool-subagent-control'
+
+- id: tool-subagent-list-agents
+  name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+
+- id: tool-jobs
+  name: '@deepseek-ai/dsh-tool-jobs'

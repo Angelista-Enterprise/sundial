@@ -1,0 +1,40 @@
+# Sundial's patch layer for its dsh web profile. `sundial install` copies this
+# file to $SUNDIAL_HOME/dsh/profiles/web/cordis.patch.yml; edit that copy for
+# local changes. A top-level YAML array of loader patch entries (id-targeted
+# config overrides, disables, and insert lists; `!!js` expressions allowed).
+
+# dsh-base's DeepSeek route needs a DeepSeek key. Sundial talks to any
+# OpenAI-compatible endpoint over its own route (plugins/sundial-llm-openai),
+# configured in $SUNDIAL_HOME/.env, so the unused route is hidden.
+- id: llm-deepseek
+  disabled: true
+
+# Compaction, which dsh-base mounts and dsh-web-app disables. Gnomon's chat is
+# one long-running conversation, and without compaction a long one silently
+# overflows the model's window. It compacts at 80% of the declared window and
+# keeps the last 16% verbatim; `command-compact` lets you compact on demand.
+- id: compaction-basic
+  disabled: false
+
+- id: command-compact
+  disabled: false
+
+# The tool-result pruner. Some of Gnomon's read tools can return a whole day of
+# rows; an over-long result being visibly cut beats one call filling the
+# context window.
+- id: tool-result-pruner
+  disabled: false
+
+# Gnomon's own agent preset (plugins/sundial-tools/presets/gnomon), reached
+# through the user preset root $DSH_HOME/.agent-presets, which the installer
+# fills with links to the repo's files.
+- id: agent-presets
+  config:
+    default: gnomon
+
+# Full-text search over your own conversations. The index opens on the first
+# search and lives in DSH_HOME.
+- id: session-query-sqlite
+  config:
+    path: !!js dshHomePath('session-index.sqlite')
+    openAt: first-search

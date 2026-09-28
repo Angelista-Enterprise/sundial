@@ -1,0 +1,271 @@
+# Architecture
+
+This page is for developers: how an observation travels from a sensor to the
+knowledge base, which package owns what, and why the macOS side looks the way it
+does. The reasons behind the design are in [why-sundial.md](why-sundial.md); how
+to build and test is in [development.md](development.md).
+
+## The pipeline
+
+Every observation follows the same path.
+
+```
+Swift sidecars (JSON files), git, shell, calendar, ...
+        │ sensors emit events
+        ▼
+sanitize at ingest ──► signals (append-only log, SQLite)
+                              │
+                              ▼
+             reduce(state, event) over RULE_MANIFEST
+                  │                          │
+                  ▼                          ▼
+           new KernelState            effects ──► effect executor
+                                      (DB writes, model calls, embeddings,
+                                       notices; journaled and audited)
+```
+
+1. A **sensor** captures something and emits an event: a type such as
+   `window:changed` or `git:commit`, a timestamp, and a payload. Sensors hold no
+   logic beyond capture.
+2. **Sanitize at ingest** removes secrets, URL query strings, user names in
+   paths and e-mail addresses from the payload. This is the only redaction pass
+   in the system. See [../packages/helpers/src/sanitize-at-ingest.ts](../packages/helpers/src/sanitize-at-ingest.ts).
+3. The sanitized event is appended to the `signals` table. A state observation
+   identical to the last one recorded is dropped before this step.
+4. The kernel **folds** the event: it calls `reduce(state, event, manifest)`,
+   which runs every rule in order and threads the state from one rule into the
+   next.
+5. The **effect executor** performs the effects the rules returned.
+
+Events are processed one at a time, on a single serialized lane, so two folds
+never interleave. The loop lives in `KernelRuntime`
+([../packages/harness-runtime/src/runtime.ts](../packages/harness-runtime/src/runtime.ts)):
+`ingestAndApply` runs steps 2 to 5, `applyEvent` runs the fold, and
+`executeEffects` runs the executor.
+
+## Rules and the fold
+
+A **rule** is a pure function with this shape (from
+[../packages/kernel/src/types.ts](../packages/kernel/src/types.ts)):
+
+```ts
+type Rule = (state: KernelState, event: SanitizedEvent) => { state: KernelState; effects: Effect[] };
+```
+
+A rule may not read the disk, call the network, start a timer or keep a
+module-level variable. If it needs to remember something between events, that
+memory is a field on `KernelState`. If it needs something done, it returns an
+effect.
+
+`reduce()` ([../packages/kernel/src/reduce.ts](../packages/kernel/src/reduce.ts))
+is a plain left fold over an array of rules. It tags each effect with the name of
+the rule that produced it, so the executor's journal knows who asked for what.
+
+The array is `RULE_MANIFEST` in
+[../packages/rules/src/manifest.ts](../packages/rules/src/manifest.ts). Its order
+is fixed and it matters: for example, rules that read the moment about to close
+must run before `momentClose` replaces it. The comments in that file explain each
+ordering constraint. Add a rule where its constraints put it, and write down why.
+
+Some rules are experiments. `flagged(flag, rule)` wraps a rule so that it folds
+nothing and returns no effects unless `config.experiments[flag]` is `true`. The
+wrapped rule keeps its name, so effects are still attributed correctly.
+
+An effect of type `EmitEvent` feeds a synthetic event back through the same
+ingest path, where it gets its own full fold. This is how one rule hands work to
+another (for example, fact candidates reach `contradictionCheck`, and every
+notice candidate reaches `noticeGate`).
+
+## Back-filled events
+
+From the setup page you can ask Sundial to read your history once: past commits
+and past meetings. Those events carry `payload.backfill === true`, are logged at
+their real time, and are folded over `BACKFILL_MANIFEST`. Most rules read an
+event as "this is happening now": they would attach a three-week-old commit to
+the moment that is open today, or treat last week's meeting as the one in
+progress. So a back-filled event only reaches rules that are true about the
+past. Today that list holds `entityExtract`. The read tools still see the rows,
+because they query the log by time.
+
+## KernelState, snapshots and boot
+
+`KernelState` is the one state object the fold carries: the current window and
+moment, budgets, memory caches, the notice gate's bookkeeping, the config the
+rules need, and more. Its shape is in `types.ts`, its starting value in
+[../packages/kernel/src/initial-state.ts](../packages/kernel/src/initial-state.ts).
+
+The kernel writes a snapshot of the state to `kernel_state_snapshots` on every
+clock tick (once a minute) and at shutdown. Each snapshot records the id of the
+last signal it includes.
+
+On boot, `KernelRuntime.boot()`:
+
+1. loads the latest snapshot, or starts from the initial state;
+2. overlays the current `config.json` onto `state.config`, so a config change
+   takes effect even though the snapshot is older;
+3. rebuilds a few lookups from the stored facts and the log rather than
+   trusting the snapshot (a lookup the fold built long ago may be in neither the
+   snapshot nor the replayed tail);
+4. replays every signal logged after the snapshot's offset through the fold.
+
+## The effect executor
+
+The executor is the only code that performs side effects: database writes, fact
+upserts and supersessions, embeddings, model calls, notices, emitted events.
+
+Every effect is journaled in `applied_effects` in two phases: `started` before it
+runs, then `completed` or `failed`. During boot replay the executor consults the
+journal, so an effect that already completed is not run again. Each effect type
+declares a delivery guarantee in
+[../packages/kernel/src/effect-delivery.ts](../packages/kernel/src/effect-delivery.ts):
+an `at-least-once` effect found `started` is re-run; an `at-most-once` effect is
+marked `indeterminate` instead of being repeated.
+
+## Packages and plugins
+
+Sundial runs inside DeepSeek Harness (dsh), an agent host built on the Cordis
+plugin system. The TypeScript packages hold the logic; the plugins wire it into
+dsh. `bin/sundial install` generates a dsh profile that loads the plugins in the
+order of the `PLUGINS` list in [../bin/sundial](../bin/sundial).
+
+| Path | What it owns |
+|---|---|
+| `packages/helpers` | Shared utilities: sanitize at ingest, `config.json` loading (`sundial-config.ts`), paths, the `.env` loader, the model provider list |
+| `packages/db` | SQLite schema, migrations and every query |
+| `packages/kernel` | `KernelState`, `reduce()`, snapshots, per-purpose budgets, and the read tool registry shared by the chat and MCP |
+| `packages/rules` | One file per rule, `RULE_MANIFEST` and `BACKFILL_MANIFEST` |
+| `packages/sensors` | Capture code for each stream (window, git, shell, calendar, browser, screen text, and others) and the zsh shell hook |
+| `packages/llm` | The audited model transport: every call is recorded in `llm_audit` |
+| `packages/memory` | Local embeddings and retrieval scoring |
+| `packages/harness-runtime` | `KernelRuntime` (boot, ingest, fold, executor), the sensor runtime, the phone ingest listener, back-fill |
+| `packages/mcp` | The MCP server over stdio |
+| `plugins/sundial-db` | Opens `$SUNDIAL_HOME/sundial.db`, runs migrations, provides the database service |
+| `plugins/sundial-memory` | Provides the local embedding service |
+| `plugins/sundial-kernel` | Boots `KernelRuntime`, runs the clock tick, provides the kernel service |
+| `plugins/sundial-sensors` | Runs the sensors, reads the sidecar JSON files, feeds every reading to the kernel |
+| `plugins/sundial-tools` | Registers Gnomon's `gnomon_*` tools in dsh, Gnomon's agent preset, and the chat's budget guard |
+| `plugins/sundial-actions` | Gnomon's write tools and the permission gate in front of them |
+| `plugins/sundial-proactive` | Delivers notices the gate admitted to Gnomon's chat, and carries your verdicts back |
+| `plugins/sundial-theme` | Sundial's web client at `/` and the routes behind it |
+| `plugins/sundial-llm-openai` | The OpenAI-compatible model adapter: the `openai` route plus one route per configured provider |
+| `plugins/sundial-web-browser` | `web_fetch` through a headless Chrome it manages, `web_search` through a SearXNG instance, both logged as signals |
+| `apps/harness` | The dsh dependency, the profile patch, and `sundial-sidecars.js` |
+| `apps/daemon` | The Swift sidecar sources and the scripts that build `Sundial.app` |
+| `bin/sundial` | The CLI: install, open, status, doctor, start, stop, restart, mcp, migrate, uninstall |
+
+Plugins are plain JavaScript with no build step. Packages are TypeScript, built
+to `dist/` with `tsc -b`; dsh imports that built output.
+
+## The macOS side
+
+macOS guards window titles, input monitoring and screen capture behind **TCC**
+(Transparency, Consent and Control), the permission system behind System
+Settings, Privacy & Security. TCC decides based on the process that asks and on
+the chain of processes that started it. A denial for the Node binary would also
+apply to anything Node spawns. So the Node process never asks macOS for these
+things itself.
+
+Instead, small native Swift programs called **sidecars** run beside it, built
+into `/Applications/Sundial.app` (a test install: `$SUNDIAL_HOME/Sundial.app`) and signed with one shared identifier,
+`dev.sundial.daemon`, so the permission you grant to "Sundial" covers them:
+
+- `sundial-daemon`, the launcher, starts the helpers and itself captures focus
+  mode, microphone and camera state, and sleep and wake.
+- The window helper (front app and title), the input helper (counts only), the
+  notification helper (Dock badge counts), and, only when enabled in config,
+  the screen OCR and audio helpers.
+- The calendar helper is an on-demand command the calendar sensor runs; the
+  browser helper is started by the browser sensor.
+
+TCC walks the chain of parent processes to find who is responsible for a
+helper. Left alone, that chain ends at the Node process that started the
+launcher, and a Node binary without its own grant would get the helpers refused.
+So the launcher first re-runs itself "disclaimed" (it becomes responsible for
+itself, see
+[../apps/daemon/src/daemon/macos-daemon-launcher/Disclaim.swift](../apps/daemon/src/daemon/macos-daemon-launcher/Disclaim.swift)):
+its helpers inherit that, and the grant for "Sundial" is the one that counts.
+The screen-text and calendar helpers go one step further and disclaim
+themselves, so each asks for its own permission.
+
+The sidecars write JSON files (such as `window-info.json`) into
+`$SUNDIAL_HOME/.daemon/`, and `plugins/sundial-sensors` reads them. The start
+script launches the launcher directly, never through `open -a`, because a
+LaunchServices launch is judged in a different TCC context.
+Sidecars are ad hoc signed, so rebuilding one changes its identity and macOS
+asks for the permission again. See [permissions.md](permissions.md).
+
+[../apps/daemon/scripts/swift.sh](../apps/daemon/scripts/swift.sh) compiles the
+helpers; [../apps/daemon/scripts/app.sh](../apps/daemon/scripts/app.sh) stages and
+signs the bundle.
+
+## The web client
+
+`plugins/sundial-theme` claims `/` on dsh's web server, so Sundial's own client
+is what the browser shows at `http://127.0.0.1:3080`. The client in
+`plugins/sundial-theme/shell/` is plain ES modules loaded by the browser. There
+is no bundler and no build step. The server side is `shell/server.js`; the API
+lives under `/gnomon/api`.
+
+Every route goes through `guard()` in
+[../plugins/sundial-theme/shell/guard.js](../plugins/sundial-theme/shell/guard.js),
+which applies dsh's Host, Origin and `Sec-Fetch-Site` fence, requires the signed
+session cookie, and fails closed. An in-process caller adds
+`internalHeaders()`, a per-process secret accepted only over loopback.
+`guard.test.js` fails if a route is registered any other way, or if another
+plugin registers web routes.
+
+## The model path
+
+Gnomon's own model is the route `openai`, configured by `SUNDIAL_LLM_BASE_URL`,
+`SUNDIAL_LLM_MODEL` and `SUNDIAL_LLM_API_KEY` in `$SUNDIAL_HOME/.env`. Any
+OpenAI-compatible endpoint works. More providers can be listed in `config.json`
+under `llm.providers`; each becomes its own route in the chat's model picker,
+and its key stays in `.env`. See [models.md](models.md).
+
+Two kinds of model call:
+
+- **Chat.** dsh runs the agent loop. Gnomon's tools come from
+  `plugins/sundial-tools`.
+- **Kernel purposes.** A rule returns a `ScheduleLLM` effect with a purpose such
+  as `intent`, `extract`, `reflect`, `journal` or `refute`. The executor checks
+  that purpose's daily cap, records an `llm:dispatched` event, makes the call
+  through `packages/llm`, and feeds the answer back as an `llm:result` event,
+  which a rule folds. The model never writes state directly.
+
+Daily caps are in
+[../packages/kernel/src/budgets.ts](../packages/kernel/src/budgets.ts). They are
+set high as a guard against runaway loops, not as a cost control, and `budgets`
+in `config.json` overrides them. Chat is uncapped by default. Every call, chat
+or kernel, is written to `llm_audit` with its prompt and response, and the
+Ledger page shows that table.
+
+## The MCP server
+
+`sundial mcp` starts an MCP server over stdio
+([../packages/mcp/src/index.ts](../packages/mcp/src/index.ts)). It exposes the
+read tools from `TOOL_REGISTRY` in `packages/kernel/src/tools/`, the same
+definitions Gnomon's chat uses, so the two cannot drift apart. Every tool it
+exposes only reads. It opens the same database file and does not run the fold.
+It runs in your user session, so any code running as you can call it.
+
+## The data model
+
+The schema is in
+[../packages/db/src/schemas/db-schema.ts](../packages/db/src/schemas/db-schema.ts).
+The main tables:
+
+| Table | What it holds |
+|---|---|
+| `signals` | The append-only log. Every sanitized event. |
+| `moments` | Closed stretches of activity. Only the `momentClose` rule creates rows; a few rules later patch a row's data. |
+| `entities` | People, projects, tools and topics. |
+| `entity_facts` | Facts about an entity, each with a validity window. Never overwritten: a new fact supersedes the old one. Each carries a confidence that is reinforced and decays. |
+| `memory_embeddings` | Vectors for semantic search, tagged with the local model that produced them. |
+| `kernel_state_snapshots` | Periodic `KernelState` snapshots and their log offset. |
+| `applied_effects` | The executor's two-phase effect journal. |
+| `llm_audit` | Every model call. |
+
+Other tables hold projects, organizations, reflections (`knowledge_entries`),
+commitments, ask threads, the notice gate's decisions, and forecasts. The
+`retentionPrune` rule deletes signals older than `retentionDays` (default 180)
+and screen text older than `ocr.retentionDays` (default 14).

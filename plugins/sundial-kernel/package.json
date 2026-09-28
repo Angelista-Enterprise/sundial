@@ -1,0 +1,16 @@
+{
+  "name": "@sundial/dsh-kernel",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Cordis plugin: Gnomon's event-sourced kernel inside dsh. Boots from snapshot + log-tail replay, runs the clock:tick timer, folds appended signals through RULE_MANIFEST, and executes all effects. Provides the `gnomonKernel` service.",
+  "main": "index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@sundial/harness-runtime": "workspace:*",
+    "@sundial/helpers": "workspace:*"
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "name": "sundial",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Local-first context engine for macOS: passive telemetry folded into a knowledge base an LLM assistant (Gnomon) can reason over",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "sundial": "bin/sundial"
+  },
+  "scripts": {
+    "build": "tsc -b tsconfig.json",
+    "sidecars:build": "bash apps/daemon/scripts/swift.sh && bash apps/daemon/scripts/app.sh",
+    "sidecars": "node apps/harness/bin/sundial-sidecars.js",
+    "test": "vitest run",
+    "typecheck": "tsc -b tsconfig.json"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "@sundial/helpers": "workspace:*",
+    "dotenv": "^17.2.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "jsdom": "^26.1.0",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.8"
+  }
+}

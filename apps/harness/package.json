@@ -1,0 +1,24 @@
+{
+  "name": "@sundial/harness",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "description": "DeepSeek Harness (dsh) bundle that hosts Gnomon as Cordis plugins",
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-tools": "0.1.5-rc.1",
+    "@sundial/dsh-actions": "workspace:*",
+    "@sundial/dsh-db": "workspace:*",
+    "@sundial/dsh-kernel": "workspace:*",
+    "@sundial/dsh-llm-openai": "workspace:*",
+    "@sundial/dsh-memory": "workspace:*",
+    "@sundial/dsh-proactive": "workspace:*",
+    "@sundial/dsh-sensors": "workspace:*",
+    "@sundial/dsh-theme": "workspace:*",
+    "@sundial/dsh-tools-gnomon": "workspace:*",
+    "@sundial/dsh-web-browser": "workspace:*"
+  }
+}

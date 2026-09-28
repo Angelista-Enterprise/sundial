@@ -1,0 +1,18 @@
+# Bundle patch for the OpenAI-compatible adapter plugin.
+#
+# Row 1: mount the adapter (registers the `openai` provider route, plus one per config.json `llm.providers` on ctx.llm).
+# Row 2: override dsh-base's `agent-default-model` row so new Agents default to
+# the openai route. Patches REPLACE the whole config object (see
+# applyEntryPatches in @deepseek-ai/cordis-plugin-include), so the full config
+# is restated: `provider` + `model` (both required by AgentDefaultModelConfig).
+# The model id resolves at entry activation: process.env wins, then
+# $SUNDIAL_HOME/.env, then the plugin's default (qwen/qwen3.8-flash-next). The expression only ever reads
+# SUNDIAL_LLM_MODEL — never the API key line.
+- insert:
+    - id: sundial-llm-openai
+      name: '@sundial/dsh-llm-openai'
+
+- id: agent-default-model
+  config:
+    provider: openai
+    model: !!js "(() => { try { if (process.env.SUNDIAL_LLM_MODEL) return process.env.SUNDIAL_LLM_MODEL; const fs = process.getBuiltinModule('node:fs'); const os = process.getBuiltinModule('node:os'); const line = fs.readFileSync((process.env.SUNDIAL_HOME || os.homedir() + '/.sundial') + '/.env', 'utf8').split(/\\r?\\n/).find((l) => l.startsWith('SUNDIAL_LLM_MODEL=')); return line ? line.slice('SUNDIAL_LLM_MODEL='.length).trim().replace(/^[\"']|[\"']$/g, '') || 'qwen/qwen3.8-flash-next' : 'qwen/qwen3.8-flash-next'; } catch { return 'qwen/qwen3.8-flash-next'; } })()"

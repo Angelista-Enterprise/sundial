@@ -1,0 +1,18 @@
+{
+  "name": "@sundial/dsh-actions",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "What the Gnomon assistant may DO: internal action tools that emit recorded, overturnable events, plus the pre-execute gate that derives gnomon's tool permissions from dsh's one permission preset (config.actions is only an optional tighten-only override).",
+  "main": "index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-mcp-client": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-permission-presets": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-tools": "0.1.5-rc.1",
+    "@sundial/helpers": "workspace:*"
+  }
+}

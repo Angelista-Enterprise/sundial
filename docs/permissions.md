@@ -1,0 +1,171 @@
+# macOS permissions
+
+macOS asks before any app may see your windows, your input or your calendar.
+This page lists every permission Sundial may ask for: what it lets Sundial see,
+which helper uses it, whether you need it, and how to grant or reset it.
+
+None of them is needed to start. Without any, Sundial still records your git
+activity, and the app in front (without its window title).
+
+## How Sundial's helpers work
+
+Node.js cannot hold these permissions reliably, so Sundial reads macOS through
+small Swift programs called helpers. They live in `/Applications/Sundial.app`,
+share one identity (`dev.sundial.daemon`), and write small files to
+`~/.sundial/.daemon/` that Sundial reads.
+
+A launcher inside `Sundial.app` starts the helpers. It first re-runs itself so
+that macOS treats it as responsible for itself, and not the Node process or
+login script that started it (see
+[Disclaim.swift](../apps/daemon/src/daemon/macos-daemon-launcher/Disclaim.swift)).
+The helpers inherit that. So the grant that counts is the one you give to
+**Sundial**, not to your terminal or to Node.
+
+## The permissions
+
+| Permission | What it lets Sundial see | Helper | Needed? | How it is granted |
+|---|---|---|---|---|
+| Accessibility | The title of the front window, and the badge counts on Dock icons. Never clicks or types. | window helper, notification helper | Recommended | You add Sundial.app |
+| Input Monitoring | How many keys, clicks and scrolls happen, to tell working from away. Never which keys. | input helper | Recommended | You add Sundial.app |
+| Calendars | Times, titles and attendees of your events. | calendar helper | Recommended | The helper asks |
+| Contacts | Names for calendar attendees that arrive as bare addresses. | calendar helper | Optional | The helper asks |
+| Automation | The address and title of the active browser tab. | browser helper | Optional | The helper asks, once per browser |
+| Screen Recording | Text on screen, read on this Mac. | screen-text helper | Only if you turn it on | The helper asks |
+| Microphone | Speech around you, transcribed on this Mac. | audio helper | Only if you turn it on | The helper asks |
+| System Audio Recording | The other side of a call: what the Mac plays, transcribed on this Mac. | audio helper | Only if you turn on hearing | macOS asks the first time hearing wakes |
+| Notifications | Gnomon's notices as macOS banners. | launcher | Only if you turn it on | The launcher asks |
+| Full Disk Access | Mail and Messages senders and subjects, and your Focus mode. | see below | Optional, off | You add it |
+| Location Services | Nothing. Sundial never asks where you are. | none | No | Not needed |
+
+## Grant a permission by hand
+
+For Accessibility and Input Monitoring (and Full Disk Access, if you want it),
+you add Sundial yourself:
+
+1. Open **System Settings → Privacy & Security** and the pane for the
+   permission. The **Open settings** link on the `/setup` page goes straight there.
+2. Click **+** below the list.
+3. Press **⌘⇧G**, paste `/Applications/Sundial.app`, and press Return.
+4. Choose **Sundial** and click **Open**. Switch it on.
+5. Restart Sundial:
+
+```bash
+node bin/sundial restart
+```
+
+macOS applies a new grant only to a freshly started helper. The `/setup` page
+shows the new state shortly after the restart.
+
+## Permissions a helper asks for itself
+
+For the others, macOS shows a prompt the moment a helper first needs the
+permission. Click **Allow**. Adding `Sundial.app` by hand does not work for
+these: macOS matches the grant to the program that asked.
+
+- **Calendars and Contacts.** The calendar helper runs when Sundial reads your
+  calendar, or when you press **Find** under "Start with your history". It waits
+  20 seconds for an answer; if you answer later, the next read picks it up.
+  Contacts is only used to put a name to an attendee. If you refuse, attendees
+  without a name are stored as an anonymous id. The helper also adds an event
+  when Gnomon's calendar tool asks it to; that tool follows the approval
+  setting of your conversation (see [using-gnomon.md](using-gnomon.md)).
+- **Automation.** The browser helper is its own small app,
+  `~/.sundial/SundialBrowserHelper.app` (`dev.sundial.browser-helper`). macOS
+  asks once for each browser: Safari, Chrome, Chrome Canary, Brave, Edge,
+  Vivaldi and Arc. It keeps the site and path, never a query string, and skips
+  private windows. The grants appear under **Privacy & Security → Automation →
+  Sundial Browser Helper**.
+- **Screen Recording.** Only the screen-text reader uses it, and it is off.
+  The launcher starts that helper only when `config.json` has
+  `"ocr": { "enabled": true }`. The helper then asks for Screen Recording
+  itself. An entry for Sundial.app that you added by hand does not cover it.
+- **Microphone.** Only the audio helper uses it, and it is off. The launcher
+  starts it only when `config.json` has `"audio": { "enabled": true }`. Audio is
+  transcribed on this Mac and never written to disk. Hearing needs a local
+  speech model as well; this page covers only the permission.
+- **System Audio Recording.** While hearing is on, the audio helper also
+  transcribes what the Mac plays, so a call's transcript has both sides, labelled
+  as the call or the room. macOS asks the first time. If you refuse, hearing
+  carries on with the microphone alone.
+- **Notifications.** Off unless `config.json` has
+  `"notifications": { "enabled": true }`. Then the launcher asks to show
+  banners. Change it later in **System Settings → Notifications → Sundial**.
+
+If you clicked **Don't Allow**, switch the entry on in the matching pane, or
+reset it (below) so the helper asks again.
+
+## Full Disk Access
+
+The setup page says to skip this, and you can. Two things use it: Mail and
+Messages capture (senders and subjects only), which is off unless
+`config.json` has `"privacy": { "mail": true }`, and reading which Focus mode is
+on. Without it, Sundial may not see your Focus mode.
+
+## Location Services
+
+Not needed. Sundial never asks for your location. Without it, macOS hides Wi-Fi
+network names, so you name your places yourself in `config.json`
+(`locationLabels`).
+
+## Rebuilding changes the identity
+
+Sundial signs its helpers on your Mac with an ad-hoc signature: a signature
+without a developer certificate. macOS then recognises a helper by a hash of
+its exact code. When a helper is rebuilt, for example when `install` runs after
+you pull new code, the hash changes and macOS treats it as a new program. The
+entry in System Settings can still look switched on while it no longer applies.
+
+When that happens, remove the entry with **−**, add it again, and restart.
+Helpers that ask for themselves will ask again. A Developer ID signature, which
+would keep grants across updates, is planned.
+
+## Sundial.app is the app macOS starts
+
+`Sundial.app` is a real app: macOS starts it at login (it is in **System
+Settings → General → Login Items**), and opening it from Applications (Launchpad, Spotlight, Finder) or a
+double-click starts it too. Because macOS starts it, the permissions belong to
+the app, and Full Disk Access reaches everything it runs, Mail and Messages
+included. That never worked for the older LaunchAgent install
+(`install --no-app`), which starts the launcher directly.
+
+To start or stop only the helpers of a LaunchAgent install, use:
+
+```bash
+node apps/harness/bin/sundial-sidecars.js start
+```
+
+```bash
+node apps/harness/bin/sundial-sidecars.js stop
+```
+
+## Reset permissions
+
+`tccutil` clears what macOS remembers about an app. This resets every
+permission for Sundial's helpers:
+
+```bash
+tccutil reset All dev.sundial.daemon
+```
+
+Or reset one service, for example Accessibility:
+
+```bash
+tccutil reset Accessibility dev.sundial.daemon
+```
+
+Other service names: `ListenEvent` (Input Monitoring), `ScreenCapture`,
+`Calendar`, `AddressBook` (Contacts), `Microphone`, `AudioCapture` (System
+Audio Recording), `SystemPolicyAllFiles`
+(Full Disk Access). The browser helper has its own identity:
+
+```bash
+tccutil reset AppleEvents dev.sundial.browser-helper
+```
+
+After a reset, restart Sundial and grant again:
+
+```bash
+node bin/sundial restart
+```
+
+Still stuck? See [troubleshooting.md](troubleshooting.md).

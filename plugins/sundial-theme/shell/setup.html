@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      try {
+        var t = localStorage.getItem('sundial-theme');
+        if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <title>Set up Sundial</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 26V6M16 26l9 3' stroke='%23d98a2b' stroke-width='3' fill='none'/%3E%3C/svg%3E" />
+    <link rel="preload" as="font" type="font/ttf" href="/gnomon/font/inter-tight.ttf" crossorigin />
+    <link rel="stylesheet" href="/gnomon/app/app.css" />
+    <link rel="stylesheet" href="/gnomon/app/setup.css" />
+  </head>
+  <body class="setup-page">
+    <main class="setup">
+      <header class="setup-head">
+        <svg class="setup-mark" viewBox="0 0 64 40" aria-hidden="true">
+          <path class="setup-plate" d="M4 36h56" />
+          <path class="setup-shadow" d="M32 36 58 30" />
+          <path class="setup-rod" d="M32 36V6" />
+        </svg>
+        <h1>Set up Sundial</h1>
+        <p class="setup-lead">
+          Sundial is running on this Mac. It keeps a private record of what you work on, so Gnomon, the assistant
+          inside it, can answer from what really happened. Each permission below lets it see one more thing. Grant
+          what you want; nothing here is needed to start.
+        </p>
+      </header>
+
+      <section class="setup-section" aria-labelledby="h-record">
+        <h2 id="h-record">The record</h2>
+        <p class="setup-record" id="record" role="status" aria-live="polite">Reading the record…</p>
+        <p class="setup-prose" id="moments-lead" hidden>The last moments it made of them:</p>
+        <ul class="setup-moments" id="moments"></ul>
+      </section>
+
+      <section class="setup-section" aria-labelledby="h-perms">
+        <h2 id="h-perms">What macOS lets it see</h2>
+        <ul class="grant-list" id="perms"></ul>
+        <div class="setup-note">
+          <p data-app-only hidden>
+            Press <strong>Grant</strong>. System Settings opens, and macOS asks. Switch <strong>Sundial</strong> on, then
+            come back here: Sundial restarts the part that needs it.
+          </p>
+          <p>
+            <span data-app-only hidden>Not in the list, as with Full Disk Access?</span> In each settings pane, click <kbd>+</kbd>, press <kbd>⌘</kbd><kbd>⇧</kbd><kbd>G</kbd>, paste the path
+            below, choose <strong>Sundial</strong>, and switch it on.
+          </p>
+          <p class="setup-path">
+            <code id="app-path">/Applications/Sundial.app</code>
+            <button type="button" class="setup-copy" id="copy-path">Copy path</button>
+          </p>
+          <p data-browser-only>macOS applies a new grant only after a restart. Run <code>sundial restart</code> after you grant one.</p>
+          <p>
+            Switched on and still not granted? The entry must be this app, <code id="bundle-id">dev.sundial.daemon</code>.
+            An older entry (<code>dev.gnomon.…</code>) is a different app: remove it with <kbd>−</kbd> and grant again.
+          </p>
+        </div>
+      </section>
+
+      <section class="setup-section" aria-labelledby="h-history">
+        <h2 id="h-history">Start with your history</h2>
+        <p class="setup-prose">
+          The record starts empty. Sundial can read what already happened on this Mac: your own commits, the
+          meetings you went to, and the sender and subject of mail in Mail.app — never a body. Choose how far it may look. Nothing is read until you press the button, and it stays
+          on this Mac.
+        </p>
+        <form class="fill" id="fill" novalidate>
+          <label class="fill-label" for="fill-roots">Folders with your code</label>
+          <textarea class="fill-roots" id="fill-roots" rows="3" spellcheck="false" autocomplete="off" placeholder="~/Projects"></textarea>
+          <p class="fill-hint">One folder per line. Sundial looks up to three folders deep for git repositories, and reads only commits made with your git e-mail.</p>
+          <p class="fill-range">
+            <label>Commits from the last <input class="fill-days" id="fill-git" type="number" min="0" max="90" step="1" value="30" inputmode="numeric" /> days</label>
+            <label>Meetings from the last <input class="fill-days" id="fill-cal" type="number" min="0" max="90" step="1" value="7" inputmode="numeric" /> days</label>
+            <label>Mail from the last <input class="fill-days" id="fill-mail" type="number" min="0" max="90" step="1" value="7" inputmode="numeric" /> days</label>
+          </p>
+          <div class="fill-acts">
+            <button type="submit" class="setup-button" id="fill-find">Find</button>
+          </div>
+          <div class="fill-out" id="fill-out" role="status" aria-live="polite"></div>
+          <button type="button" class="setup-button fill-go" data-primary id="fill-go" hidden>Read</button>
+        </form>
+      </section>
+
+      <section class="setup-section" aria-labelledby="h-model">
+        <h2 id="h-model">A model for Gnomon</h2>
+        <div id="model"></div>
+      </section>
+
+      <footer class="setup-foot">
+        <a class="setup-go" href="/">Open Today <span aria-hidden="true">→</span></a>
+        <p>To remove Sundial and everything it wrote, run <code>sundial uninstall</code>.</p>
+      </footer>
+    </main>
+    <script type="module" src="/gnomon/app/setup.js"></script>
+  </body>
+</html>

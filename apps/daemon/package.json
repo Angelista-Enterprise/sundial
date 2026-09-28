@@ -1,0 +1,9 @@
+{
+  "name": "@sundial/sidecars",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The macOS Swift sidecars (window, input, notifications, focus, calendar, OCR, audio, browser) and the scripts that build them into $SUNDIAL_HOME/Sundial.app.",
+  "scripts": {
+    "build:native": "bash scripts/swift.sh && bash scripts/app.sh"
+  }
+}

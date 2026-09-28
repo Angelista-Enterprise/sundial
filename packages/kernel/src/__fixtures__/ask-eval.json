@@ -1,0 +1,80 @@
+{
+  "note": "Task-level eval for the /ask tool loop. A13 in the aspirations registry scores `scoredSearch` in isolation — whether the known-correct row lands in the top 5 — and it already measures 81.8%. That number says retrieval RANKS well; it says nothing about whether an answer is any good, because most of these questions have no single correct row to rank. They are aggregates, filters, and joins over the record. Graded by regex against the answer text rather than by a judge model, so the score is deterministic and free.",
+  "corpus": "Anchored on 2026-08-01, a full day in gnomon-dev.db, so the expectations stay stable as the live log grows. Re-anchor if that day is ever purged.",
+  "cases": [
+    {
+      "id": "E01",
+      "question": "Which files did I edit on 2026-08-01 for gnomon?",
+      "mustMatch": ["\\.ts\\b", "(packages|apps)/"],
+      "why": "The canonical case. `symbol:edited` is not an embedding ref type and never will be, so no amount of retrieval tuning reaches these paths — only a tool can."
+    },
+    {
+      "id": "E02",
+      "question": "What did I commit on 2026-08-01? Give me an actual commit subject.",
+      "mustMatch": ["(permissions|almanac|audio|task-identity|moment|backlog)"],
+      "mustNotMatch": ["(don't know|do not know|no record of|cannot find)"],
+      "why": "Commit subjects are the owner's own words about their work — the highest-signal text in the log, and currently unreachable."
+    },
+    {
+      "id": "E03",
+      "question": "Which projects did I touch on 2026-08-01?",
+      "mustMatch": ["gnomon"],
+      "why": "Group-by over a date range. A top-K ranking returns some moments, never the distinct set."
+    },
+    {
+      "id": "E04",
+      "question": "Did I work on a project called quicksilver-foobar?",
+      "mustMatch": ["(\\bno\\b|not|don't|do not|nothing|didn't|never)"],
+      "mustNotMatch": ["quicksilver-foobar (is|was) a"],
+      "why": "Hallucination guard. A tool loop gives the model more rope: it can now receive an empty tool result and must report the absence rather than narrate around it. This case failing is worse than any other case failing."
+    },
+    {
+      "id": "E05",
+      "question": "Did I run any claude CLI commands on 2026-08-01?",
+      "mustMatch": ["claude"],
+      "why": "`shell:command` reach. Same class as E01 — real evidence with no path to a prompt today."
+    },
+    {
+      "id": "E06",
+      "question": "What tools do I use on the gnomon project?",
+      "mustMatch": ["(Warp|Code|Claude|Chrome)"],
+      "why": "Regression guard: entity facts already answer this through the existing entity-lookup layer. The loop must not make a working answer worse."
+    },
+    {
+      "id": "E07",
+      "question": "Did I set up an ad blocker? What was it called?",
+      "mustMatch": ["AdGuard"],
+      "why": "Regression guard for plain semantic retrieval — this is a gold-set question that already passes."
+    },
+    {
+      "id": "E08",
+      "question": "How many activity sessions did I have on 2026-08-01, and roughly how long?",
+      "mustMatch": ["\\d+"],
+      "why": "A count over a date range. Today this is answered only because `buildContext` hardcodes one sentence about TODAY — ask about any other day and there is nothing."
+    },
+    {
+      "id": "E09",
+      "question": "What was I doing around 21:00 on 2026-08-01?",
+      "mustMatch": ["(Chrome|Claude|Warp|Code|Gnomon)"],
+      "why": "Point-in-time lookup. Needs a date-and-time filter, not similarity to the phrase '21:00'."
+    },
+    {
+      "id": "E10",
+      "question": "Which file did I come back to most often on 2026-08-01?",
+      "mustMatch": ["\\.ts\\b"],
+      "why": "Aggregate with an argmax — the shape a cosine ranking is furthest from."
+    },
+    {
+      "id": "E11",
+      "question": "What am I doing right now?",
+      "mustNotMatch": ["(don't know|do not know|no information|cannot tell)"],
+      "why": "Must not regress. The live snapshot line already answers this and is the one thing the current pipeline does well."
+    },
+    {
+      "id": "E12",
+      "question": "Summarize 2026-08-01 for me with specifics — name at least one file I edited and one thing I committed.",
+      "mustMatch": ["\\.ts\\b", "(feat|docs|almanac|fix)"],
+      "why": "Composite: two tools in one answer. This is the case that proves the loop is a loop and not a single tool call."
+    }
+  ]
+}

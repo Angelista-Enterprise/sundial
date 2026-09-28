@@ -1,0 +1,25 @@
+packages:
+  - apps/*
+  - packages/*
+  - plugins/*
+
+linkWorkspacePackages: true
+
+onlyBuiltDependencies:
+  - sharp
+  - better-sqlite3
+  - onnxruntime-node
+  - esbuild
+  - '@libsql/client'
+  - libsql
+  # Arrived with dsh 0.1.5-rc.1: the persistent-terminal tools shell out through
+  # a real pty, and dsh-subprocess-local compiles its spawn helper.
+  - '@deepseek-ai/dsh-subprocess-local'
+  - node-pty
+
+# No patchedDependencies. The four dsh client-UI forks that used to live here
+# patched a React tree that stopped booting when sundial-theme claimed `/`, so
+# they were dead weight; the 0.1.5-rc.1 bump was the moment to drop them rather
+# than re-roll four patches against a reshaped client.
+
+preferWorkspacePackages: true

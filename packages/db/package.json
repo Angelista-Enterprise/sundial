@@ -1,0 +1,31 @@
+{
+  "name": "@sundial/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    "./*.js": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    },
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b tsconfig.json",
+    "db:generate": "drizzle-kit generate",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@sundial/helpers": "workspace:*",
+    "@sundial/memory": "workspace:*",
+    "@libsql/client": "^0.14.0",
+    "drizzle-orm": "^0.45.1"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.31.9"
+  }
+}
