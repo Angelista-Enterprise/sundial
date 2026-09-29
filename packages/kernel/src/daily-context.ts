@@ -6,6 +6,7 @@ import {
   type StoredMoment,
   type StoredSignal,
 } from '@sundial/db/index.js';
+import { localHour } from '@sundial/helpers/local-day.js';
 import { canonicalProjectName } from '@sundial/helpers/sundial-config.js';
 import type { FocusQuality, MomentKind } from './types.js';
 
@@ -379,10 +380,10 @@ function buildDeepWorkBlocks(views: MomentView[], projectNames: Map<string, stri
  * roughly a fifth (a 27 hour becomes 33) and leaves the quiet hours where they
  * were, which is the correction working in the direction it should.
  */
-function buildEnergyCurve(views: MomentView[]): DailyEnergyPoint[] {
+function buildEnergyCurve(views: MomentView[], timeZone: string): DailyEnergyPoint[] {
   const buckets = new Map<number, { focusMinutes: number; typingMinutes: number; minutes: number }>();
   for (const v of views) {
-    const hour = new Date(v.start).getHours();
+    const hour = localHour(v.start, timeZone);
     const mins = Math.max(1, v.durationMs / 60_000);
     const typingRate = Math.min(1, v.typingEventCount / mins / TYPING_NORM_PER_MIN);
     const b = buckets.get(hour) ?? { focusMinutes: 0, typingMinutes: 0, minutes: 0 };
@@ -556,7 +557,7 @@ export async function buildDailyContext(date: string, options?: BuildDailyContex
     searches: buildSearches(searchSignals, maxSearches),
     flows: buildFlows(views, maxFlows),
     deepWorkBlocks: buildDeepWorkBlocks(views, projectNames, aliases),
-    energyCurve: buildEnergyCurve(views),
+    energyCurve: buildEnergyCurve(views, timeZone),
     breaks: buildBreaks(views, sleepWakeAt),
     anomalies,
     continuity,

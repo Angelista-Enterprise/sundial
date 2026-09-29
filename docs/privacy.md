@@ -51,8 +51,9 @@ state. "On" means on once the permission it needs is granted. See
 | Screen text | Text read off the focused window by on-device OCR | Off: `ocr.enabled` |
 | Screen facts | Up to three short facts about the screen, from a vision model in your local Ollama | Off: `ocr.vision.enabled` |
 | Page text | The visible text of the front browser tab | Off: `browser.pageText` |
-| Mail and Messages | Mail: sender and subject. Messages: sender, chat name and time | Off: `privacy.mail` (and Full Disk Access) |
-| Hearing | Transcripts of speech near the Mac and of the far side of a call (what the Mac plays), by a local Whisper server | Off: `audio.enabled` |
+| Mail | Sender, recipients and subject | Off: `privacy.mail` (and Full Disk Access) |
+| Messages | Sender, chat name and time, never the text | Off: `privacy.messages` (and Full Disk Access) |
+| Hearing | Transcripts of speech near the Mac and of the far side of a call (what the Mac plays), by a local Whisper server, while you press Listen | Off: `audio.enabled`; meetings and calls open it by themselves only with `audio.autoMeetings` |
 | Devices nearby | A hashed id per device in the Mac's ARP table, on a network you consented to | Off: `experiments.presence` |
 | Obsidian vault | Paths of notes that changed in the one vault you name | Off: `vault` |
 | Gnomon's own web use | Each page Gnomon fetched or search it ran, and whether it worked | When Gnomon uses the web |
@@ -99,16 +100,21 @@ the cleaned value.
   name taken from the address, or an alias like `person-1a2b3c4d5e`. A phone
   number sender becomes `phone`.
 - **Sensitive apps.** For WhatsApp, Messages, Telegram, Signal, Messenger,
-  Slack, Discord, Mail, Zoom, FaceTime, password managers (1Password,
-  Bitwarden, KeePassXC, LastPass, Dashlane), banking, Venmo, PayPal, Health and
+  Slack, Discord, Mail, Zoom, FaceTime, password managers (Passwords, Keychain
+  Access, 1Password, Bitwarden, KeePassXC, LastPass, Dashlane), the system
+  password dialog and the lock screen, banking, Venmo, PayPal, Health and
   MyFitnessPal, the window title, URL, paths, screen text and other free text
   become `[private]`. The app name and the time stay. Add your own with
   `privacy.sensitiveApps`.
 - **Hidden apps.** For apps in `privacy.hiddenApps`, the app name and every
   title, text, path and URL become `[hidden]`. The time is still counted.
+- **Screen text is not read at all** from a sensitive or hidden app, or while
+  any password field has the keyboard (macOS secure input). Screen text from an
+  app on the strict list is deleted at the next daily prune, whatever its age.
 
 App names are matched case-insensitively against part of the process name, so
-`bank` matches any app with "bank" in its name. The lists in `config.json` only
+`bank` matches any app with "bank" in its name. Screen text is matched on the
+app's bundle id as well, which does not change with the system language. The lists in `config.json` only
 add to the built-in ones; they cannot remove anything.
 
 `privacy.redactionTier` sets how hard paths and URLs are rewritten:
@@ -127,7 +133,7 @@ shows what was scrubbed in the last 24 hours.
 Once a day, at the day boundary, Sundial deletes events, moments and
 model-call rows older than `retentionDays` (default 180). Screen text and
 screen facts go sooner, after `ocr.retentionDays` (default 14). Heard speech
-follows `retentionDays`.
+goes after `audio.retentionDays` (default 14).
 
 Some things are kept until you remove them: people, projects and facts in
 memory, the journal and other written entries, and your conversations.
@@ -147,6 +153,15 @@ Nothing, until you configure it. Then only:
 | Tool calls to your own services | The service | Only for services you list under `integrations` in `config.json` |
 | A background job's prompt, and what Claude reads from the record over `sundial mcp` | Anthropic, through your own Claude Code login | Only if `hands.claude` is set in `config.json` |
 | Whatever an MCP client reads | That client's own model provider | Only if you connect Claude Code or another agent with `sundial mcp` (see [using-gnomon.md](using-gnomon.md)) |
+
+**What the moment judge sees.** Each moment is scored by a judge: Jev at
+api.typesafe.ai when `TYPESAFE_API_KEY` is set, otherwise your text model
+(named on `/setup`; it is hosted unless it runs on this Mac). Both receive the
+same fields, already cleaned: the app, project, window titles, shell commands,
+branch, meeting title and attendee count, and, when their sensors are on,
+`page_text` (the tab's own words), `mail_subjects_recent`, `screen_facts`,
+`heard_aloud` (speech heard near the Mac), notes edited today, and your open
+goals and heard promises.
 
 Sundial sends no usage data. The harness it runs on (dsh) has an optional
 telemetry exporter, and Sundial starts it with `DSH_TELEMETRY_DISABLED=1`.
@@ -236,12 +251,15 @@ In `$SUNDIAL_HOME/config.json` unless marked `.env`. Restart after a change.
 | `privacy.sensitiveApps` | `[]` | More apps whose content becomes `[private]` |
 | `privacy.hiddenApps` | `[]` | Apps whose name and content become `[hidden]` |
 | `privacy.shellRedactPatterns` | `[]` | More secret patterns (regular expressions) |
-| `privacy.mail` | `false` | Mail and Messages senders and subjects |
+| `privacy.mail` | `false` | Mail senders, recipients and subjects |
+| `privacy.messages` | `false` | Messages senders and chats |
 | `browser.pageText` | `false` | Text of the front browser tab |
 | `ocr.enabled` | `false` | Screen text |
 | `ocr.vision.enabled` | `false` | Screen facts from a local vision model (needs `ocr.enabled`) |
 | `ocr.retentionDays` | `14` | Days screen text is kept |
-| `audio.enabled` | `false` | Hearing |
+| `audio.enabled` | `false` | Hearing, while you press Listen |
+| `audio.autoMeetings` | `false` | Meetings with attendees and calls open the microphone by themselves. Nobody else in the meeting is told |
+| `audio.retentionDays` | `14` | Days heard speech is kept |
 | `clipboardEnabled` | `false` | Clipboard kind and size |
 | `experiments.presence` | `false` | Devices nearby |
 | `vault` | unset | The Obsidian vault to watch |

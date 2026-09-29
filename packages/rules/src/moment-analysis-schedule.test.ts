@@ -134,14 +134,16 @@ describe('momentAnalysisSchedule', () => {
       activeMs: 25 * 60_000,
       shellCommandCount: 32,
       notableCommands: ['npx vitest run packages/rules', 'git status --short'],
-      spokenExcerpt: 'keep that into its memory so it can pick it up later',
+      spokenExcerpt: 'it goes into the memory so it can pick it up later',
     });
     const { effects } = momentAnalysisSchedule(state, windowEvent('2026-01-01T00:31:00.000Z'));
     const content = (effects[1] as any).messages[1].content as string;
 
     expect(content).toContain('Lasted 31 min, 25 min of it active.');
-    // The owner's own words, and the prompt says plainly what they outrank.
-    expect(content).toContain('keep that into its memory');
+    // Heard speech, labelled as heard by anyone rather than as the owner's word.
+    expect(content).toContain('it goes into the memory');
+    expect(content).toContain('heard nearby; may be anyone, may be noise');
+    expect(content).not.toContain('outrank');
     expect(content.indexOf('HEARD ALOUD')).toBeLessThan(content.indexOf('Window titles seen'));
     // Named commands AND the count, because the count says more ran than is listed.
     expect(content).toContain('Shell commands run (32 in all): npx vitest run packages/rules · git status --short');
@@ -224,5 +226,15 @@ describe('momentAnalysisSchedule', () => {
     const state = withMoment(createInitialState('d1'), ['index.ts', 'reduce.ts', 'types.ts'], 'Code', '2026-01-01T00:00:00.000Z');
     const { effects } = momentAnalysisSchedule(state, windowEvent('2026-01-01T00:05:00.000Z', 'Warp'));
     expect(effects).toHaveLength(2);
+  });
+});
+
+describe('UC1: resolve slots by relevance (U1-F23)', () => {
+  it('puts the promise to someone in this meeting, or whose thing a title names, in a slot before older ones', async () => {
+    const { slotPromises } = await import('./moment-analysis-schedule.js');
+    const p = (id: string, counterparty: string, keys: string[]) => ({ id, promise: { counterparty, keys } }) as never;
+    const five = [p('a', 'Bob', ['x']), p('b', 'Bob', ['y']), p('c', 'Bob', ['z']), p('d', 'Bob', ['w']), p('mira', 'Mira Bakker', ['draft'])];
+    expect(slotPromises(five, { meetingAttendees: ['Mira Bakker'], windowTitles: [] }).map((c: { id: string }) => c.id)).toEqual(['mira', 'a', 'b', 'c']);
+    expect(slotPromises(five, { meetingAttendees: [], windowTitles: ['Draft — Docs'] })[0]).toMatchObject({ id: 'mira' });
   });
 });

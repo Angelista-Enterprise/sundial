@@ -24,6 +24,8 @@ describe('applyLlmResult', () => {
           narrative: 'Fixed the reducer bug.',
         },
       },
+      // The line as an event the fold can read after the moment closed (U2-F9).
+      { type: 'EmitEvent', event: expect.objectContaining({ type: 'moment:intent', payload: expect.objectContaining({ momentId: 'm1', projectId: null, text: 'Debugging the reducer.' }) }) },
     ]);
   });
 
@@ -33,7 +35,7 @@ describe('applyLlmResult', () => {
     const state = createInitialState('d1');
     expect(applyLlmResult(state, resultEvent('intent', 'm1', ANALYSIS_JSON, { evidence: EVIDENCE })).effects).toEqual([]);
     const off = { ...state, judgement: { ...state.judgement, degraded: 'off' as const } };
-    expect(applyLlmResult(off, resultEvent('intent', 'm1', ANALYSIS_JSON, { evidence: EVIDENCE })).effects).toHaveLength(1);
+    expect(applyLlmResult(off, resultEvent('intent', 'm1', ANALYSIS_JSON, { evidence: { ...EVIDENCE, project: '~/p' } })).effects[1]).toMatchObject({ event: { payload: { projectId: '~/p' } } });
   });
 
   it('does nothing for an intent result with unparseable JSON', () => {

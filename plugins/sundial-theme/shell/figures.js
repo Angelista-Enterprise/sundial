@@ -170,3 +170,55 @@ export function renderFigure(figure) {
     el('div', { class: 'surface-body' }, body ?? el('div', { class: 'surface-fail', text: `No renderer for "${figure.kind}" yet.` })),
   ])
 }
+
+/**
+ * Figures in the transcript that can take the stage.
+ *
+ * The node itself moves — no copy — and a stub keeps its place in the turn, so
+ * bringing it back puts it exactly where the record has it. Gnomon lifts a
+ * surface the moment it draws one live; the owner lifts any figure, new or
+ * old, with the act in its head.
+ *
+ * A figure on the board belongs to the BOARD, not to the thread it was drawn
+ * in. Switching threads used to take every staged figure off the board, and
+ * the server stamped each of those removes as the owner's. Now `clear` only
+ * forgets the transcript's nodes: the cards stay where they are, and when the
+ * thread is opened again (or the page reloads onto it) a replayed figure whose
+ * card is still on the board is lifted back into that card, quietly.
+ *
+ * `stage` is the four things this needs from stage.js, passed in so the rule
+ * can be tested without a board.
+ */
+export function figureStage({ onBoard, pane, focusPane, dismissPane }) {
+  const figures = new Map()
+  const lift = (id, { quiet = false } = {}) => {
+    const node = figures.get(id)
+    if (node === undefined) return false
+    if (!node.isConnected || node.closest('.pane-body')) return !quiet && void focusPane(id)
+    const title = node.querySelector('.surface-title')?.textContent || 'Figure'
+    const stub = el('div', { class: 'surface-stub' }, [
+      el('span', { text: `${title} — on the stage` }),
+      el('button', { type: 'button', class: 'link', text: 'bring back', onclick: () => dismissPane(id) }),
+    ])
+    node.replaceWith(stub)
+    // What it shows goes onto the card as its text, so `gnomon_look` reads the
+    // same thing the owner sees.
+    const text = (node.innerText ?? node.textContent ?? '').replace(/\s+\n/g, '\n').trim().slice(0, 4000)
+    pane(id, { title, node, home: stub, text, reading: node.querySelector('.surface-because')?.textContent.replace(/^·\s*/, '') ?? '' })
+    if (!quiet) focusPane(id)
+    return true
+  }
+  return {
+    /** A figure drawn into the transcript. `live`: Gnomon just drew it, so it takes the stage. */
+    add(node, id, { live = false } = {}) {
+      figures.set(id, node)
+      node.querySelector('.surface-head')?.append(el('button', { type: 'button', class: 'stage-act', text: 'Stage', title: 'Bring this to the stage', onclick: () => lift(id) }))
+      if (live) lift(id)
+      else if (onBoard(id)) lift(id, { quiet: true })
+    },
+    /** The board holds a card for `id` and nothing draws it: put the replayed figure back in it. */
+    relift: (id) => lift(id, { quiet: true }),
+    /** The thread leaves the page. Its figures on the board stay there. */
+    clear: () => figures.clear(),
+  }
+}

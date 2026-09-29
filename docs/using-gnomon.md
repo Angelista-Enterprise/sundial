@@ -261,6 +261,8 @@ The tools:
 | `gnomon_anomalies` | The day's unusual patterns |
 | `gnomon_board_traffic` | What happens on the board, and how much is Gnomon's doing |
 | `gnomon_llm_ledger` | Gnomon's model calls and their estimated cost |
+| `gnomon_drift` | Weekly trends with their n: day end, weekend work, meetings, switches, late commits |
+| `gnomon_agent_yield` | What coding agents cost per project and week, and how many sessions ended in a merged PR |
 | `gnomon_compose_figure` | A figure's data (a day, a trend, a fact chain), computed from the record |
 
 Try asking Claude Code what you worked on this week.

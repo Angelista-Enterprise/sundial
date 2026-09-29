@@ -65,7 +65,6 @@ const VALID_ARGS = {
   gnomon_entity_history: { name: 'smoke' },
   gnomon_semantic_search: { query: 'smoke' },
   gnomon_compose_figure: { kind: 'census' },
-  gnomon_show_view: { altitude: 'today' },
 };
 let failures = 0;
 for (const tool of ASK_TOOL_REGISTRY) {

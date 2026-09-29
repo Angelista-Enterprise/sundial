@@ -1,14 +1,18 @@
 import type { ToolDefinition } from '@sundial/llm/types.js';
 import { CONTEXT_TOOLS } from './context-tools.js';
+// lane B
+import { BRIEF_TOOLS } from './brief-tools.js';
 import { EVIDENCE_TOOLS } from './evidence-tools.js';
 import { FIGURE_TOOLS } from './figure-tools.js';
+// lane D
+import { HANDOFF_TOOLS } from './handoff-tools.js';
 import { MEMORY_TOOLS } from './memory-tools.js';
-import { VIEW_TOOLS } from './view-tools.js';
+import { TREND_TOOLS } from './trend-tools.js';
+import { RECALL_TOOLS } from './recall-tools.js';
 import { executeTool, toolDefinitions, type GnomonTool } from './registry.js';
 
 export { UnknownToolError, ToolArgumentError, type GnomonTool } from './registry.js';
-export { ASK_SYSTEM_PROMPT, askContextBlock } from './ask-prompt.js';
-export { VIEW_TOOLS, type ShowViewRequest } from './view-tools.js';
+export { ASK_SYSTEM_PROMPT } from './ask-prompt.js';
 
 /**
  * Every tool Gnomon exposes, in the order a model reads them.
@@ -26,23 +30,17 @@ export { VIEW_TOOLS, type ShowViewRequest } from './view-tools.js';
  * tools already established, so it belongs at the end of the list the same way
  * it belongs at the end of the work.
  */
-export const TOOL_REGISTRY: GnomonTool[] = [...EVIDENCE_TOOLS, ...CONTEXT_TOOLS, ...MEMORY_TOOLS, ...FIGURE_TOOLS];
+// lane D: HANDOFF_TOOLS (#20); lane C: TREND_TOOLS; lane B: BRIEF_TOOLS; lane A: RECALL_TOOLS; the figures stay last.
+export const TOOL_REGISTRY: GnomonTool[] = [...EVIDENCE_TOOLS, ...CONTEXT_TOOLS, ...MEMORY_TOOLS, ...HANDOFF_TOOLS, ...TREND_TOOLS, ...BRIEF_TOOLS, ...RECALL_TOOLS, ...FIGURE_TOOLS];
 
 /**
- * What `/ask` may call: everything shared, plus the tools that drive this app.
- *
- * The split exists because `TOOL_REGISTRY` has two consumers and only one of
- * them is a window. MCP runs in the same user session and is advertised the
- * shared list; if `gnomon_show_view` were in it, Claude Code could move the
- * owner's app while they were reading something else — an actuation on their
- * screen that nobody asked for, arriving from a third party. A tool that drives
- * THIS surface belongs only to THIS surface.
- *
- * Everything read-only stays in the shared list, so the drift that moving the
- * registry here fixed cannot come back: a new evidence tool is still defined
- * once and reaches both.
+ * What the chat may call. The same list MCP is advertised since
+ * `gnomon_show_view`, the one tool that drove the app window, was deleted
+ * (2026-09-28): the chat moves the owner's view through `gnomon_board`, which
+ * is not a kernel tool. A tool that drives the window belongs to the surface
+ * that IS the window, never to this shared list.
  */
-export const ASK_TOOL_REGISTRY: GnomonTool[] = [...TOOL_REGISTRY, ...VIEW_TOOLS];
+export const ASK_TOOL_REGISTRY: GnomonTool[] = TOOL_REGISTRY;
 
 /** The registry as OpenAI-format function definitions, for `/ask`'s tool loop. */
 export function gnomonToolDefinitions(): ToolDefinition[] {

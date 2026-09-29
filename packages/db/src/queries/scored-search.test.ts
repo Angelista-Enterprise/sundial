@@ -6,7 +6,7 @@ import { insertMoment } from './moments.js';
 import { insertKnowledgeEntry } from './knowledge-entries.js';
 import { insertEmbedding } from './embeddings.js';
 import { insertEntityFact, supersedeEntityFact, upsertEntity } from './entities.js';
-import { scoredSearch } from './scored-search.js';
+import { queryNames, scoredSearch } from './scored-search.js';
 
 // D1 (docs/audit/production-proposal-and-enhancements.md, fixes A§5.4) —
 // scoredSearch now embeds the query via `computeEmbedding`, which tries a
@@ -298,6 +298,32 @@ describe('scoredSearch', () => {
     const ids = hits.map((h) => h.refId);
     expect(ids).toContain('f1');
     expect(ids).toContain('f2');
+  });
+
+  it('M5: a query naming an entity, by name or knownAs alias, ranks that entity first', async () => {
+    await upsertEntity({ id: 'person:mira-bakker', kind: 'person', canonicalName: 'Mira Bakker', createdAt: '2026-07-01T00:00:00.000Z' });
+    await upsertEntity({ id: 'person:person-0a1b2c3d4e', kind: 'person', canonicalName: 'person-0a1b2c3d4e', createdAt: '2026-07-01T00:00:00.000Z' });
+    await insertEntityFact({ id: 'mira', entityId: 'person:mira-bakker', predicate: 'worksOn', object: 'puzzlebox-studio', confidence: 60, validFrom: '2026-06-01T00:00:00.000Z', sourceEventId: null, createdAt: '2026-06-01T00:00:00.000Z' });
+    await insertEntityFact({ id: 'alias', entityId: 'person:person-0a1b2c3d4e', predicate: 'knownAs', object: 'Tess Puzzlewood', confidence: 100, validFrom: '2026-06-01T00:00:00.000Z', sourceEventId: null, createdAt: '2026-06-01T00:00:00.000Z' });
+    await insertEntityFact({ id: 'met', entityId: 'person:person-0a1b2c3d4e', predicate: 'attendedMeetingWith', object: 'owner', confidence: 70, validFrom: '2026-06-01T00:00:00.000Z', sourceEventId: null, createdAt: '2026-06-01T00:00:00.000Z' });
+    for (const id of ['mira', 'alias', 'met']) await insertEmbedding({ id: `e-${id}`, refType: 'entity_fact', refId: id, model: 'local-hash-256-v1', vector: computeLocalEmbedding(`fact ${id}`), createdAt: '2026-06-01T00:00:00.000Z' });
+    // Decoys the embedding and BM25 both like better: recent, and full of the query's words.
+    for (let i = 0; i < 12; i++) {
+      const text = `who is Mira talking to about Bakker street ${i}`;
+      await insertMoment({ id: `n${i}`, startTime: '2026-07-01T10:00:00.000Z', endTime: '2026-07-01T10:10:00.000Z', durationMs: 600_000, processName: 'Code', data: { processName: 'Code', windowTitles: [text] }, importanceScore: 9, projectId: null });
+      await insertEmbedding({ id: `ne${i}`, refType: 'moment', refId: `n${i}`, model: 'local-hash-256-v1', vector: computeLocalEmbedding(`Code ${text}`), createdAt: '2026-07-01T10:10:00.000Z' });
+    }
+    expect((await scoredSearch('Mira Bakker', 5, '2026-07-01T11:00:00.000Z'))[0].refId).toBe('mira');
+    const [first, second] = await scoredSearch('who is Tess Puzzlewood?', 5, '2026-07-01T11:00:00.000Z');
+    expect([first.refId, second.refId].sort()).toEqual(['alias', 'met']);
+  });
+
+  it('M5: a one-word name names only a query that is exactly it; a longer name, a whole-word run', () => {
+    expect(queryNames('  Mira? ', 'mira')).toBe(true);
+    expect(queryNames('is Mira free today', 'Mira')).toBe(false);
+    expect(queryNames('who is Mira Bakker?', 'Mira Bakker')).toBe(true);
+    expect(queryNames('who is Mira Bakkerson', 'Mira Bakker')).toBe(false);
+    expect(queryNames('ab', 'ab')).toBe(false);
   });
 
   it('respects the limit', async () => {

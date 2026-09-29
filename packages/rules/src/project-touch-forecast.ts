@@ -1,6 +1,7 @@
 import { deriveId } from '@sundial/helpers/derive-id.js';
+import { localDate as localDay, localHour } from '@sundial/helpers/local-day.js';
 import type { Effect, KernelState, ProjectTouchedPrediction, ResolvedPrediction, Rule } from '@sundial/kernel/types.js';
-import { bumpCalibration, clampProb, pastRate } from './forward-model.js';
+import { bumpCalibration, clampProb, hasSkill, pastRate } from './forward-model.js';
 import { MAX_ACCUMULATED } from './surprise-drive.js';
 
 /**
@@ -69,15 +70,6 @@ const ACTIVE_HOUR_MIN_EMITS = 3;
 /** Names the METHOD, not the rule, so a conditioned or LLM-enhanced competitor on this target can be scored apart from it. */
 export const PROJECT_TOUCH_FORECASTER = 'project-rate';
 
-function localDay(ts: string): string {
-  const d = new Date(ts);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-function localHour(ts: string): number {
-  return new Date(ts).getHours();
-}
-
 /** Whole days between two local day keys, positive when `later` is after `earlier`. */
 function daysBetween(earlier: string, later: string): number {
   return Math.round((new Date(`${later}T12:00:00`).getTime() - new Date(`${earlier}T12:00:00`).getTime()) / 86_400_000);
@@ -137,6 +129,7 @@ function closeDay(state: KernelState, ts: string): { state: KernelState; effects
   let byProject = slice.byProject;
   let recentResolved = state.predictions.recentResolved;
   let importance = state.memory.accumulatedImportance;
+  const skilled = hasSkill(state.predictions.calibration, 'project-touched');
   const effects: Effect[] = [];
 
   for (const bet of bets) {
@@ -154,7 +147,7 @@ function closeDay(state: KernelState, ts: string): { state: KernelState; effects
     // The one master surprise scalar, shared with the other forecasters and
     // `anomalyZscore` — mood and reflection read the accumulator, never a
     // single forecaster's record.
-    importance = Math.min(MAX_ACCUMULATED, importance + -Math.log(pActual));
+    if (skilled) importance = Math.min(MAX_ACCUMULATED, importance + -Math.log(pActual));
     effects.push({
       type: 'RecordPrediction',
       id: bet.id,
@@ -256,7 +249,7 @@ export const projectTouchForecast: Rule = (state, event) => {
   if (event.type === 'window:changed') {
     const project = state.window.attribution.projectId;
     if (project === null || project === '') return { state, effects: [] };
-    const day = localDay(event.ts);
+    const day = localDay(event.ts, state.config.timezone);
     const list = slice.touched[day] ?? [];
     if (list.includes(project) && slice.lastTouched[project] === day) return { state, effects: [] };
     return {
@@ -277,11 +270,11 @@ export const projectTouchForecast: Rule = (state, event) => {
 
   if (event.type !== 'input:activity') return { state, effects: [] };
 
-  const day = localDay(event.ts);
+  const day = localDay(event.ts, state.config.timezone);
   // The day is already open: nothing to promote.
   if (slice.day === day) return { state, effects: [] };
 
-  const key = `${day}|${localHour(event.ts)}`;
+  const key = `${day}|${localHour(event.ts, state.config.timezone)}`;
   const emitsThisHour = slice.emitsKey === key ? slice.emitsThisHour + 1 : 1;
   const counted: KernelState = { ...state, predictions: { ...state.predictions, projectTouch: { ...slice, emitsThisHour, emitsKey: key } } };
   if (emitsThisHour !== ACTIVE_HOUR_MIN_EMITS) return { state: counted, effects: [] };

@@ -64,7 +64,16 @@ const EXPLICIT: Record<string, Cardinality> = {
   partOf: 'functional',
 };
 
-export function predicateCardinality(predicate: string): Cardinality {
+/**
+ * lane Q: one entity kind where a set-valued predicate has one value. A task
+ * (a ticket, a branch) belongs to one project; set-valued, a stray window
+ * title filed a second and a third, and six live tasks held 2 to 5 current
+ * `relatesToProject` facts at once.
+ */
+const FUNCTIONAL_FOR_KIND: Record<string, Record<string, true>> = { task: { relatesToProject: true } };
+
+export function predicateCardinality(predicate: string, entityKind?: string): Cardinality {
+  if (entityKind !== undefined && FUNCTIONAL_FOR_KIND[entityKind]?.[predicate]) return 'functional';
   const explicit = EXPLICIT[predicate];
   if (explicit) return explicit;
   return /^(primary|current|main)/i.test(predicate) ? 'functional' : 'set';

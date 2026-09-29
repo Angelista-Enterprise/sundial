@@ -21,6 +21,7 @@ describe('the tool registry', () => {
       'gnomon_current_context',
       'gnomon_tickets',
       'gnomon_test_rule',
+      'gnomon_mine_rules',
       'gnomon_today_summary',
       'gnomon_moment_detail',
       'gnomon_recent_activity',
@@ -45,6 +46,17 @@ describe('the tool registry', () => {
       'gnomon_people',
       'gnomon_entity_history',
       'gnomon_semantic_search',
+      // lane D — #20: a project's handoff, written from the record.
+      'gnomon_project_handoff',
+      // lane C: weekly trends in how the owner works, and what the agents cost and yielded.
+      'gnomon_drift',
+      'gnomon_agent_yield',
+      // lane B: the standup draft, a meeting's prep and the week, on demand.
+      'gnomon_brief',
+      // lane A: "did I…?", the flight recorder, and the policy replay.
+      'gnomon_did_i',
+      'gnomon_timeline',
+      'gnomon_what_if',
       // Last on purpose: a model shown the drawing tool early reaches for it
       // before it has anything to draw. See the ordering note in `index.ts`.
       'gnomon_compose_figure',
@@ -57,25 +69,13 @@ describe('the tool registry', () => {
    *
    * `TOOL_REGISTRY` is what the MCP server advertises, and MCP runs in the same
    * user session as any other local client. A write tool reaching this list
-   * would let a third party act through Gnomon's own credentials — for
-   * `gnomon_show_view` specifically, moving the owner's window while they were
-   * reading something else. The first write tool did land (2026-08-15); it went
-   * into `ASK_TOOL_REGISTRY` instead, and this test is what keeps that split
-   * from quietly eroding.
+   * would let a third party act through Gnomon's own credentials — moving the
+   * owner's window while they were reading something else, say. This test is
+   * what keeps that from quietly eroding.
    */
   it('advertises nothing that writes — the shared list is what MCP exposes to other local clients', () => {
     expect(TOOL_REGISTRY.every((tool) => tool.readOnly)).toBe(true);
-    expect(TOOL_REGISTRY.map((tool) => tool.name)).not.toContain('gnomon_show_view');
-  });
-
-  it("gives /ask the view tool the shared list withholds, and marks it as not a read", () => {
-    const showView = ASK_TOOL_REGISTRY.find((tool) => tool.name === 'gnomon_show_view');
-    expect(showView).toBeDefined();
-    // The flag is the mechanical way the loop and the audit trail tell an
-    // action from a query, rather than by parsing the name.
-    expect(showView?.readOnly).toBe(false);
-    // Everything else /ask can call is still a pure read.
-    expect(ASK_TOOL_REGISTRY.filter((tool) => !tool.readOnly).map((tool) => tool.name)).toEqual(['gnomon_show_view']);
+    expect(ASK_TOOL_REGISTRY.every((tool) => tool.readOnly)).toBe(true);
   });
 
   it('derives a JSON Schema object for every tool', () => {

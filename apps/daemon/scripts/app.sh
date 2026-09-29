@@ -19,6 +19,12 @@ if [[ "$(uname)" != "Darwin" ]]; then
 fi
 
 # The real install keeps the app in /Applications (SUNDIAL_APP_PATH, from bin/sundial); a test install in its data folder.
+# lane H (H7): run by hand (`pnpm sidecars:build`), the variable is unset; the
+# install's own app.env says where its app is, so a stray bundle never lands in the data folder.
+APP_ENV="${SUNDIAL_HOME:-$HOME/.sundial}/app.env"
+if [[ -z "${SUNDIAL_APP_PATH:-}" && -f "$APP_ENV" ]]; then
+  SUNDIAL_APP_PATH="$(sed -n 's/^SUNDIAL_APP_PATH=//p' "$APP_ENV" | tail -n 1)"
+fi
 APP_DIR="${SUNDIAL_APP_PATH:-${SUNDIAL_HOME:-$HOME/.sundial}/Sundial.app}"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
@@ -65,6 +71,10 @@ NEW_PLIST='<?xml version="1.0" encoding="UTF-8"?>
   <string>Sundial reads your calendar to know when you are in a meeting, and writes an event only when you approve one.</string>
   <key>NSContactsUsageDescription</key>
   <string>Sundial reads contact names so the people in your calendar appear by name instead of as an anonymous id.</string>
+  <key>NSRemindersUsageDescription</key>
+  <string>Sundial can keep a promise you made as a reminder, with its due date, and notices when you complete it. It writes a reminder only when you approve one.</string>
+  <key>NSRemindersFullAccessUsageDescription</key>
+  <string>Sundial can keep a promise you made as a reminder, with its due date, and notices when you complete it. It writes a reminder only when you approve one.</string>
   <key>NSCalendarsFullAccessUsageDescription</key>
   <string>Sundial reads your calendar to know when you are in a meeting, and writes an event only when you approve one.</string>
 </dict>
@@ -99,7 +109,9 @@ fi
 # Stamps live OUTSIDE the bundle. A file inside Contents/MacOS that is not
 # code makes the whole bundle unsignable ("code object is not signed at all"),
 # which `|| true` on codesign used to hide.
-STAMP_DIR="${SUNDIAL_HOME:-$HOME/.sundial}/.daemon/stage-stamps"
+# Per destination bundle: a stamp written while staging one app must never mark
+# another app (a test install, a moved app) as up to date.
+STAMP_DIR="${SUNDIAL_HOME:-$HOME/.sundial}/.daemon/stage-stamps/$(printf %s "$APP_DIR" | shasum | cut -c1-12)"
 mkdir -p "$STAMP_DIR"
 rm -f "$MACOS_DIR"/.*.src-sha 2>/dev/null
 

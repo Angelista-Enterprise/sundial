@@ -120,7 +120,8 @@ export function salienceFromConfidence(confidence: number): number {
 }
 
 /**
- * Weights measured with `measure-retrieval.ts` over the real corpus rather than
+ * Weights measured with `measure-retrieval.ts` (removed in 9a6988c; recoverable
+ * with `git show 9a6988c^:apps/daemon/src/scripts/measure-retrieval.ts`) over the real corpus rather than
  * chosen by taste, because the shipped 0.3/0.3/0.4 was demonstrably wrong and
  * "looks balanced" is what made it look right.
  *
@@ -145,8 +146,8 @@ export function salienceFromConfidence(confidence: number): number {
  * probe has no way to score. So the metric is used as a threshold to clear, not
  * a quantity to maximise: these weights clear it with margin (55% against a 50%
  * gate) while retaining twice the non-relevance signal of the better-scoring
- * candidate. Re-measure before moving them — `measure-retrieval.ts` fails if
- * whatever is set here is not among the weightings it compares.
+ * candidate. Re-measure before moving them — `measure-retrieval.ts` failed if
+ * whatever was set here was not among the weightings it compared.
  */
 export const DEFAULT_SCORE_WEIGHTS: ScoreWeights = { recency: 0.1, salience: 0.1, relevance: 0.8 };
 

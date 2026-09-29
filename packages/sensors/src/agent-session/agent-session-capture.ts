@@ -46,6 +46,8 @@ const SESSION_ACTIVE_MS = 30 * 60 * 1000;
 
 /** A transcript line is only inspected far enough to find the cwd; a session's cwd is fixed, so it is always in the opening records. */
 const MAX_LINES_SCANNED = 40;
+/** Bytes read from the start of a transcript to find those lines. */
+export const LOCATOR_HEAD_BYTES = 64 * 1024;
 
 /**
  * How much more recent the winning session must be than the newest session in
@@ -123,10 +125,17 @@ function newestPerProject(root: string, now: number): { file: string; mtimeMs: n
  * `cwd`. Message content is never touched: the loop breaks as soon as the two
  * locator fields are known, and nothing else is copied out of the parsed record.
  */
-function readSessionLocator(file: string): AgentSessionSnapshot | null {
+export function readSessionLocator(file: string): AgentSessionSnapshot | null {
   let head: string;
   try {
-    head = fs.readFileSync(file, 'utf-8');
+    // Only the head: a transcript runs to tens of MB, and this is read every 15 s (U3-F11).
+    const fd = fs.openSync(file, 'r');
+    try {
+      const buf = Buffer.alloc(LOCATOR_HEAD_BYTES);
+      head = buf.toString('utf-8', 0, fs.readSync(fd, buf, 0, LOCATOR_HEAD_BYTES, 0));
+    } finally {
+      fs.closeSync(fd);
+    }
   } catch {
     return null;
   }

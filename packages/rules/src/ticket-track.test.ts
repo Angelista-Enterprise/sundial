@@ -11,7 +11,7 @@ const fold = (events: SanitizedEvent[], state: KernelState = { ...createInitialS
 
 describe('ticketKeys', () => {
   it('takes tracker keys and leaves standards, rooms, clocks and zero alone', () => {
-    expect(ticketKeys('BOX-538 Feedback · RTM-1-08 · AMS-1-07 · AUDIT-2026 · UTF-8 · ISO-8601 · PR-3651 · CC87-4809 · BOX-0 · PL-448')).toEqual(['BOX-538', 'PL-448']);
+    expect(ticketKeys('BOX-538 Feedback · HQ-2-14 · HQ-3-02 · AUDIT-2026 · UTF-8 · ISO-8601 · PR-1234 · ZX12-3456 · BOX-0 · KIT-448')).toEqual(['BOX-538', 'KIT-448']);
   });
 });
 

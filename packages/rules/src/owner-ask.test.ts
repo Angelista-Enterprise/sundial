@@ -217,8 +217,8 @@ describe('ownerAsk', () => {
    */
   describe('a question the owner cannot answer is never opened', () => {
     it('refuses a question quoting a person-<hash> alias', () => {
-      const question = 'Who is person-c7e3af19c4? They were in "Android developer meeting" with you and person-fdc656585a, Acme Office, person-44d889e0a7.';
-      const { state, effects } = ownerAsk(createInitialState('d1'), opened({ askId: 'owner-ask:who-person-c7e3af19c4', question }));
+      const question = 'Who is person-9f8e7d6c5b? They were in "Android developer meeting" with you and person-a1a2a3a4a5, Acme Office, person-b1b2b3b4b5.';
+      const { state, effects } = ownerAsk(createInitialState('d1'), opened({ askId: 'owner-ask:who-person-9f8e7d6c5b', question }));
       expect(state.ownerAsk.open).toBeNull();
       expect(state.ownerAsk.askedCount).toBe(0);
       expect(effects).toEqual([]);
@@ -249,12 +249,12 @@ describe('the ask gate', () => {
   // decisions an ask had ever had on 2026-09-22, `habituation` was 1.0 and
   // `weight` was 2.0 on every single one. The stimulus is the TEMPLATE.
   it('reads the class off the id, never off the question text', () => {
-    expect(askClass('owner-ask:who-person-35941f3bc4')).toBe('who');
+    expect(askClass('owner-ask:who-person-4b3c2d1e0f')).toBe('who');
     expect(askClass('owner-ask:meeting-01M33YM3C0M2')).toBe('meeting');
     expect(askClass('owner-ask:goals-2026-09-20')).toBe('goals');
     expect(askClass('owner-ask:mtlewddl')).toBe('other');
     // Ids arrive with and without the prefix; `askKey` already settles that.
-    expect(askClass('who-person-35941f3bc4')).toBe('who');
+    expect(askClass('who-person-4b3c2d1e0f')).toBe('who');
   });
 
   it('starts at full volume, so an unjudged class asks exactly as it always did', () => {
@@ -301,8 +301,8 @@ describe('the owner verdict survives a boot', () => {
   // record holds is from 2026-09-21 — without the rebuild the consumer would
   // have started at zero on the very machine whose owner had already pressed.
   it('rebuilds the same gain a live fold would have produced', () => {
-    const live = feedbackVerdictFold([{ askId: 'owner-ask:who-person-35941f3bc4', verdict: 'wrong', at: NOW }]);
-    expect(rebuildAskClassGain([{ askId: 'owner-ask:who-person-35941f3bc4', verdict: 'wrong', at: NOW }])).toEqual(live);
+    const live = feedbackVerdictFold([{ askId: 'owner-ask:who-person-4b3c2d1e0f', verdict: 'wrong', at: NOW }]);
+    expect(rebuildAskClassGain([{ askId: 'owner-ask:who-person-4b3c2d1e0f', verdict: 'wrong', at: NOW }])).toEqual(live);
   });
 
   it('folds oldest first, whatever order the rows arrive in', () => {

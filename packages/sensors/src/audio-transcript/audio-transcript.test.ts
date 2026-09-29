@@ -195,6 +195,24 @@ describe('AudioTranscriptSensor', () => {
     expect(sensor.poll().map((e) => e.payload.channel)).toEqual(['system', 'mic', undefined]);
   });
 
+  it("drops whisper's silence phrases only when they are the whole utterance", () => {
+    append(line('start'));
+    const sensor = new AudioTranscriptSensor({ enabled: true, file });
+    sensor.poll();
+    append(line('Thank you.') + line('Gracias!') + line('you') + line('I don\'t know what to do.') + line('Thank you, Mira, I will send it tonight.'));
+    expect(spoken(sensor.poll())).toEqual(['Thank you, Mira, I will send it tonight.']);
+  });
+
+  it('drops a guess below the log-probability floor, and carries the number on the rest', () => {
+    append(line('start'));
+    const sensor = new AudioTranscriptSensor({ enabled: true, file });
+    sensor.poll();
+    append(line('gemompel', { avgLogprob: -1.4 }) + line('duidelijk', { avgLogprob: -0.3 }) + line('van een oude helper', { avgLogprob: undefined }));
+    const events = sensor.poll();
+    expect(spoken(events)).toEqual(['duidelijk', 'van een oude helper']);
+    expect(events.map((e) => e.payload.avgLogprob)).toEqual([-0.3, 0]);
+  });
+
   it('ignores a one-character guess — a cough is not a word', () => {
     append(line('start'));
     const sensor = new AudioTranscriptSensor({ enabled: true, file });

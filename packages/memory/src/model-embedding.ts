@@ -27,8 +27,8 @@ function modelName(): string {
 let pipelinePromise: Promise<FeatureExtractionPipeline> | null = null;
 
 /**
- * PE — surface the one-time model download to whoever is watching (the daemon
- * log, or a `gnomon journal`/`gnomon start` invocation). `@xenova` emits
+ * PE — surface the one-time model download to whoever is watching (the
+ * harness log, `$SUNDIAL_HOME/logs/sundial.log`). `@xenova` emits
  * `initiate`/`progress`/`done` per file; we log a single "downloading" heads-up
  * the first time a download starts and a "ready" line when it finishes, on
  * stderr so it never pollutes command stdout. Silent on subsequent runs (the
@@ -71,8 +71,20 @@ function getExtractor(): Promise<FeatureExtractionPipeline> {
  * trick, so a first-run with no network degrades retrieval rather than breaking
  * ingestion.
  */
+/**
+ * How long one embedding waits for the model to load. The executor is serial,
+ * so a first-run download on a slow or blocked network would hold every event
+ * behind it; past this, the call throws (the hashing fallback answers) and the
+ * load goes on in the background for the next call.
+ */
+export const MODEL_LOAD_WAIT_MS = 10_000;
+
 export async function computeModelEmbedding(text: string): Promise<number[]> {
-  const extractor = await getExtractor();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('the local embedding model is still loading')), MODEL_LOAD_WAIT_MS);
+  });
+  const extractor = await Promise.race([getExtractor(), late]).finally(() => clearTimeout(timer));
   const output = await extractor(text, { pooling: 'mean', normalize: true });
   return Array.from(output.data as Float32Array);
 }

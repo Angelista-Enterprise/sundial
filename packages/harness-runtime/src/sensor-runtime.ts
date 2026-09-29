@@ -1,6 +1,6 @@
 /**
- * SensorRuntime — Gnomon's 20 sensors, packaged for the dsh process
- * (Phase 3 of PLAN.md; the `gnomon-sensors` plugin is the thin adapter).
+ * SensorRuntime — Gnomon's 28 capture sources, packaged for the dsh process
+ * (Phase 3 of PLAN.md; the `sundial-sensors` plugin is the thin adapter).
  *
  * ORIGIN: ported from `apps/daemon/src/daemon/index.ts` — sensor
  * construction (:171-201), the cross-sensor wiring (`crossWire`,
@@ -13,17 +13,18 @@
  *
  * INVARIANT (PLAN.md #6): this process never spawns TCC-gated subprocesses.
  * Every macOS-permission-gated sensor here READS a sidecar JSON written by
- * the Swift launcher's children (`~/.sundial/Sundial.app`, started
- * separately via `apps/harness/bin/sundial-sidecars.js`). Sidecar staleness
+ * the Swift launcher's children (Sundial.app starts the launcher as its own
+ * child; a --no-app install's LaunchAgent runs
+ * `apps/harness/bin/sundial-sidecars.js start`). Sidecar staleness
  * is surfaced by `getSensorHealth()`; nothing is ever respawned from here.
  *
  * SANCTIONED EXCEPTION — calendar (grandfathered, PLAN.md Phase 3 decision):
  * `CalendarSensor` still `execFile`s `sundial-calendar-helper` from the app
  * bundle on demand, exactly as the daemon did. EventKit has no
  * file-sidecar shape (the helper answers a query, it doesn't stream state),
- * and the helper carries the bundle's code identity. Note the TCC
- * responsibility chain now bottoms out at whatever starts dsh (the terminal
- * or launchd), so Calendar consent may need re-granting after the cutover.
+ * and the helper carries the bundle's code identity. The TCC
+ * responsibility chain bottoms out at whatever starts dsh: Sundial.app, or
+ * launchd for a --no-app install.
  */
 import fs from 'node:fs';
 import { getSundialHome } from '@sundial/helpers/config.js';
@@ -35,7 +36,9 @@ import { consentedNetworkFingerprint } from '@sundial/rules/presence-track.js';
 import type { KernelState } from '@sundial/kernel/index.js';
 import {
   AgentFleetSensor,
+  ArcTabsSensor,
   AgentSessionSensor,
+  ClaudeHookSensor,
   AudioContextSensor,
   ScreenOcrSensor,
   AudioTranscriptSensor,
@@ -62,8 +65,15 @@ import {
   BrowserHelperSupervisor,
   localFilePathFromDocument,
   pollWindowSensor,
+  readAudioStatus,
 } from '@sundial/sensors/index.js';
-import { getSensorHealth, type SensorHealth } from './sensor-health.js';
+import { getSensorHealth, healthSignal, type SensorHealth } from './sensor-health.js';
+// lane H
+import { isSundialConfigUnreadable } from '@sundial/helpers/sundial-config.js';
+import { getScreenOcrStatusJsonPath } from '@sundial/helpers/sundial-paths.js';
+
+/** lane H (H2): how often the sidecars' health is read into a `sensor:health` state. */
+export const HEALTH_POLL_MS = 60_000;
 
 /**
  * C3 — `projects.rootPath` is stored already-redacted (`~/...`), but
@@ -95,7 +105,7 @@ export class SensorRuntime {
   private pollTimer: NodeJS.Timeout | null = null;
   private pollInFlight = false;
 
-  // The 20 sensors, constructed exactly as the daemon did (:171-201).
+  // The sensors, constructed as the daemon did (:171-201), plus the ones added since.
   // Event-driven ones (git sweep, file watcher) push through the same
   // handleSensorEvent path as poll-driven ones.
   private readonly gitSensor = new GitSensor((e) => {
@@ -111,6 +121,8 @@ export class SensorRuntime {
   private readonly projectSensor = new ProjectSensor();
   private readonly agentSessionSensor = new AgentSessionSensor();
   private readonly agentFleetSensor = new AgentFleetSensor();
+  private readonly arcTabsSensor = new ArcTabsSensor();
+  private readonly claudeHookSensor = new ClaudeHookSensor();
   private readonly calendarSensor = new CalendarSensor();
   private readonly focusModeSensor = new FocusModeSensor();
   private readonly inputActivitySensor = new InputActivitySensor();
@@ -124,7 +136,7 @@ export class SensorRuntime {
   private readonly browserSensor: BrowserSensor;
   /** J3.3: a local vision model over the OCR helper's frame, when `ocr.vision.enabled`. */
   private readonly screenVisionSensor: ScreenVisionSensor;
-  /** J3.6: Mail.app / Messages subjects and senders, when `privacy.mail` (and Full Disk Access). */
+  /** J3.6: Mail.app subjects and senders when `privacy.mail`, Messages senders when `privacy.messages` (both need Full Disk Access). */
   private readonly mailSensor: MailSensor;
   /** Opt-in, off by default — gated on `config.clipboardEnabled`, same as the daemon's startDaemon reconstruction. */
   private readonly clipboardMetaSensor: ClipboardMetaSensor;
@@ -134,6 +146,11 @@ export class SensorRuntime {
   private readonly hearingWindowPath: string;
   /** Last window written, so a one-second poll does not rewrite an unchanged file. */
   private lastHearingWindow = '';
+  // lane H (H2, H8)
+  /** When `sensor:health` was last read; the first poll reads it at once. */
+  private lastHealthAt = 0;
+  /** Read at boot, with the config it describes: the defaults this process runs on. */
+  private readonly configUnreadable = isSundialConfigUnreadable();
 
   constructor(options: SensorRuntimeOptions) {
     this.appendSignal = options.appendSignal;
@@ -146,7 +163,7 @@ export class SensorRuntime {
     // J3.4: the helper reads the page's text too when the owner has not turned it off; the browser must allow JavaScript from Apple Events.
     this.browserSensor = new BrowserSensor({ supervisor: new BrowserHelperSupervisor(undefined, this.config.browser.pageText ? ['--page-text'] : []) });
     this.screenVisionSensor = new ScreenVisionSensor({ enabled: this.config.ocr.enabled && this.config.ocr.vision.enabled, model: this.config.ocr.vision.model, intervalMs: this.config.ocr.vision.intervalMs });
-    this.mailSensor = new MailSensor({ enabled: this.config.privacy.mail });
+    this.mailSensor = new MailSensor({ enabled: this.config.privacy.mail, messages: this.config.privacy.messages });
     this.hearingWindowPath = path.join(getSundialHome(), '.daemon', 'audio-listen.json');
     // J3.5: the vault, only when the owner named one. Paths only.
     this.vaultSensor = this.config.vault
@@ -193,7 +210,7 @@ export class SensorRuntime {
 
   /** Sidecar freshness + TCC grant snapshot (never respawns anything). */
   getSensorHealth(): SensorHealth {
-    return getSensorHealth(this.config);
+    return { ...getSensorHealth(this.config), ocrSecureInputDrops: { ...this.screenOcrSensor.secureInputDrops } };
   }
 
   /**
@@ -277,125 +294,130 @@ export class SensorRuntime {
     }
   }
 
-  /** One poll pass over every poll-driven sensor. Ported verbatim from pollTick (:1386-1485); each sensor self-gates internally. */
+  /**
+   * One poll pass over every poll-driven sensor. Ported from pollTick (:1386-1485); each sensor self-gates internally.
+   * Each sensor runs in its own `step`, so one that throws loses only its own
+   * reading for this tick, never every sensor after it.
+   */
   private async pollTick(): Promise<void> {
-    const windowEvent = pollWindowSensor();
-    if (windowEvent) {
-      await this.handleSensorEvent(windowEvent.type, { ...windowEvent.payload });
-    }
+    type Emitted = { type: string; payload: object };
+    const emit = async (events: Iterable<Emitted> | Emitted | null | undefined): Promise<void> => {
+      if (!events) return;
+      for (const e of Symbol.iterator in events ? events : [events]) await this.handleSensorEvent(e.type, { ...e.payload } as Record<string, unknown>);
+    };
+    const step = async (name: string, run: () => Promise<unknown> | unknown): Promise<void> => {
+      try {
+        await run();
+      } catch (error) {
+        console.error(`[sundial-sensors] ${name} poll failed:`, error);
+      }
+    };
+
+    await step('window', () => emit(pollWindowSensor()));
 
     // Shell focus gate: commands read from the hook file are attributed to a
     // focused terminal via the LIVE kernel state's active window.
-    const currentProcessName = this.getState()?.window.active?.processName ?? null;
-    for (const shellEvent of this.shellSensor.poll(currentProcessName)) {
-      // L2 — the command's own captured time becomes the event ts (replay
-      // orders by ULID id, never by ts, so historical ts values are safe).
-      const capturedTs = typeof shellEvent.payload.timestamp === 'string' ? shellEvent.payload.timestamp : undefined;
-      await this.handleSensorEvent(shellEvent.type, shellEvent.payload, capturedTs);
-    }
+    await step('shell', async () => {
+      const currentProcessName = this.getState()?.window.active?.processName ?? null;
+      for (const shellEvent of this.shellSensor.poll(currentProcessName)) {
+        // L2 — the command's own captured time becomes the event ts (replay
+        // orders by ULID id, never by ts, so historical ts values are safe).
+        const capturedTs = typeof shellEvent.payload.timestamp === 'string' ? shellEvent.payload.timestamp : undefined;
+        await this.handleSensorEvent(shellEvent.type, shellEvent.payload, capturedTs);
+      }
+    });
 
-    await this.handleSensorEvent('agent:session', this.agentSessionSensor.poll().payload);
-    await this.handleSensorEvent('agent:fleet', this.agentFleetSensor.poll().payload);
+    await step('agent-session', () => this.handleSensorEvent('agent:session', this.agentSessionSensor.poll().payload));
+    await step('agent-fleet', () => this.handleSensorEvent('agent:fleet', this.agentFleetSensor.poll().payload));
+    // Claude Code's report-only hooks, at each line's own time.
+    await step('claude-hook', async () => {
+      for (const hook of this.claudeHookSensor.poll()) await this.handleSensorEvent(hook.type, hook.payload, hook.ts);
+    });
 
-    const focusModeEvent = this.focusModeSensor.poll();
-    if (focusModeEvent) {
-      await this.handleSensorEvent(focusModeEvent.type, focusModeEvent.payload);
-    }
-
+    await step('focus-mode', () => emit(this.focusModeSensor.poll()));
     // The browser tab: the helper is spawned by the sensor on first poll and
     // re-execs itself disclaimed (see macos-browser-helper.swift).
-    for (const factEvent of this.screenVisionSensor.poll()) {
-      await this.handleSensorEvent(factEvent.type, factEvent.payload);
-    }
-    for (const mailEvent of this.mailSensor.poll()) {
-      await this.handleSensorEvent(mailEvent.type, mailEvent.payload);
-    }
-    for (const browserEvent of this.browserSensor.poll()) {
-      await this.handleSensorEvent(browserEvent.type, browserEvent.payload);
-    }
-
-    const inputActivityEvent = this.inputActivitySensor.poll();
-    if (inputActivityEvent) {
-      await this.handleSensorEvent(inputActivityEvent.type, inputActivityEvent.payload);
-    }
-
-    const notificationEvent = this.notificationSensor.poll();
-    if (notificationEvent) {
-      await this.handleSensorEvent(notificationEvent.type, notificationEvent.payload);
-    }
+    await step('screen-vision', () => emit(this.screenVisionSensor.poll()));
+    await step('mail', () => emit(this.mailSensor.poll()));
+    await step('browser', () => emit(this.browserSensor.poll()));
+    // Arc's tabs in the focused space, on change only (UC2: restore the space the owner left).
+    await step('arc-tabs', () => emit(this.arcTabsSensor.poll()));
+    await step('input-activity', () => emit(this.inputActivitySensor.poll()));
+    await step('notification', () => emit(this.notificationSensor.poll()));
 
     // Calendar is on-demand (execFile — the grandfathered TCC exception, see
     // the file header), self-gated to its own poll interval internally.
-    const calendarEvents = await this.calendarSensor.poll();
-    for (const calendarEvent of calendarEvents) {
-      await this.handleSensorEvent(calendarEvent.type, calendarEvent.payload);
-    }
-
-    const audioContextEvents = this.audioContextSensor.poll();
-    for (const audioContextEvent of audioContextEvents) {
-      await this.handleSensorEvent(audioContextEvent.type, audioContextEvent.payload);
-    }
-
-    const screenOcrEvents = this.screenOcrSensor.poll();
-    for (const screenOcrEvent of screenOcrEvents) {
-      await this.handleSensorEvent(screenOcrEvent.type, screenOcrEvent.payload);
-    }
+    await step('calendar', async () => emit(await this.calendarSensor.poll()));
+    await step('audio-context', () => emit(this.audioContextSensor.poll()));
+    await step('screen-ocr', () => emit(this.screenOcrSensor.poll()));
 
     // Tell the audio sidecar whether to have the microphone open. The DECISION
     // is the `hearingWindow` rule's, folded into state like everything else;
     // this only projects it onto the file the Swift helper watches, because a
     // sidecar cannot read `KernelState`.
-    this.publishHearingWindow();
+    await step('hearing-window', () => this.publishHearingWindow());
 
     // Ambient hearing. Reads whatever the audio sidecar appended since the last
     // poll, so a pause here delays utterances rather than dropping them.
-    const audioTranscriptEvents = this.audioTranscriptSensor.poll();
-    for (const audioTranscriptEvent of audioTranscriptEvents) {
-      await this.handleSensorEvent(audioTranscriptEvent.type, audioTranscriptEvent.payload);
-    }
+    await step('audio-transcript', () => emit(this.audioTranscriptSensor.poll()));
 
     // bluetooth-audio/system-power/location-network/clipboard-meta all
     // self-gate to their own (much longer) poll intervals internally.
-    const bluetoothEvents = await this.bluetoothAudioSensor.poll();
-    for (const bluetoothEvent of bluetoothEvents) {
-      await this.handleSensorEvent(bluetoothEvent.type, bluetoothEvent.payload);
-    }
-
-    const systemPowerEvent = await this.systemPowerSensor.poll();
-    if (systemPowerEvent) {
-      await this.handleSensorEvent(systemPowerEvent.type, systemPowerEvent.payload);
-    }
-
-    const locationNetworkEvent = await this.locationNetworkSensor.poll();
-    if (locationNetworkEvent) {
-      await this.handleSensorEvent(locationNetworkEvent.type, locationNetworkEvent.payload);
-    }
-
-    const clipboardEvent = await this.clipboardMetaSensor.poll();
-    if (clipboardEvent) {
-      await this.handleSensorEvent(clipboardEvent.type, clipboardEvent.payload);
-    }
+    await step('bluetooth-audio', async () => emit(await this.bluetoothAudioSensor.poll()));
+    await step('system-power', async () => emit(await this.systemPowerSensor.poll()));
+    await step('location-network', async () => emit(await this.locationNetworkSensor.poll()));
+    await step('clipboard-meta', async () => emit(await this.clipboardMetaSensor.poll()));
 
     // Presence consent gate: a subnet sweep runs only on a network the owner
     // explicitly granted — `consentedNetworkFingerprint` over the LIVE state
     // keeps the permission in exactly one place (the folded presence:consent events).
-    const state = this.getState();
-    const presenceEvent = state?.config.experiments?.presence ? await this.presenceSensor.poll(consentedNetworkFingerprint(state)) : null;
-    if (presenceEvent) {
-      await this.handleSensorEvent(presenceEvent.type, presenceEvent.payload);
-    }
+    await step('presence', async () => {
+      const state = this.getState();
+      await emit(state?.config.experiments?.presence ? await this.presenceSensor.poll(consentedNetworkFingerprint(state)) : null);
+    });
 
-    const prEvents = await this.githubPrSensor.poll();
-    for (const prEvent of prEvents) {
-      await this.handleSensorEvent(prEvent.type, prEvent.payload);
-    }
+    await step('github-pr', async () => emit(await this.githubPrSensor.poll()));
 
     // Event-driven sidecar (launcher writes on an actual NSWorkspace
     // sleep/wake notification) — cheap no-op file read otherwise.
-    const sleepWakeEvent = this.sleepWakeSensor.poll();
-    if (sleepWakeEvent) {
-      await this.handleSensorEvent(sleepWakeEvent.type, sleepWakeEvent.payload);
-    }
+    await step('sleep-wake', () => emit(this.sleepWakeSensor.poll()));
+
+    // lane H (H2): Sundial's own health, once a minute. A state: the ingest
+    // gate drops it unless something changed, and `sensorHealth` speaks.
+    await step('sensor-health', () => {
+      if (Date.now() - this.lastHealthAt < HEALTH_POLL_MS) return;
+      this.lastHealthAt = Date.now();
+      return this.handleSensorEvent('sensor:health', this.healthPayload());
+    });
+  }
+
+  /** lane H: the `sensor:health` payload from the sidecars, the audio helper and the OCR grant. */
+  healthPayload(): Record<string, unknown> {
+    const readJson = (file: string): Record<string, unknown> | null => {
+      try {
+        return JSON.parse(fs.readFileSync(file, 'utf-8')) as Record<string, unknown>;
+      } catch {
+        return null;
+      }
+    };
+    const mtime = (file: string): number | null => {
+      try {
+        return fs.statSync(file).mtimeMs;
+      } catch {
+        return null;
+      }
+    };
+    const ocrStatus = this.config.ocr.enabled ? readJson(getScreenOcrStatusJsonPath()) : null;
+    return healthSignal({
+      health: this.getSensorHealth(),
+      hearing: this.config.audio.enabled,
+      audio: this.config.audio.enabled ? readAudioStatus() : null,
+      transcriptMtimeMs: this.config.audio.enabled ? mtime(path.join(getSundialHome(), '.daemon', 'audio-transcript.jsonl')) : null,
+      ocr: this.config.ocr.enabled,
+      ocrAccessGranted: typeof ocrStatus?.accessGranted === 'boolean' ? ocrStatus.accessGranted : null,
+      configUnreadable: this.configUnreadable,
+      nativeHelpers: process.platform === 'darwin' && process.env.SUNDIAL_NATIVE_HELPERS !== '0',
+    });
   }
 
   /**

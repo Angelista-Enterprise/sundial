@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { findEnvelopeIndex, mailAfter, newestMailRowId } from './envelope-index.js';
+import { findEnvelopeIndex, mailAfter, mailboxCounts, mailEvent, newestMailRowId } from './envelope-index.js';
 
 /**
  * J3.6 — Mail.app and Messages, SUBJECTS AND SENDERS ONLY, behind Full Disk
@@ -11,17 +11,24 @@ import { findEnvelopeIndex, mailAfter, newestMailRowId } from './envelope-index.
  * Messages: `sqlite3 -readonly` over `chat.db` for sender, chat and time of
  * rows since the last poll — the `text` column is never selected. Without FDA
  * both fail with EPERM and the sensor says so once (`mail:status
- * { accessible: false }`); `privacy.mail: false` switches the whole sensor
- * off. A sender that is an address becomes `person-<hash>` at ingest; a
+ * { accessible: false }`). `privacy.mail` switches the Mail reader and
+ * `privacy.messages` the Messages one; they are separate because the owner
+ * declined Messages (2026-09-28) while keeping Mail. A sender that is an address becomes `person-<hash>` at ingest; a
  * phone number is reported as `phone`, never as digits.
  */
 export type MailEvent =
-  | { type: 'mail:received'; payload: { timestamp: string; from: string; subject: string } }
+  | { type: 'mail:received'; payload: { timestamp: string; from: string; fromName?: string; subject: string } }
+  /** UC1: a message in a Sent mailbox. To and Cc become names or `person-<hash>` at ingest, like a sender. */
+  | { type: 'mail:sent'; payload: { timestamp: string; subject: string; recipients: { to: string; toName?: string }[] } }
   | { type: 'message:received'; payload: { timestamp: string; from: string; chat: string | null; fromMe: boolean } }
-  | { type: 'mail:status'; payload: { timestamp: string; accessible: boolean; reason: string | null } };
+  /** `mailboxes`/`sentMailboxes`: counts, on the first read of a boot only. */
+  | { type: 'mail:status'; payload: { timestamp: string; accessible: boolean; reason: string | null; mailboxes?: number; sentMailboxes?: number } };
 
 export interface MailSensorConfig {
+  /** The Mail.app reader (`privacy.mail`). */
   enabled: boolean;
+  /** The Messages reader (`privacy.messages`), off unless asked for. */
+  messages?: boolean;
   intervalMs?: number;
   mailDir?: string;
   chatDb?: string;
@@ -54,10 +61,11 @@ export class MailSensor {
   poll(now = Date.now()): MailEvent[] {
     const out = this.buffered;
     this.buffered = [];
-    if (!this.config.enabled || process.platform !== 'darwin' || this.inFlight || now - this.lastAt < this.intervalMs) return out;
+    const { enabled: mail, messages = false } = this.config;
+    if (!(mail || messages) || process.platform !== 'darwin' || this.inFlight || now - this.lastAt < this.intervalMs) return out;
     this.lastAt = now;
     this.inFlight = true;
-    void Promise.all([this.pollMail(), this.pollMessages()])
+    void Promise.all([mail ? this.pollMail() : null, messages ? this.pollMessages() : null])
       .catch((error) => console.warn('[mail-sensor] poll failed:', error instanceof Error ? error.message : error))
       .finally(() => {
         this.inFlight = false;
@@ -85,16 +93,19 @@ export class MailSensor {
     }
     try {
       // The first poll only finds where to start: mail already there is the back-fill's to read.
+      // Once a boot it also says how many Sent mailboxes it found, whatever was reported before.
       if (this.lastMailRowId === null) {
         this.lastMailRowId = await newestMailRowId(file);
-        this.access(true, null);
+        const counts = await mailboxCounts(file);
+        this.reportedAccess = true;
+        this.buffered.push({ type: 'mail:status', payload: { timestamp: new Date().toISOString(), accessible: true, reason: null, ...(counts ?? {}) } });
         return;
       }
       const mails = await mailAfter(file, this.lastMailRowId, MAX_PER_POLL);
       this.access(true, null);
       for (const m of mails) {
         this.lastMailRowId = Math.max(this.lastMailRowId, m.rowid);
-        this.buffered.push({ type: 'mail:received', payload: { timestamp: m.timestamp, from: m.from, subject: m.subject } });
+        this.buffered.push(mailEvent(m) as MailEvent);
       }
     } catch (error) {
       this.access(false, `Envelope Index: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}`);

@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { createInitialState } from '@sundial/kernel/initial-state.js';
+import { createInitialState as initialState } from '@sundial/kernel/initial-state.js';
+import { hostTimeZone } from '@sundial/helpers/local-day.js';
 import type { Effect, HourFragmentedPrediction, KernelState, SanitizedEvent } from '@sundial/kernel/types.js';
 import { FRAGMENTED_HOUR_SWITCHES, hourFragmentedForecast } from './hour-fragmented-forecast.js';
+
+/** These fixtures are host-local instants, so the owner's zone is the host's here (M3: the rule reads `state.config.timezone`). */
+const createInitialState = (id: string): KernelState => {
+  const s = initialState(id);
+  return { ...s, config: { ...s.config, timezone: hostTimeZone() } };
+};
 
 /** A local-time instant, so the rule's `getHours()` bucketing is what the test intends. */
 function at(day: string, hour: number, minute = 0): string {
@@ -136,9 +143,11 @@ describe('hourFragmentedForecast', () => {
     expect(second.effects.filter((e) => e.type === 'RecordPrediction')).toHaveLength(1);
   });
 
-  it('feeds the shared surprise drive', () => {
+  it('feeds the shared surprise drive once it has skill on 50 resolutions, and not before (Q8)', () => {
     const before = createInitialState('test-device');
-    const { state } = run([...switches('2026-08-03', 9, FRAGMENTED_HOUR_SWITCHES), ...activate('2026-08-03', 10)]);
+    expect(run([...switches('2026-08-03', 9, FRAGMENTED_HOUR_SWITCHES), ...activate('2026-08-03', 10)]).state.memory.accumulatedImportance).toBe(0);
+    const skilled = { ...before, predictions: { ...before.predictions, calibration: { 'hour-fragmented': { n: 100, hits: 20, brierSum: 10 } } } };
+    const { state } = run([...switches('2026-08-03', 9, FRAGMENTED_HOUR_SWITCHES), ...activate('2026-08-03', 10)], skilled);
     expect(state.memory.accumulatedImportance).toBeGreaterThan(before.memory.accumulatedImportance);
   });
 

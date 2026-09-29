@@ -28,7 +28,8 @@ describe('rejectEntityName — the junk a recompute resurrected', () => {
     ['topic', 'what are lora finde tunnes'],
     ['topic', 'claude fable price calculatro 2mtokens 1.6m iin and 102k out'],
     // `person-<hash>` is no longer junk: a stable alias is one unnamed invitee (see below).
-    ['person', 'RTM-1-08 (12)'],
+    ['person', 'HQ-2-14 (8)'],
+    ['person', 'HQ-2-14'],
   ];
 
   for (const [kind, name] of junk) {
@@ -61,7 +62,7 @@ describe('rejectEntityName — the names current producers actually emit', () =>
     // shape, and a hyphen or apostrophe is part of plenty of real names.
     ['person', 'Jean-Luc Picard'],
     ['person', "Sinéad O'Connor"],
-    ['person', 'Joris de Vries'],
+    ['person', 'Mira van der Berg'],
   ];
 
   for (const [kind, name] of legitimate) {
@@ -100,7 +101,7 @@ describe('hard rejects apply to every provenance', () => {
 describe('shape heuristics yield to an owner assertion', () => {
   /**
    * The owner typing a name deliberately is the one authoritative input path
-   * (enhancements/assertions-versus-observations), so it must not also be the most
+   * (concepts/entity-facts-and-belief), so it must not also be the most
    * restricted one. A long, phrase-shaped name from an assertion is allowed;
    * the same name inferred from a window title is not.
    */

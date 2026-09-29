@@ -256,6 +256,18 @@ export function resolveSpan(p: Record<string, unknown>, today: string): { from: 
   return { from: daysBefore(today, back - 1), to: today, label };
 }
 
+/**
+ * A stored span as it reads on `today`. A named preset is resolved again, so a
+ * board set to "today" last night shows this morning and not yesterday; `day`
+ * and `custom` keep the dates they were given. Every reader of `board.span`
+ * goes through this (the client has the same table in `shell/span.js`).
+ */
+export function liveSpan<T extends { from: string; to: string; label: string }>(span: T | null | undefined, today: string): T | null {
+  if (!span) return null;
+  const back = BOARD_SPANS[span.label];
+  return back === undefined ? span : { ...span, from: daysBefore(today, back - 1), to: today };
+}
+
 const PRUNES = new Set(['board:move', 'board:remove', 'board:clear', 'board:load']);
 
 export function tile(cards: Record<string, BoardCard>, sections: BoardSections): { cards: Record<string, BoardCard>; sections: BoardSections } {

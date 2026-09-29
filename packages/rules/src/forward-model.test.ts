@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { bumpCalibration, clampProb, PROB_EPS } from './forward-model.js';
+import { bumpCalibration, clampProb, hasSkill, PROB_EPS } from './forward-model.js';
 
 /**
  * `predictionForecast`/`predictionResolve` and their tests lived here until the
@@ -54,5 +54,16 @@ describe('bumpCalibration', () => {
     const existing = { 'day-ending': { n: 1, hits: 1, brierSum: 0.1 } };
     bumpCalibration(existing, 'day-ending', 0, 0.5);
     expect(existing['day-ending']).toEqual({ n: 1, hits: 1, brierSum: 0.1 });
+  });
+});
+
+describe('hasSkill (Q8)', () => {
+  it('needs 50 resolutions and a Brier under the constant p(1 − p)', () => {
+    // The live shapes, made up: a tournament base rate that bets its own mean does not beat it.
+    expect(hasSkill({ t: { n: 58, hits: 41, brierSum: 14.45 } }, 't')).toBe(false);
+    expect(hasSkill({ t: { n: 49, hits: 10, brierSum: 1 } }, 't')).toBe(false);
+    expect(hasSkill({ t: { n: 742, hits: 193, brierSum: 124.7 } }, 't')).toBe(true);
+    expect(hasSkill({ t: { n: 60, hits: 0, brierSum: 0 } }, 't')).toBe(false);
+    expect(hasSkill({}, 't')).toBe(false);
   });
 });

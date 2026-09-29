@@ -37,6 +37,45 @@ const MAX_RECENT_MEETING_KEYS = 32;
 const ATTENDEE_OBJECT = 'owner';
 
 /**
+ * OS plumbing that holds focus but is not a tool a project USES: the file
+ * manager, settings, auth prompts, script runners, the unarchiver. The 2026-09-28
+ * audit found them among live `project usesTool` facts ("project uses Finder").
+ * Matched after `normaliseProcessName`. `worldHygiene` retires the old rows.
+ */
+export const NON_TOOL_PROCESSES: ReadonlySet<string> = new Set([
+  'Finder',
+  'System Settings',
+  'System Preferences',
+  'loginwindow',
+  'SecurityAgent',
+  'coreauthd',
+  'coreautha',
+  'osascript',
+  'Archive Utility',
+  'UserNotificationCenter',
+  'CoreServicesUIAgent',
+  'Dock',
+  'Spotlight',
+  'SystemUIServer',
+  'Control Center',
+  'ControlCenter',
+  'NotificationCenter',
+  'Notification Center',
+  'universalAccessAuthWarn',
+  'ScreenSaverEngine',
+  'Installer',
+  'Software Update',
+]);
+
+/** Zero-width and bidi marks a process name can carry (a leading U+200E made one app two). */
+const INVISIBLE_MARKS = /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/g;
+
+/** One spelling per app: NFC, no invisible marks, trimmed. */
+export function normaliseProcessName(name: string): string {
+  return name.normalize('NFC').replace(INVISIBLE_MARKS, '').trim();
+}
+
+/**
  * Identity of a meeting, for the once-per-meeting guard on `state.memory`.
  *
  * Hashed, and built from the local day plus the sorted attendee names rather than
@@ -136,7 +175,7 @@ function branchTicket(branch: string): string | null {
  *
  * Prefers a ticket id — clean, stable, and free of the `/` that `rejectEntityName`
  * refuses as a path fragment. Otherwise the branch, minus its conventional prefix
- * and with slashes collapsed, so `feat/redesign-and-ios` becomes `redesign-and-ios`
+ * and with slashes collapsed, so `feat/redesign-and-tablet` becomes `redesign-and-tablet`
  * rather than being rejected outright or minted with a `feat/` that means nothing.
  *
  * The BRANCH is matched case-insensitively but the WINDOW TITLES are not, and the
@@ -147,7 +186,7 @@ function branchTicket(branch: string): string | null {
  * rows. A window title is arbitrary prose, where the same widening reads ordinary
  * words as tickets — measured over the reference corpus it invented `CHECK-3` and
  * `FIX-4` out of sentences and `JUNI-2026` out of a Dutch date, and because the
- * first match wins it also DISPLACED a real `PL-448`. Prose keeps the strict
+ * first match wins it also DISPLACED a genuine `KIT-448`. Prose keeps the strict
  * pattern for the same reason this rule no longer mints topics from tab titles:
  * a title is evidence, not a name.
  */
@@ -184,7 +223,7 @@ export function taskIdentity(branch: string, titles: string): string | null {
  * The accepted cost is a real branch that happens to be named exactly after a
  * known project or alias — it mints no task and opens no thread. That is the same
  * side of the asymmetry `rejectEntityName` documents: a skipped branch costs one
- * name the owner can still state with `gnomon assert`, while a trunk admitted to
+ * name the owner can still state with `gnomon_assert`, while a trunk admitted to
  * the ledger presents a codebase as the thing you have been carrying.
  */
 export function namesAKnownProject(name: string, state: KernelState): boolean {
@@ -257,15 +296,16 @@ interface EventDeployPayload {
  * colleague once rather than four times. Measured on the live corpus before
  * building it: 30 distinct attendee strings, 21 correctly rejected by
  * `rejectEntityName`, 5 surviving with two or more shared meetings —
- * `apps/daemon/src/scripts/measure-person-recovery.ts` is that measurement and
- * is the thing to re-run if this producer's yield is ever questioned.
+ * `apps/daemon/src/scripts/measure-person-recovery.ts` was that measurement
+ * (removed in 9a6988c; recoverable with `git show 9a6988c^:<path>`), the thing
+ * to re-run if this producer's yield is ever questioned.
  *
  * The ORIGINAL heuristic path, kept here as the record of what not to do again:
  * `person` from `calendar:active`.
  * That path stamped every attendee's fact object with `state.project.current`
  * — the ambient pointer, which for a meeting is whichever repository happened
  * to be open while it ran, so the project link was never verifiable
- * (issues/ambient-pointer-survives-in-collaborates-on; 60 demonstrably false
+ * (issues/ambient-pointer-survives-in-collaborates-on, since retired; 60 demonstrably false
  * rows, plus `person` entities for a meeting room, a distribution list and a
  * redaction hash). Repointing the object at the meeting *title* instead was
  * tried and rejected on three counts: it made the fact durable only for
@@ -325,6 +365,7 @@ export const entityExtract: Rule = (state, event) => {
     // sanitizeAtIngest; writing "project X's primaryTool is [hidden]" into
     // core memory is a wrong, permanent fact, not a redacted one.
     if (isRedactedPlaceholder(closed.processName)) return { state, effects };
+    const tool = normaliseProcessName(closed.processName);
 
     const candidate: FactCandidate = {
       entityId: projectEntityId(project.name),
@@ -335,14 +376,14 @@ export const entityExtract: Rule = (state, event) => {
       // them all as coexisting facts, rather than each new tool superseding the
       // last so only the most-recent survives (Phase 5 #3).
       predicate: 'usesTool',
-      object: closed.processName,
+      object: tool,
       confidence: 70,
       sourceEventId: event.id,
       projectId: project.id,
       provenance: 'inference',
     };
 
-    effects.push(candidateEvent(candidate, event.ts));
+    if (tool !== '' && !NON_TOOL_PROCESSES.has(tool)) effects.push(candidateEvent(candidate, event.ts));
 
     // C13 — a `task` entity from the moment's git branch, tied to its project.
     // The tier the memory model was missing: a person's day is projects, but a

@@ -2,12 +2,8 @@
 // — the owner-assertion write path — and the 'ask' budget guard around every
 // agent model call.
 //
-// The registry is ASK_TOOL_REGISTRY — the shared tools of TOOL_REGISTRY plus
-// gnomon_show_view. The old repo kept show_view out of the MCP-advertised list
-// because MCP was a third party in the same user session; dsh's chat IS the
-// owner's assistant surface (the seat /ask held), so it gets the full ask
-// list. Figures and views return canonical JSON for now; see to-dsh-tool.js
-// for the PHASE5 projection seam.
+// The registry is ASK_TOOL_REGISTRY — the same read tools MCP is advertised.
+// Figures return canonical JSON; see to-dsh-tool.js for the projection seam.
 //
 // Not all of them are SHOWN. The measured-hot tools are registered directly;
 // the cold tail is reachable through `gnomon_call`, with the names kept in the
@@ -28,10 +24,11 @@ import { ASK_TOOL_REGISTRY } from '@sundial/kernel/tools/index.js';
 import { toolDefinitions } from '@sundial/kernel/tools/registry.js';
 import { resolveDailyCaps } from '@sundial/kernel/budgets.js';
 import { loadSundialConfig } from '@sundial/helpers/sundial-config.js';
+import { DEFAULT_PROVIDER, LEGACY_PROVIDER } from '@sundial/helpers/llm-providers.js';
 import { slugifyEntityName } from '@sundial/rules/entity-extract.js';
 import { canonicalOwnerName, knownProjectNames, rejectEntityName } from '@sundial/rules/entity-name-validation.js';
 import { localDate } from '@sundial/helpers/local-day.js';
-import { toDshTool, VIEW_TOOL_NAME } from './to-dsh-tool.js';
+import { toDshTool } from './to-dsh-tool.js';
 import { createHandleCache } from './handles.js';
 import { createRerank } from './rerank.js';
 import { createRouteLog } from './route-log.js';
@@ -41,7 +38,8 @@ import { createLlmAuditRecorder } from './audit.js';
 import { createShellWitness } from './shell-witness.js';
 import { CARD_KINDS, normKind } from '@sundial/rules/board-track.js';
 import { createCardReaders } from './card-readers.js';
-import { clockContext } from './clock.js';
+import { clockContext, frozenPerTurn } from './clock.js';
+import { BOARD_LOOK_ID, boardContextText, boardSummary } from './board-context.js';
 import { LENS_AGGS, LENS_OPS, LENS_SHOWS, lensProblem, runLens } from '../sundial-theme/shell/lens-core.js';
 import { CARDS, checkFilters, describeCard } from '../sundial-theme/shell/cards.js';
 import { internalHeaders } from '../sundial-theme/shell/guard.js';
@@ -50,7 +48,7 @@ import { composeAmbientContext, gatherAmbientInput } from '@sundial/kernel/ambie
 import { showSurfaceTool, SURFACE_TOOL_NAME } from './show-surface.js';
 import { watchTools } from './watch-tools.js';
 
-export { toDshTool, FIGURE_TOOL_NAME, VIEW_TOOL_NAME } from './to-dsh-tool.js';
+export { toDshTool, FIGURE_TOOL_NAME } from './to-dsh-tool.js';
 export { toValueSchemaSpec, toParameterSchemaSpec } from './schema.js';
 export { renderResultText, MAX_RESULT_BYTES } from './render.js';
 export { createAskBudgetGuard, ASK_PURPOSE, BUDGET_EXHAUSTED_CODE } from './budget.js';
@@ -89,7 +87,7 @@ export function apply(ctx) {
     memory: ctx.gnomonMemory,
     handles,
     today: () => localDate(new Date().toISOString(), loadSundialConfig().timezone),
-    // PHASE5: onFigure/onShowView — the UI projection hooks (see to-dsh-tool.js).
+    // PHASE5: onFigure — the UI projection hook (see to-dsh-tool.js).
   };
 
   // Every tool is BUILT; only the hot ones are REGISTERED. The cold ones are
@@ -102,11 +100,8 @@ export function apply(ctx) {
   // thresholds live on the kernel service — the MCP server keeps the raw list.
   const rerank = createRerank({ judgeNow: (options) => ctx.gnomonKernel.judgeNow(options), getState: () => ctx.gnomonKernel.getState() });
   const withRerank = (tool) => (tool.name === 'gnomon_semantic_search' ? { ...tool, handler: async (args) => rerank(args.query, await tool.handler(args)) } : tool);
-  // gnomon_show_view is not offered in chat: it was a second way to move the
-  // owner's view (old altitudes — today, trend, memory…) beside gnomon_board,
-  // and on 2026-09-24 the agent failed three calls guessing its arguments to
-  // "navigate to the ledger", which it cannot do. gnomon_board is the one way.
-  const CHAT_TOOLS = ASK_TOOL_REGISTRY.filter((tool) => tool.name !== VIEW_TOOL_NAME);
+  // gnomon_board is the one way the chat moves the owner's view.
+  const CHAT_TOOLS = ASK_TOOL_REGISTRY;
   const definitionsByName = new Map(CHAT_TOOLS.map((tool) => [tool.name, toDshTool(withRerank(tool), deps)]));
   const { hot, cold } = splitByHeat(CHAT_TOOLS);
 
@@ -133,7 +128,7 @@ export function apply(ctx) {
   });
 
   // The surface envelope (gnomon_redesign/handoff §6): draws in the owner's
-  // chat, so it inherits gnomon_show_view's placement — dsh only, never MCP.
+  // chat, so it is dsh only, never MCP.
   // The sundial-theme client renders it via `tool.call.toolview` keyed by name.
   ctx.tools.register(showSurfaceTool());
 
@@ -338,7 +333,7 @@ export function apply(ctx) {
 
   // The clock the persona cannot carry (see clock.js). Registration is
   // context-scoped, so it is torn down with the plugin on unload.
-  ctx.systemPrompt.context(clockContext());
+  ctx.systemPrompt.context(frozenPerTurn(clockContext()));
 
   // What Gnomon knows about the owner, in every turn (see ambient.js). The
   // slice reads the record, and dsh resolves a context synchronously, so it is
@@ -349,7 +344,7 @@ export function apply(ctx) {
     onError: (error) => console.warn(`[sundial-tools] ambient memory refresh failed: ${error?.message ?? error}`),
   });
   ctx.effect(() => () => ambient.dispose(), 'sundial-tools ambient memory');
-  ctx.systemPrompt.context(ambient.context);
+  ctx.systemPrompt.context(frozenPerTurn(ambient.context));
   void ambient.refresh();
 
   // ── The board ────────────────────────────────────────────────────────────
@@ -378,54 +373,14 @@ export function apply(ctx) {
         return kind;
     }
   };
-  const boardSummary = () => {
-    const full = ctx.gnomonKernel.getState();
-    const board = full?.board;
-    if (!board) return null;
-    const cards = Object.values(board.cards);
-    if (cards.length === 0) return 'The board is empty apart from the defaults (today, session).';
-    // WHEN the board is looking, before WHAT is on it: every card below is
-    // showing this span, and a reading described without it is wrong about time.
-    const span = board.span
-      ? [`The board is looking at ${board.span.from === board.span.to ? board.span.from : `${board.span.from} to ${board.span.to}`} (${board.span.label}). Every card shows that span; change it with \`gnomon_board\` action span, and do that rather than explaining that a card shows today.`]
-      : ['The board is looking at today.'];
-    // What each card IS, from the catalog, before where it sits: an id and a
-    // position was all this said, and the agent guessed the rest from the name.
-    const lines = cards.map((c) => `- ${describeCard(c.id, c)}${c.text ? ` Its text: “${c.text.slice(0, 80)}”.` : ''}${c.comment ? ` [the owner's remark: ${c.comment.slice(0, 160)}]` : ''} (${c.pinned ? 'pinned, ' : ''}at ${Math.round(c.x)}, ${Math.round(c.y)}, ${Math.round(c.w)}×${Math.round(c.h)}, placed by ${c.by})`);
-    const scenes = Object.keys(board.scenes);
-    const sections = Object.entries(board.sections ?? {}).map(([id, s]) => `- section ${id} “${s.label}” at (${s.x}, ${s.y}) ${s.w}×${s.h}${s.anchor ? `, anchored by ${s.anchor}` : ''}`);
-    const hhmm = (at) => new Date(at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-    const recent = (board.recent ?? []).map((r) => `${hhmm(r.at)} ${r.by} ${r.type}${r.id ? ` ${r.id}` : ''}`);
-    const plan = board.plan ? [`The owner edited your plan at ${hhmm(board.plan.at)} — follow it or say why not; your next todo_write replaces it:`, ...board.plan.steps.map((s, i) => `  ${i + 1}. ${s.status === 'skipped' ? '(skipped) ' : s.status === 'completed' ? '(done) ' : ''}${s.content}`)] : [];
-    return [...span, ...(sections.length ? ['Sections (regions; `near: <section id>` places inside one):', ...sections] : []), `Cards on the board:`, ...lines, scenes.length ? `Saved scenes: ${scenes.join(', ')}` : '', ...(recent.length ? ['Recent moves, oldest first:', ...recent.map((r) => `- ${r}`)] : []), ...plan].filter(Boolean).join('\n');
-  };
-  // Moved out of the persona on 2026-09-23: it is how to use the board, so it
-  // rides with the board's own context rather than in front of every turn.
-  const BOARD_COACHING = [
-    // The staging rules (P2.4), each from a failure on the record: the Ledger
-    // described two wrong ways without a look; a walk stepped to a lens that
-    // showed nothing; a ledger answer redrawn as a grid beside the Ledger card;
-    // notes the owner swept within a minute; steps of 40–70 words.
-    'How to stage. Every card above says what it answers and what it shows; that is how you pick one. Before you describe a card or step to it, read it with gnomon_look and say only what the reading holds — never what its name suggests.',
-    'If a card on the board already answers, point at it: link it in your words as [its title](board:<id>), or focus it with mark (the row to light) or filters (the day, tab or query to show), and answer in one line from its reading. Never redraw a card\'s numbers in a surface, a figure or a note.',
-    'Place a card only when the owner asked for what it shows and no card on the board answers, set to the point with filters rather than described; when you speak unprompted, link instead of placing. Never write your own explanation into a note card — point at the card that holds the evidence.',
-    'Three or more cards — a comparison, a story across days, "walk me through" — narrate with gnomon_board action step, one call per step; each returns when the owner presses Next, so read their recent moves before the next. Each step lands on a card whose data carries the point, and reads as speech: one thing to notice, about 20 words, at most one number, and where to look — "Your morning went to PR review in Arc; see how little typing there is." Never totals, never "Step 2 —" (the chat numbers them), and never the next part before the step returns.',
-    'When the owner points ("this pane"), read it with gnomon_look first. When a walk ends, remove the cards you placed for it.',
-  ].join(' ');
-  ctx.systemPrompt.context({
-    name: 'gnomon:board',
-    order: -35,
-    text: () => {
-      const summary = boardSummary();
-      // Read here, not from boardSummary's own local — that one is out of scope
-      // and threw `autonomy is not defined`, which ended every turn with zero
-      // steps and read to the owner as "the model produced nothing".
-      const autonomy = ctx.gnomonKernel.getState()?.settings?.autonomy ?? 'act';
-      return summary === null
-        ? ''
-        : [`Autonomy is "${autonomy}"${autonomy === 'act' ? '' : ' — gnomon_board and gnomon_lens place will refuse; describe what you would have shown instead'}.`, BOARD_COACHING, 'The board right now (arrange it with gnomon_board; read what a card shows with gnomon_look; "this pane" means a card here):', summary].join('\n');
-    },
-  });
+  // lane Q (Q12): what the board context says, and the board a tool reads back, are in board-context.js.
+  ctx.systemPrompt.context(
+    frozenPerTurn({
+      name: 'gnomon:board',
+      order: -35,
+      text: () => boardContextText(ctx.gnomonKernel.getState(), deps.today()),
+    }),
+  );
   // ── What a card shows ─────────────────────────────────────────────────
   // The read tools are date- and project-shaped; the owner's questions are
   // card-shaped ("this pane", "that stretch"). One tool turns a card id into
@@ -460,11 +415,11 @@ export function apply(ctx) {
     defineTool({
       name: 'gnomon_look',
       description: [
-        `Read what a card on the board shows, by its card id (as listed in the board context). Every card can be read; what each one answers:\n${CARDS.map((c) => `- ${c.id}${c.id.endsWith(':') ? '<key>' : ''} "${c.title}": ${c.question}`).join('\n')}\ndial takes an hour for the stretch under the shadow.`,
+        `Read what a card on the board shows, by its card id (as gnomon_look with id "board" lists them). Every card can be read; what each one answers:\n${CARDS.map((c) => `- ${c.id}${c.id.endsWith(':') ? '<key>' : ''} "${c.title}": ${c.question}`).join('\n')}\ndial takes an hour for the stretch under the shadow.`,
         'Use this FIRST when the owner points at something on the board — "this pane", "that stretch", "the card on the right" — instead of translating it into a date and a project yourself. Trimmed to what fits beside the card; ask the date-shaped tools for the rest.',
       ].join(' '),
       parameters: {
-        id: { type: 'string', required: true, description: 'The card id.' },
+        id: { type: 'string', required: true, description: `The card id, or "${BOARD_LOOK_ID}" for every card on the board: what each is, where it sits, the recent moves and your plan.` },
         hour: { type: 'number', description: 'For dial: the hour (e.g. 14.5) to read the moments around.' },
       },
       output: {
@@ -473,6 +428,8 @@ export function apply(ctx) {
       },
       async execute(args) {
         const id = String(args.id ?? '');
+        // lane Q (Q12): the board itself, which the context no longer lists.
+        if (id === BOARD_LOOK_ID) return { card: BOARD_LOOK_ID, board: boardSummary(ctx.gnomonKernel.getState()?.board, deps.today()) ?? 'There is no board yet.' };
         const card = ctx.gnomonKernel.getState()?.board?.cards?.[id];
         // The card's own kind when the record has it; otherwise the part of the
         // id before the colon, which is how `board:place` derives one too.
@@ -587,7 +544,7 @@ export function apply(ctx) {
     defineTool({
       name: 'gnomon_board',
       description: [
-        'Arrange the owner\'s board — the screen you share. It is a space of cards; the board context and gnomon_look list every card with the question it answers and the filters it takes. Kinds: ' + BOARD_KINDS.join(', ') + '. chat is the conversation (the owner opens it with ⌥C; never remove it).',
+        'Arrange the owner\'s board — the screen you share. It is a space of cards; gnomon_look with id "board" lists every card with the question it answers and the filters it takes, and every result here ends with the board as it then stands. Kinds: ' + BOARD_KINDS.join(', ') + '. chat is the conversation (the owner opens it with ⌥C; never remove it).',
         'An entity takes key: its name; a moment its id; a web card the url (text: your excerpt) — place one right after web_fetch when the page is worth keeping, near the card it answers.',
         'Actions: place (kind, key?, filters?, x, y, w?, h?, z?, pinned?, text?) puts a card down — or re-sets one already there — and returns its id; move (id, x?, y?, w?, h?, z?) — z is depth, 0 front, negative recedes;',
         'remove (id); focus (ids, text?, mark?, filters?) brings those cards into the owner\'s view with a caption, and `mark` lights the rows inside them that carry those words; walk (steps: JSON array of { ids, text }) lays a whole play-by-play down at once; step (ids, text, filters?) adds ONE step live and RETURNS ONLY WHEN THE OWNER PRESSES NEXT (or after ten minutes) — narrate with step when you want to see what they do before going on; clear removes every card; arrange re-tiles the rows (the board tiles itself: each section is a row, cards in a row share one height and keep their own widths, ordered by x);',
@@ -603,11 +560,11 @@ export function apply(ctx) {
         key: { type: 'string', description: 'For place: the entity name, moment id, url, or note key.' },
         near: { type: 'string', description: 'For place: a card id to land beside, or a section id to land inside.' },
         anchor: { type: 'string', description: 'For section: the pinned card that anchors it.' },
-        id: { type: 'string', description: 'For move/remove: the card id (as returned by place, or as listed in the board context).' },
+        id: { type: 'string', description: 'For move/remove: the card id (as returned by place, or as gnomon_look with id "board" lists them).' },
         ids: { type: 'json', description: 'For focus: a JSON array of card ids.' },
         label: { type: 'string', description: 'For section: its name, a few words.' },
         because: { type: 'string', description: 'ALWAYS for place, move, remove: one short line saying why — the owner sees it as a caption the moment the card lands ("the week you asked about", "so the two meetings sit side by side"). A move with no why reads as the board moving on its own.' },
-        filters: { type: 'json', description: 'For place, focus or step: set what the card shows, as a JSON object — e.g. {"date":"2026-09-22"} on the day card, {"tab":"Files"} on Activity, {"query":"Alex"} on Explore. Each card lists the filters it takes in the board context; null clears them. Set the card to the point instead of describing where to look.' },
+        filters: { type: 'json', description: 'For place, focus or step: set what the card shows, as a JSON object — e.g. {"date":"2026-09-22"} on the day card, {"tab":"Files"} on Activity, {"query":"Alex"} on Explore. Each card lists the filters it takes (gnomon_look with id "board"); null clears them. Set the card to the point instead of describing where to look.' },
         mark: { type: 'string', description: 'For focus: words to light INSIDE the card — a day ("We 9"), a project name, a person, a shelf title. The owner sees those rows outlined for a few seconds. Use it to point at one line instead of describing where it is.' },
         ms: { type: 'number', description: 'For notice: how long the row stands, in ms (default 5000). 0 makes it stand until the owner answers or dismisses it — which is what a question needs.' },
         actions: { type: 'json', description: 'For notice: up to 3 replies, as a JSON array of { label: "Yes", say: "yes, log it" }. Pressing one SAYS that text to you as the owner, so their answer arrives as an ordinary turn. A notice with actions stands until answered.' },
@@ -619,7 +576,7 @@ export function apply(ctx) {
         from: { type: 'string', description: 'For span: the first day, YYYY-MM-DD. On its own it means that ONE day.' },
         to: { type: 'string', description: 'For span: the last day, YYYY-MM-DD.' },
         text: { type: 'string', description: 'For note/place: the text on the card. For step and focus: what you say about it, shown in the chat beside a link to the card. Write it the way a colleague points at a screen: ONE thing to notice, in plain words, about 20 words, at most one number and only if it matters, and where on the card to look. Not a report, not a list of totals.' },
-        comment: { type: 'string', description: 'For place or move: the owner\'s remark ON this card (what to fix, what renders wrong). Empty clears it. Read them in the board context; write one only when the owner asks you to note something about a surface. The result says whether it was saved — if it does not, the remark did not land and you must say so rather than reporting it written.' },
+        comment: { type: 'string', description: 'For place or move: the owner\'s remark ON this card (what to fix, what renders wrong). Empty clears it. Read them with gnomon_look id "board"; write one only when the owner asks you to note something about a surface. The result says whether it was saved — if it does not, the remark did not land and you must say so rather than reporting it written.' },
         x: { type: 'number' },
         y: { type: 'number' },
         w: { type: 'number' },
@@ -631,13 +588,13 @@ export function apply(ctx) {
         schema: {
           type: 'object',
           additionalProperties: false,
-          properties: { done: { type: 'boolean' }, id: { type: 'string' }, reason: { type: 'string' }, cards: { type: 'number' }, continued: { type: 'boolean' }, recent: { type: 'string' }, remark: { type: 'string' } },
+          properties: { done: { type: 'boolean' }, id: { type: 'string' }, reason: { type: 'string' }, cards: { type: 'number' }, continued: { type: 'boolean' }, recent: { type: 'string' }, remark: { type: 'string' }, board: { type: 'string' } },
         },
         // `remark` is named in the answer because a comment that silently fell
         // off still read as "Board: inst:day · 2 cards now" — a success line for
         // a half-executed call. A writer that cannot see what it wrote reports
         // work it never did.
-        render: (_args, value) => [{ type: 'text', text: value.done ? (value.continued === undefined ? `Board: ${value.id ? `${value.id} · ` : ''}${value.cards} cards now.${value.remark ? ` The owner's remark on ${value.id} is ${value.remark}.` : ''}` : value.continued ? `The owner pressed Next.${value.recent ? ` Meanwhile they: ${value.recent}.` : ''} Go on.` : 'The owner did not press Next within ten minutes; the step stays on the board. Wrap up briefly.') : `Board: not done — ${value.reason}` }],
+        render: (_args, value) => [{ type: 'text', text: (value.done ? (value.continued === undefined ? `Board: ${value.id ? `${value.id} · ` : ''}${value.cards} cards now.${value.remark ? ` The owner's remark on ${value.id} is ${value.remark}.` : ''}` : value.continued ? `The owner pressed Next.${value.recent ? ` Meanwhile they: ${value.recent}.` : ''} Go on.` : 'The owner did not press Next within ten minutes; the step stays on the board. Wrap up briefly.') : `Board: not done — ${value.reason}`) + (value.board ? `\n\nThe board now:\n${value.board}` : '') }],
       },
       isConcurrencySafe: () => false,
       async execute(args, exec) {
@@ -763,7 +720,7 @@ export function apply(ctx) {
           }
           // What the owner did while you waited, so the next step can answer it.
           const moves = (board?.recent ?? []).filter((r) => r.by === 'owner' && r.at > stepAt).map((r) => `${r.type}${r.id ? ` ${r.id}` : ''}`);
-          return { done: true, continued, cards: board ? Object.keys(board.cards).length : 0, ...(moves.length ? { recent: moves.join(', ') } : {}) };
+          return { done: true, continued, cards: board ? Object.keys(board.cards).length : 0, ...(moves.length ? { recent: moves.join(', ') } : {}), ...(board ? { board: boardSummary(board, deps.today()) } : {}) };
         }
         // Read the remark back off the record rather than echoing the argument:
         // the answer then describes what the board holds, not what was asked for.
@@ -775,6 +732,8 @@ export function apply(ctx) {
           ...(id === null ? {} : { id }),
           cards: board ? Object.keys(board.cards).length : 0,
           ...(wroteComment ? { remark: landed === null ? 'cleared' : `saved: “${landed.slice(0, 60)}${landed.length > 60 ? '…' : ''}”` } : {}),
+          // lane Q (Q12): the board as it now stands, which the context no longer carries.
+          ...(board ? { board: boardSummary(board, deps.today()) } : {}),
         };
       },
     }),
@@ -816,6 +775,10 @@ export function apply(ctx) {
       recordAudit: createLlmAuditRecorder({
         queries: ctx.gnomonDb.queries,
         getMomentId: () => ctx.gnomonKernel.getState()?.moment?.id ?? null,
+        routeBaseUrl: (id) =>
+          id === DEFAULT_PROVIDER || id === LEGACY_PROVIDER
+            ? process.env.SUNDIAL_LLM_BASE_URL
+            : loadSundialConfig().llm.providers.find((p) => p.id === id)?.baseUrl,
       }),
     }),
   );

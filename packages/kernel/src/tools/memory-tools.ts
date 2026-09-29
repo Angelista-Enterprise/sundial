@@ -1,7 +1,10 @@
 import { z } from 'zod';
-import { findEntitiesByName, getAllEntities, getCurrentEntityFacts, getEntityFactTimeline, getKnowledgeEntriesForDate, getMomentsMentioning, loadAliasNames, scoredSearch } from '@sundial/db/index.js';
+import { findEntitiesByName, getAllEntities, getCurrentEntityFacts, getEntityFactTimeline, getKnowledgeEntriesForDate, getMomentsMentioning, getPromises, loadAliasNames, scoredSearch } from '@sundial/db/index.js';
+import { promiseReliability } from '../promise-reliability.js';
 import { localDate } from '@sundial/helpers/local-day.js';
 import { loadSundialConfig } from '@sundial/helpers/sundial-config.js';
+import { factRecordLine } from '../fact-tests.js';
+import { loadLatestSnapshot } from '../snapshot.js';
 import type { GnomonTool } from './registry.js';
 
 function today(): string {
@@ -66,7 +69,7 @@ export const MEMORY_TOOLS: GnomonTool[] = [
   {
     name: 'gnomon_people',
     description:
-      'The roster: everyone the owner has been in a meeting with, their name, and how many facts are held about them. Use it for "who do I work with", "who have I not seen lately", or before naming a person you are unsure of. `entity: false` marks someone the calendar sent as a bare address and nothing on this machine could put a name to — refer to them as "an unnamed attendee", NEVER by the person-<hash> id, which means nothing to the owner. For one person\'s full history use gnomon_entity_history.',
+      'The roster: everyone the owner has been in a meeting with, their name, how many facts are held about them, and (`promises`) what the owner owes them, what they owe the owner, and how many promises to them were kept, of how many closed. Use it for "who do I work with", "who have I not seen lately", or before naming a person you are unsure of. `entity: false` marks someone the calendar sent as a bare address and nothing on this machine could put a name to — refer to them as "an unnamed attendee", NEVER by the person-<hash> id, which means nothing to the owner. For one person\'s full history use gnomon_entity_history.',
     schema: {},
     readOnly: true,
     handler: async () => {
@@ -74,8 +77,10 @@ export const MEMORY_TOOLS: GnomonTool[] = [
       // the owner cannot be looking at different rosters. `loadAliasNames` is
       // the identity join: a hashed attendee's entity is named for its hash and
       // the human name is a `knownAs` belief on it.
-      const [entities, aliasNames] = await Promise.all([getAllEntities(), loadAliasNames()]);
+      const [entities, aliasNames, promises] = await Promise.all([getAllEntities(), loadAliasNames(), getPromises(500)]);
       const people = entities.filter((entity) => entity.kind === 'person');
+      // U1-F41: what is owed between the owner and each person, with its n.
+      const ledgers = new Map(promiseReliability(promises, (who) => aliasNames[who] ?? who).byPerson.map((l) => [l.who.toLowerCase(), l]));
       return Promise.all(
         people.map(async (entity) => {
           const resolved = aliasNames[entity.canonicalName];
@@ -89,6 +94,10 @@ export const MEMORY_TOOLS: GnomonTool[] = [
             named: resolved !== undefined || !hashed,
             factCount: facts.length,
             metWith: facts.filter((fact) => fact.predicate === 'attendedMeetingWith').length,
+            ...(() => {
+              const ledger = ledgers.get((resolved ?? entity.canonicalName).toLowerCase());
+              return ledger ? { promises: { youOwe: ledger.youOwe, theyOwe: ledger.theyOwe, keptToThem: `${ledger.toThem.kept} of ${ledger.toThem.n} closed` } } : {};
+            })(),
           };
         }),
       );
@@ -97,11 +106,18 @@ export const MEMORY_TOOLS: GnomonTool[] = [
   {
     name: 'gnomon_entity_history',
     description:
-      "Given a person/project/tool/topic's name, return its full fact timeline — including superseded facts, so \"who was I working with on this before X\" is answerable — and `appearances`: the moments the name shows up in, each saying WHERE (meeting = among the attendees, said = in the transcript, screen = on screen or in a window title, reading = in Gnomon's own summary). A name only on screen is weaker evidence than a meeting; say which.",
+      "Given a person/project/tool/topic's name, return its full fact timeline — including superseded facts, so \"who was I working with on this before X\" is answerable; a belief that makes a testable prediction carries `record` (\"right 12 of 13\", marked gathering under 20 outcomes) — and `appearances`: the moments the name shows up in, each saying WHERE (meeting = among the attendees, said = in the transcript, screen = on screen or in a window title, reading = in Gnomon's own summary). A name only on screen is weaker evidence than a meeting; say which.",
     schema: { name: z.string().describe('Free-text name to match against known entities (case-insensitive substring)') },
     readOnly: true,
     handler: async ({ name }) => {
       const matches = await findEntitiesByName(name as string);
+      // lane C: a belief's record against what the owner then did, from the fold.
+      const records = (await loadLatestSnapshot())?.state.factTests?.records ?? {};
+      const withRecord = <T extends { id: string }>(fact: T) => {
+        const r = records[fact.id];
+        const line = r ? factRecordLine(r) : null;
+        return line ? { ...fact, record: { right: r!.right, wrong: r!.wrong, line } } : fact;
+      };
       return Promise.all(
         matches.map(async (entity) => {
           const facts = await getEntityFactTimeline(entity.id);
@@ -124,7 +140,7 @@ export const MEMORY_TOOLS: GnomonTool[] = [
           const appearances = entity.kind === 'owner' ? { total: 0, byPlace: {}, moments: [] } : await getMomentsMentioning(names, 12);
           return {
             entity: (({ aliasesJson: _raw, ...rest }) => (knownAs ? { ...rest, canonicalName: knownAs.object, alias: entity.canonicalName } : rest))(entity),
-            facts,
+            facts: facts.map(withRecord),
             appearances,
           };
         }),

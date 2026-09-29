@@ -50,7 +50,8 @@ export function posteriorMean(n: number, hits: number): number {
  * costs far more than a whole day of well-calibrated guesses. Ranking by thin
  * sample size scored 0.20×, worse still.
  *
- * Measured by `apps/daemon/src/scripts/measure-uncertainty-map.ts`: 1.46× on
+ * Measured by `apps/daemon/src/scripts/measure-uncertainty-map.ts` (removed in
+ * 9a6988c; recoverable with `git show 9a6988c^:<path>`): 1.46× on
  * the 19-day reference corpus, against a 1.2× bar. Re-run it before changing
  * this function.
  */
@@ -250,7 +251,7 @@ function sameGaps(a: UncertaintyGap[], b: UncertaintyGap[]): boolean {
  * the reader's attention on the hours the forecaster already had right. See
  * `expectedLogLoss` for why, and
  * `apps/daemon/src/scripts/measure-uncertainty-map.ts` for the gate, which the
- * shipped ranking passes at 1.46×. Run it again before changing the ranking.
+ * shipped ranking passes at 1.46×. Recover and run it again before changing the ranking.
  *
  * Placed after `dayShapeForecast` (whose resolutions move the table it reads)
  * and before `mindTrack`, so `state.mind` is fully derived by the end of a tick.

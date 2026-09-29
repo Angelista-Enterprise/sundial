@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createInitialState } from '@sundial/kernel/initial-state.js';
 import type { SanitizedEvent } from '@sundial/kernel/types.js';
-import { applyMomentJudgement, COMMITMENT_DEFAULT_THRESHOLD, GOAL_ADVANCE_DEFAULT_THRESHOLD, inTheOwnersLanguage, promiseName, PROMISE_RESOLVE_DEFAULT_THRESHOLD } from './apply-moment-judgement.js';
+import { applyMomentJudgement, GOAL_ADVANCE_DEFAULT_THRESHOLD, inTheOwnersLanguage, PROMISE_RESOLVE_DEFAULT_THRESHOLD } from './apply-moment-judgement.js';
 import { THRESHOLD_MIN_N } from './judgement-track.js';
 import { questionId } from './questions/index.js';
 import { GOAL_ADVANCE_QUESTIONS } from './questions/moment-fanout.js';
@@ -108,43 +108,15 @@ describe('applyMomentJudgement (J1.2, option A)', () => {
       return s;
     };
     const heard = (spoken: string, momentId = STANDUP_MOMENT) =>
-      result({ momentId, metadata: { spoken, durationMs: 120_000, projectId: 'p1', projectName: 'puzzles' }, answers: { contains_commitment: { type: 'noul', noul: COMMITMENT_DEFAULT_THRESHOLD } } });
+      result({ momentId, metadata: { spoken, durationMs: 120_000, projectId: 'p1', projectName: 'puzzles' }, answers: { contains_commitment: { type: 'noul', noul: 0.9 } } });
 
-    it('a commitment noul at θ, in a meeting, in the owner\'s language, opens a promise named by its sentence', () => {
-      const out = emitted(applyMomentJudgement(inStandup(), heard('Oké, dat is goed. Ik stuur het vanavond door naar Marco. Top.')).effects);
-      expect(out).toHaveLength(1);
-      expect(out[0]).toMatchObject({ type: 'commitment:heard', payload: { momentId: STANDUP_MOMENT, text: 'Ik stuur het vanavond door naar Marco.', p: 0.7, projectId: 'p1', projectName: 'puzzles' } });
+    it('a moment\'s commitment noul opens nothing: the meeting pass (UC1) does, over the whole meeting', () => {
+      expect(emitted(applyMomentJudgement(inStandup(), heard('Oké, dat is goed. Ik stuur het vanavond door naar Marco. Top.')).effects)).toHaveLength(0);
     });
 
-    it('talk outside any meeting or call is the room\'s: no promise', () => {
-      expect(emitted(applyMomentJudgement(createInitialState('d1'), heard('ik stuur het vanavond door')).effects)).toHaveLength(0);
-      // A moment id that is no ULID cannot be placed, so it is not in a meeting.
-      expect(emitted(applyMomentJudgement(inStandup(), heard('ik stuur het vanavond door', 'm-1')).effects)).toHaveLength(0);
-    });
-
-    it('the live noise of 2026-09-23 opens nothing, however sure the judge', () => {
-      // Two carry another script: the words key refuses them even in a meeting.
-      for (const noise of ['Boom. But I\'ll Yo tengo un trato, bote. ¿Te acuerdas que falta un trato?', 'No. Hey, my hives. - Nice. وانك ويجريك I\'ve been going to back off.']) {
-        expect(inTheOwnersLanguage(noise)).toBe(false);
-        expect(emitted(applyMomentJudgement(inStandup(), heard(noise)).effects)).toHaveLength(0);
-      }
-      // One is Spanish in plain letters and passes the words key; it was heard
-      // at 11:32, in no meeting, and the room key refuses it.
-      const plain = "'t hear the phone. beautiful. manera con valor y acuerdos. - Can you, for sake, come over tomorrow.";
-      expect(inTheOwnersLanguage(plain)).toBe(true);
-      expect(emitted(applyMomentJudgement(createInitialState('d1'), heard(plain)).effects)).toHaveLength(0);
+    it('the words key still refuses the live noise of 2026-09-23', () => {
+      for (const noise of ['Boom. But I\'ll Yo tengo un trato, bote. ¿Te acuerdas que falta un trato?', 'No. Hey, my hives. - Nice. وانك ويجريك I\'ve been going to back off.']) expect(inTheOwnersLanguage(noise)).toBe(false);
       expect(inTheOwnersLanguage('Ja, dan zit ik zo meteen even met Alex — café om 10:30?')).toBe(true);
-    });
-
-    it('names a promise by its sentence, clipped', () => {
-      expect(promiseName('Yes. Can you check? I\'ll send it tomorrow. Thanks.')).toBe("I'll send it tomorrow.");
-      expect(promiseName('geen belofte hier')).toBe('geen belofte hier');
-      expect(promiseName(`ik ga ${'x'.repeat(200)}`).length).toBeLessThanOrEqual(90);
-    });
-
-    it('no words to quote, no promise — however sure the judge', () => {
-      expect(emitted(applyMomentJudgement(createInitialState('d1'), result({ metadata: { projectId: 'p1' }, answers: { contains_commitment: { type: 'noul', noul: 0.99 } } })).effects)).toHaveLength(0);
-      expect(emitted(applyMomentJudgement(createInitialState('d1'), result({ metadata: { spoken: 'x' }, answers: { contains_commitment: { type: 'noul', noul: COMMITMENT_DEFAULT_THRESHOLD - 0.01 } } })).effects)).toHaveLength(0);
     });
 
     it('a promise slot at θ closes THAT promise only with the second key (non-text evidence on the moment)', () => {

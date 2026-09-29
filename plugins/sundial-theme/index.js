@@ -11,15 +11,16 @@
 // single write path every LLM call in the system goes through — rather than
 // keeping its own counters.
 import { guard } from './shell/guard.js'
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mountShell } from './shell/server.js'
 import { entitySlug } from './shell/entity-id.js'
+import { liveSpan } from './shell/span.js'
 import { QUIET_AFTER_DAYS, foldDuplicates, groupByParent, lastMoved, linkMovement, parseSteps, quietDays, splitStatus, stepProgress, stepsFromCommits } from './shell/goals.js'
 import { WITH_SHOWN, bySeen, daysSince, displayName, foldPeople, isHash, mergeHint, notAPerson, withWhom } from './shell/people.js'
-import { GATE_DAILY_BUDGET, barsFor } from './shell/gate.js'
+import { GATE_DAILY_BUDGET, barsFor, noticePrecision } from './shell/gate.js'
 import { skillVsConstant, skillVsPastBaseline } from './shell/calibration.js'
 import { SENSORS } from './shell/sensors.js'
 import { momentIdIn, openDoors } from './shell/trace.js'
@@ -27,15 +28,20 @@ import { EFFECT_FAMILY } from '@sundial/kernel/effect-delivery.js'
 import { buildDailyContext } from '@sundial/kernel/daily-context.js'
 import { composeFigure } from '@sundial/kernel/tools/figure-tools.js'
 import { buildWorkShape } from '@sundial/kernel/work-shape.js'
-import { buildSituation } from '@sundial/kernel/situation.js'
+import { TRAIL_BEFORE_MIN, buildSituation, editTrail } from '@sundial/kernel/situation.js'
 import { routineForecast, routineLabel, topRoutines } from '@sundial/kernel/routines.js'
 import { mergeMirrors, rituals } from '@sundial/kernel/rituals.js'
 import { resolveDailyCaps } from '@sundial/kernel/budgets.js'
+import { factRecordLine } from '@sundial/kernel/fact-tests.js' // lane C
+// lane B
+import { meetingPrepKey, weekReviewDue } from '@sundial/kernel/briefs.js'
+import { buildWeekReview } from '@sundial/kernel/week-review.js'
 // The same predicate `researchGoals` opens a goal by, so the surface can say
 // what the fold is waiting for instead of guessing at it.
 import { LEARNED_LOSS_DROP, gapEligibility } from '@sundial/kernel/gap-eligibility.js'
-import { getSundialConfigPath, getSundialHome } from '@sundial/helpers/config.js'
+import { getSundialConfigPath, getSundialHome, withConfigLock, writeConfigAtomic } from '@sundial/helpers/config.js'
 import { getPermissionStatus } from '@sundial/helpers/permission-status.js'
+import { lastBackupDate } from '@sundial/helpers/backup-dir.js' // lane H
 import { loadSundialConfig, ruleForPlace, sanitizeProjectRule, unstableRuleReason } from '@sundial/helpers/sundial-config.js'
 import { WAKING_DAY_START_HOUR, localDate, localDayRange, wakingDate, wakingMinute } from '@sundial/helpers/local-day.js'
 // One definition of "is this a name", shared with `peopleAsk` and the ask
@@ -47,7 +53,6 @@ import {
   getLlmAuditDaily,
   getLlmAuditByModel,
   getRecentLlmAudit,
-  getLlmAuditById,
   getLostAnswers,
   getGateDecisionsBetween,
   listRetractedFacts,
@@ -75,6 +80,7 @@ import {
   getMomentsByIds,
   getProfileFact,
   getLeftOff,
+  getProjectIntents,
   getToolCalls,
   getActivityHours,
   getContextSwitchesBetween,
@@ -90,7 +96,7 @@ import {
 } from '@sundial/db/index.js'
 
 /**
- * The window the tensorx route declares (`DEFAULT_CONTEXT_WINDOW`) and the
+ * The window the openai route declares (`DEFAULT_CONTEXT_WINDOW`) and the
  * fraction `dsh-compaction-basic` acts on (`DEFAULT_THRESHOLD_RATIO`).
  *
  * Mirrored rather than imported: the first lives in another plugin's adapter
@@ -98,7 +104,7 @@ import {
  * is exported. They are here so the gauge can say what it is measuring against;
  * if either moves, the gauge reads slightly wrong and nothing breaks.
  */
-const CONTEXT_WINDOW = 128_000
+const CONTEXT_WINDOW = 64_000
 const COMPACT_THRESHOLD_RATIO = 0.8
 
 export const name = 'sundial-theme'
@@ -108,7 +114,7 @@ export const name = 'sundial-theme'
 // A note on the name. This package stopped being "the theme" some time ago: it
 // serves Today, the Ledger, six instruments, and the conversation shell. It is the
 // Gnomon web UI. Renaming it means touching the profile's link list in
-// ~/.dsh/profiles/web/package.json, which is a machine-level file outside the
+// $SUNDIAL_HOME/dsh/profiles/web/package.json, which is a machine-level file outside the
 // repo, so the debt is recorded here rather than paid halfway.
 // `gnomonDb` is injected but unused directly: it is what guarantees the DB is
 // open and migrated before `composeFigure` reads through it.
@@ -179,31 +185,13 @@ function shiftDate(dateStr, deltaDays) {
  * shows, and `days` is the inclusive count.
  */
 function spanFrom(url, getState, fallbackDays = 1) {
-  const span = getState()?.board?.span ?? null
+  // A preset is resolved against today, not read as the dates it was set on.
+  const span = liveSpan(getState()?.board?.span ?? null, today())
   const asked = { date: url.searchParams.get('date'), days: Number(url.searchParams.get('days')) || 0 }
   const to = asked.date || span?.to || today()
   const days = asked.days > 0 ? asked.days : asked.date ? 1 : span ? Math.max(1, Math.round((Date.parse(`${span.to}T00:00:00Z`) - Date.parse(`${span.from}T00:00:00Z`)) / 86_400_000) + 1) : fallbackDays
   const from = shiftDate(to, -(days - 1))
   return { from, to, days, date: to, label: span?.label ?? null, pinned: Boolean(asked.date || asked.days > 0) }
-}
-
-/**
- * A zone's UTC offset in whole hours at one instant.
- *
- * SQLite has no timezone database, so `getDayArcs` needs a constant shift —
- * and a constant is an hour wrong on the far side of a daylight saving change.
- * Taking it at the MIDDLE of the window means one such change inside the range
- * moves a single day's boundary rather than every day's.
- */
-function offsetHoursAt(iso, timeZone) {
-  try {
-    const at = new Date(iso)
-    const local = new Date(at.toLocaleString('en-US', { timeZone }))
-    const utc = new Date(at.toLocaleString('en-US', { timeZone: 'UTC' }))
-    return Math.round((local.getTime() - utc.getTime()) / 3_600_000)
-  } catch {
-    return 0
-  }
 }
 
 function sendJson(res, status, body) {
@@ -345,7 +333,7 @@ export function apply(ctx) {
   // chat call is already written to `llm_audit`. The most recent `ask` call is
   // the current turn on a single-owner machine, which is the only case there is.
   //
-  // Reported against the window the route DECLARES (128k) and the threshold
+  // Reported against the window the route DECLARES (`CONTEXT_WINDOW`) and the threshold
   // compaction acts on (80% of it). Both numbers matter to the reader: 44 calls
   // on this record sailed past the threshold and the largest reached 165,108 —
   // 37k beyond the window — and still returned success, so nothing anywhere
@@ -1009,6 +997,7 @@ const CONFIG_PATH = getSundialConfigPath()
         // owner's own time. Written first — nothing is folded that was not saved.
         if (decision !== 'ignored') {
           try {
+            await withConfigLock(async () => {
             let file = {}
             try {
               file = JSON.parse(await readFile(CONFIG_PATH, 'utf8'))
@@ -1039,7 +1028,8 @@ const CONFIG_PATH = getSundialConfigPath()
               if (!list.some((e) => String(e).toLowerCase() === label.toLowerCase())) list.push(label)
               file.leisureRules = { ...leisure, [bucket]: { ...group, [decision]: list } }
             }
-            await writeFile(CONFIG_PATH, `${JSON.stringify(file, null, 2)}\n`, 'utf8')
+            await writeConfigAtomic(CONFIG_PATH, file)
+            })
           } catch (error) {
             console.error(`[sundial-theme] could not write ${CONFIG_PATH}: ${error instanceof Error ? error.message : String(error)}`)
             sendJson(res, 500, { unavailable: 'The decision could not be written to config.json, so nothing was changed.' })
@@ -1184,7 +1174,17 @@ const CONFIG_PATH = getSundialConfigPath()
     const state = ctx.gnomonKernel.getState()
     if (!state) return { unavailable: 'The kernel has not booted.' }
     const [leftOff, shelf] = await Promise.all([getLeftOff(new Date(Date.now() - 14 * 86_400_000).toISOString()), readShelf()])
-    return buildSituation(state, { leftOff, shelfWaiting: shelf.filter((item) => item.verdict === null).length })
+    const sit = buildSituation(state, { home: homedir(), leftOff, shelfWaiting: shelf.filter((item) => item.verdict === null).length })
+    // Back on a project after days: the last lines on it before the absence (U2-F38).
+    const back = sit.resume?.trigger === 'project-return' ? sit.resume.pieces.project : null
+    if (back) sit.resume.digest = await getProjectIntents(back.id, new Date(Date.parse(sit.resume.at) - sit.resume.awayMs + 60_000).toISOString())
+    // The code touched in the hour before the break, in order (U2-F40).
+    if (sit.resume) {
+      const left = Date.parse(sit.resume.at) - sit.resume.awayMs
+      const rows = await getSignalsInRange(new Date(left - TRAIL_BEFORE_MIN * 60_000).toISOString(), new Date(left + 60_000).toISOString(), 400, ['symbol'])
+      sit.resume.trail = editTrail(rows, sit.resume.pieces.project?.id ?? null)
+    }
+    return sit
   })
 
   // The shelf: what Gnomon made on its own (the `workbench` rule's jobs, or
@@ -1232,6 +1232,37 @@ const CONFIG_PATH = getSundialConfigPath()
     }),
   )
 
+  // lane B — the brief Today shows: the standup draft or a meeting's prep until
+  // that meeting ends (whatever the gate did with the notice: Today is not a
+  // voice), and from Friday afternoon the week in review.
+  let weekCache = { at: 0, review: null }
+  ctx.effect(() =>
+    registerRoute({
+      kind: 'exact',
+      path: '/gnomon/brief',
+      handler: async (_req, res) => {
+        try {
+          const state = ctx.gnomonKernel.getState?.()
+          if (!state) return sendJson(res, 200, { before: null, week: null })
+          const now = new Date().toISOString()
+          const latest = state.briefs?.latest ?? null
+          // Turned off in Settings ("Standup and meeting prep"): Today shows none either.
+          const shown = latest && Date.parse(latest.end) > Date.parse(now) && !(state.settings.quiet ?? []).includes('briefs') ? latest : null
+          // The notice key the brief was raised under (brief-clock.ts), so Today's
+          // copy of it can take the owner's verdict and say it was seen.
+          const before = shown ? { ...shown, key: shown.kind === 'standup-draft' ? `standup-draft:${localDate(shown.start, state.config.timezone)}` : meetingPrepKey(shown.title, shown.start) } : null
+          // Every open tab polls each minute; the week is ~1 s of reads, so it is built once per 10 min.
+          if (!weekReviewDue(now, state.config.timezone)) weekCache = { at: 0, review: null }
+          else if (Date.now() - weekCache.at > 600_000) weekCache = { at: Date.now(), review: await buildWeekReview(now, state) }
+          const review = weekCache.review
+          sendJson(res, 200, { before, week: review ? { from: review.from, to: review.to, lines: review.lines } : null })
+        } catch (error) {
+          sendJson(res, 500, { unavailable: error instanceof Error ? error.message : String(error) })
+        }
+      },
+    }),
+  )
+
   ctx.effect(() =>
     registerRoute({
       kind: 'exact',
@@ -1264,7 +1295,7 @@ const CONFIG_PATH = getSundialConfigPath()
           // here so the Unsaid page can show what Gnomon nearly said, not just
           // that it nearly said something.
           const candidates = new Map()
-          for (const signal of await getSignalsInRange('1970-01-01T00:00:00.000Z', new Date(Date.now() + 60_000).toISOString(), 4000, ['notice'])) {
+          for (const signal of await getSignalsInRange('1970-01-01T00:00:00.000Z', new Date(Date.now() + 60_000).toISOString(), 4000, ['notice:candidate'])) {
             let data = signal.data
             if (typeof data === 'string') {
               try {
@@ -1506,35 +1537,6 @@ const CONFIG_PATH = getSundialConfigPath()
     }),
   )
 
-  // One call's full row — prompt and response bodies included — fetched only
-  // when a row in the Ledger is expanded (the list itself never carries
-  // bodies; see `getRecentLlmAudit`).
-  ctx.effect(() =>
-    registerRoute({
-      kind: 'exact',
-      path: '/gnomon/ledger/call',
-      handler: async (req, res) => {
-        try {
-          const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-          const id = url.searchParams.get('id')
-          if (!id) {
-            sendJson(res, 400, { unavailable: 'A call id is required.' })
-            return
-          }
-          const row = await getLlmAuditById(id)
-          if (!row) {
-            sendJson(res, 404, { unavailable: 'No such call.' })
-            return
-          }
-          sendJson(res, 200, row)
-        } catch (error) {
-          console.error(`[sundial-theme] ledger call failed: ${error instanceof Error ? error.message : String(error)}`)
-          sendJson(res, 500, { unavailable: 'The call could not be read.' })
-        }
-      },
-    }),
-  )
-
   // ── The instruments ─────────────────────────────────────────────────────
   // Five projections over data Gnomon has always written and nothing has ever
   // read back. The counts that motivated them, from one live 18-day database:
@@ -1609,8 +1611,23 @@ const CONFIG_PATH = getSundialConfigPath()
       llm: { configured: Boolean(base), host, model: process.env.SUNDIAL_LLM_MODEL ?? null, local: host !== null && /^(127\.0\.0\.1|localhost|\[::1\])(:|$)/.test(host) },
       record: await getSignalTotals(),
       moments: (await getLatestMoments(3)).map((m) => ({ start: m.startTime, end: m.endTime, app: m.processName, title: Array.isArray(m.data.windowTitles) ? m.data.windowTitles[0] ?? null : null })),
+      health: healthReading(),
     }
   })
+
+  // lane H: Sundial's own health, for Settings — what stands broken now (the
+  // `sensorHealth` fold's troubles), the last push, the last daily copy, and
+  // the budgets that ran out today. Read from state and the backup folder; nothing is recomputed.
+  function healthReading() {
+    const h = ctx.gnomonKernel.getState()?.sensorHealth ?? null
+    const today = localDate(new Date().toISOString(), loadSundialConfig().timezone)
+    return {
+      troubles: Object.entries(h?.troubles ?? {}).map(([key, t]) => ({ key, since: t.since, observation: t.observation, said: t.raisedAt !== null })),
+      push: { configured: Boolean(loadSundialConfig().notifications.ntfy), ...(h?.push ?? { lastOkAt: null, lastFailedAt: null, lastError: null }) },
+      lastBackup: lastBackupDate(),
+      budgetsOutToday: Object.entries(h?.budgetExhausted ?? {}).filter(([, day]) => day === today).map(([purpose]) => purpose),
+    }
+  }
 
   instrument('/gnomon/trust', 'The instruments could not be read.', async () => {
     const timeZone = loadSundialConfig().timezone
@@ -1620,7 +1637,9 @@ const CONFIG_PATH = getSundialConfigPath()
     // the ledger beside what the thinking cost (L9). A trust surface answers
     // how much of the owner's life was seen and what became of it; how many
     // rows that filled is a different question and was the loudest panel here.
-    const [pipeline, embeddings, freshness, redaction, retracted, observedDays] = await Promise.all([
+    const monthAgo = new Date(Date.now() - 30 * 86_400_000).toISOString()
+    const until = new Date(Date.now() + 60_000).toISOString()
+    const [pipeline, embeddings, freshness, redaction, retracted, observedDays, verdictSignals, decisions] = await Promise.all([
       getPipelineCoverage(),
       getEmbeddingHealth(),
       getSignalFreshness(),
@@ -1630,7 +1649,15 @@ const CONFIG_PATH = getSundialConfigPath()
       // bounded mirror keeps — see `getObservedHours` for why the surface and
       // the fold read different sources for the same measure.
       getObservedHours(),
+      // N1: notice verdicts from the LOG (the fold keeps fifty of every kind),
+      // and the gate's rows only to name each key's kind.
+      getSignalsInRange(monthAgo, until, 4000, ['feedback']),
+      getGateDecisionsBetween(new Date(Date.now() - 60 * 86_400_000).toISOString(), until),
     ])
+    const kindByKey = new Map(decisions.map((row) => [row.noticeKey, row.kind]))
+    const noticeVerdicts = verdictSignals
+      .map((signal) => (typeof signal.data === 'string' ? JSON.parse(signal.data) : signal.data) ?? {})
+      .filter((data) => data.artifactKind === 'notice')
 
     // UTC hours folded into LOCAL days here rather than in SQL, where the
     // shift would have to be a constant and would be an hour wrong on one side
@@ -1664,6 +1691,8 @@ const CONFIG_PATH = getSundialConfigPath()
       // The owner's taps by verdict (J0.8) — the tally every learned
       // threshold will hang off, read from the fold rather than the log.
       feedback: { countsByVerdict: state?.feedback?.countsByVerdict ?? {}, lastVerdictAt: state?.feedback?.lastVerdictAt ?? null },
+      // N1: of the notices the owner judged in thirty days, how many were worth hearing — per kind, with n.
+      noticePrecision: noticePrecision(noticeVerdicts, (key) => kindByKey.get(key)),
       // J2.3: the belief audit — when it last ran, and every retraction with
       // the answers behind it (null when an owner tap closed the fact).
       beliefAudit: { lastRunAt: state?.memory?.lastBeliefAuditAt ?? null, retracted },
@@ -1717,6 +1746,7 @@ const CONFIG_PATH = getSundialConfigPath()
         vision: Boolean(config.ocr?.vision?.enabled),
         vault: typeof config.vault === 'string' && config.vault !== '',
         mail: config.privacy?.mail === true,
+        messages: config.privacy?.messages === true,
       },
     }
   })
@@ -1744,9 +1774,13 @@ const CONFIG_PATH = getSundialConfigPath()
     const entities = everything.filter((entity) => held.has(entity.id))
 
     const byEntity = new Map()
+    // lane C: each testable belief's record against what the owner then did.
+    const records = ctx.gnomonKernel.getState()?.factTests?.records ?? {}
     for (const fact of facts) {
       const list = byEntity.get(fact.entityId) ?? []
+      const record = records[fact.id]
       list.push({
+        record: record && factRecordLine(record) ? { right: record.right, wrong: record.wrong, line: factRecordLine(record) } : null,
         id: fact.id,
         predicate: fact.predicate,
         object: fact.object,
@@ -2155,6 +2189,8 @@ const CONFIG_PATH = getSundialConfigPath()
           // Mirrors the live thread's marker, so the page says which ones Gnomon
           // already spoke about.
           fadingNoticed: state.commitments.open.find((t) => t.id === c.id)?.fadingNoticedAt ?? null,
+          // UC1: a promise's terms (person, due and where it came from, confirmed), from the row.
+          promise: c.promise ? { counterparty: state.memory.aliasNames?.[c.promise.counterparty] ?? c.promise.counterparty ?? null, deliverable: c.promise.deliverable, direction: c.promise.direction, due: c.promise.due ?? null, dueKind: c.promise.dueKind, nextMeeting: c.promise.nextMeeting?.title ?? null, confirmed: c.promise.confirmed === true, evidence: (c.promise.evidence ?? []).filter((e) => !e.strong).map((e) => e.text).slice(-2) } : null,
         })),
       },
       expectations: {
@@ -2503,10 +2539,8 @@ const CONFIG_PATH = getSundialConfigPath()
     const range = { from, to }
 
     const [arcs, observedHours, activityHours, switches, thrashing, interruptions, shellRuns, commits] = await Promise.all([
-      // The offset for the middle of the window, so a single daylight saving
-      // change inside it moves one day's boundary by an hour rather than
-      // shifting every day in the range.
-      getDayArcs(from, to, offsetHoursAt(new Date((Date.parse(from) + Date.parse(to)) / 2).toISOString(), timeZone)),
+      // Each moment in its own day in the owner's zone, so a daylight saving change inside the window moves nothing.
+      getDayArcs(from, to, timeZone),
       getObservedHours(),
       getActivityHours(range),
       getContextSwitchesBetween(range),

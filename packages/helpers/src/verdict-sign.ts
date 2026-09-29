@@ -26,9 +26,10 @@ const LABELS: Record<Verdict, string> = { useful: 'Useful', 'not-now': 'Not now'
  * :8767), never loopback. Empty when there is no base: a push with no way back
  * is still a push.
  */
-export function verdictActions(base: string, token: string, artifactKind: string, artifactId: string): Array<Record<string, unknown>> {
+export function verdictActions(base: string, token: string, artifactKind: string, artifactId: string, verdicts: readonly Verdict[] = VERDICTS): Array<Record<string, unknown>> {
   if (base === '') return [];
-  return VERDICTS.map((verdict) => ({
+  // lane H (H4): `verdicts` picks and orders the taps; a wait the owner cannot rate offers only "Not now".
+  return verdicts.map((verdict) => ({
     action: 'http',
     label: LABELS[verdict],
     url: `${base.replace(/\/$/, '')}/verdict`,

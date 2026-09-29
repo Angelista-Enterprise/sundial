@@ -13,8 +13,8 @@
 //
 // **Status "open" on every row is uninformative.** A goal by itself has no
 // movement to show; the record keeps movement somewhere else, on the branch the
-// goal names. `Ledger failure views (L1–L7)` says "delegated to Claude Code on
-// branch ledger-failure-views", and `commitments` holds that branch with its
+// goal names. `Ledger retry views (L1–L7)` says "delegated to Claude Code on
+// branch ledger-retry-views", and `commitments` holds that branch with its
 // last touch and its touch count, and the `git/commit` signals on it carry
 // `[6/7]` in their subjects. So the link is real, and it is the goal's own words
 // that make it — not a guess about which work belongs to which intention.
@@ -52,10 +52,10 @@ export function splitStatus(stored) {
 /**
  * The work the goal points at, if it points at any.
  *
- * Matched on the goal's own slug containing the branch's — `ledger-failure-views-l1-l7`
- * contains `ledger-failure-views`, `gnomon-board-audit` contains `board-audit`.
+ * Matched on the goal's own slug containing the branch's — `ledger-retry-views-l1-l7`
+ * contains `ledger-retry-views`, `gnomon-board-audit` contains `board-audit`.
  * A branch slug shorter than eight characters or with no hyphen in it is not
- * used: `dsh-0` appears inside half the sentences anyone writes, and a link the
+ * used: `abc-0` appears inside half the sentences anyone writes, and a link the
  * owner cannot recognise is worse than no link.
  */
 export function linkMovement(goalName, commitments, commits) {

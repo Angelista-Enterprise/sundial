@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createInitialState } from './initial-state.js';
-import { buildSituation, phaseOf } from './situation.js';
+import { buildSituation, editTrail, phaseOf, restoreLinks } from './situation.js';
 
 const NOW = Date.parse('2026-09-23T12:00:00.000Z');
 const base = () => {
@@ -42,13 +42,70 @@ describe('buildSituation (S1)', () => {
     expect(buildSituation(state, {}, NOW).you, 'a live call outranks the calendar').toBe('in-a-call');
   });
 
+  it('offers unpushed commits only when recent and plausible (U2-F20)', () => {
+    const state = base();
+    const at = (since: string, ahead: number) => ({ '~/Projects/acme/puzzlebox-studio': { branch: 'main', ahead, since, updatedAt: since } });
+    state.git = { ...state.git, unpushed: at('2026-09-22T12:00:00.000Z', 3) };
+    expect(buildSituation(state, {}, NOW).openHere.unpushed).toEqual({ branch: 'main', ahead: 3 });
+    state.git = { ...state.git, unpushed: at('2026-09-01T12:00:00.000Z', 3) };
+    expect(buildSituation(state, {}, NOW).openHere.unpushed).toBeNull();
+    state.git = { ...state.git, unpushed: at('2026-09-22T12:00:00.000Z', 900) };
+    expect(buildSituation(state, {}, NOW).openHere.unpushed).toBeNull();
+  });
+
+  it('carries the last return line for an hour (U2-F8)', () => {
+    const state = base();
+    state.resume = { intents: {}, last: { at: '2026-09-23T11:30:00.000Z', trigger: 'break', awayMs: 40 * 60_000, key: 'return-from-break:2026-09-23', line: 'Back after 40 min — Fixing the retry test', pieces: {} } };
+    expect(buildSituation(state, {}, NOW).resume?.line).toBe('Back after 40 min — Fixing the retry test');
+    expect(buildSituation(state, {}, NOW + 31 * 60_000).resume).toBeNull();
+  });
+
+  it('offers a way back into each piece, as a link or an ask, never an action (U2-F30 F31 F32 F34)', () => {
+    const links = restoreLinks(
+      {
+        file: { path: '~/code/puzzlebox/src/retry.ts', app: 'Code' },
+        tab: { url: 'https://example.test/pull/812', title: 'Fix retry backoff' },
+        agent: { id: 'abcd1234', sid: 'abcd1234-0000-4000-8000-000000000000', cwd: '~/code/puzzlebox', state: 'waiting', title: 'Fix retry backoff', lastPrompt: null, since: '2026-09-23T11:00:00.000Z' },
+        failure: { command: 'pnpm test', exitCode: 1, cwd: '~/code/puzzlebox', at: '2026-09-23T11:00:00.000Z' },
+      },
+      '/Users/mira',
+    );
+    expect(links).toEqual([
+      { piece: 'file', label: 'Open retry.ts', href: 'vscode://file/Users/mira/code/puzzlebox/src/retry.ts' },
+      { piece: 'tab', label: 'Open “Fix retry backoff”', href: 'https://example.test/pull/812' },
+      { piece: 'agent', label: 'Resume the Claude session “Fix retry backoff”', ask: 'Open a terminal in ~/code/puzzlebox and run: claude --resume abcd1234-0000-4000-8000-000000000000' },
+      { piece: 'failure', label: 'Re-run `pnpm test`', ask: 'Re-run `pnpm test` in ~/code/puzzlebox and tell me if it passes.' },
+    ]);
+    expect(restoreLinks({ tab: { url: 'https://a.test/x', title: null }, tabs: { space: 'Work', tabs: [{ url: 'https://a.test/x', title: 'X' }, { url: 'https://a.test/y', title: null }] } }, null)).toEqual([
+      { piece: 'tab', label: 'Open a.test/x', href: 'https://a.test/x' },
+      { piece: 'tabs', label: 'Work: a.test/y', href: 'https://a.test/y' },
+    ]);
+    // No home, no editor link; an app with no URL scheme, none either.
+    expect(restoreLinks({ file: { path: '~/a.ts', app: 'Code' } }, null)).toEqual([]);
+    expect(restoreLinks({ file: { path: '/a.txt', app: 'TextEdit' } }, '/Users/mira')).toEqual([]);
+  });
+
+  it('the edit trail: one row per file on the project, symbols merged, last touched last (U2-F14 F40)', () => {
+    const row = (at: string, projectRoot: string, edits: unknown[]) => ({ capturedAt: at, data: { projectRoot, edits } });
+    const rows = [
+      row('2026-09-23T11:00:00.000Z', '~/p', [{ file: 'src/retry.ts', symbols: ['classifySidecar'] }]),
+      row('2026-09-23T11:05:00.000Z', '~/q', [{ file: 'other.ts', symbols: ['x'] }]),
+      row('2026-09-23T11:10:00.000Z', '~/p', [{ file: 'src/gate.ts', symbols: [] }]),
+      row('2026-09-23T11:20:00.000Z', '~/p', [{ file: 'src/retry.ts', symbols: ['retryBackoff', 'classifySidecar'] }]),
+    ];
+    expect(editTrail(rows, '~/p')).toEqual([
+      { at: '2026-09-23T11:10:00.000Z', file: 'src/gate.ts', symbols: [] },
+      { at: '2026-09-23T11:20:00.000Z', file: 'src/retry.ts', symbols: ['classifySidecar', 'retryBackoff'] },
+    ]);
+  });
+
   it('lists only what is open on THIS project', () => {
     const state = base();
     state.commitments = {
       ...state.commitments,
       open: [
         { id: 'c1', name: 'ghweb-credit-line', projectId: '~/Projects/acme/puzzlebox-studio', lastTouchedAt: '2026-09-21T12:00:00.000Z' },
-        { id: 'c2', name: 'ledger-failure-views', projectId: '~/Projects/sundial', lastTouchedAt: '2026-09-23T11:00:00.000Z' },
+        { id: 'c2', name: 'ledger-retry-views', projectId: '~/Projects/sundial', lastTouchedAt: '2026-09-23T11:00:00.000Z' },
       ],
     } as unknown as typeof state.commitments;
     const s = buildSituation(state, {}, NOW);

@@ -1,6 +1,6 @@
 import { and, inArray, lt, sql } from 'drizzle-orm';
 import { getDb } from '../db-client.js';
-import { llmAudit, moments, signals } from '../schemas/db-schema.js';
+import { appliedEffects, llmAudit, moments, signals } from '../schemas/db-schema.js';
 
 export interface RetentionPruneResult {
   signalsDeleted: number;
@@ -49,14 +49,60 @@ export async function deleteRowsOlderThan(olderThan: string): Promise<RetentionP
 }
 
 /**
+ * lane Q (Q10): the short horizon for the two tables that grow fastest.
+ * `llm_audit` keeps every prompt and response whole for the 180-day
+ * retention: 165 MB over 33k rows on the live record. Past `olderThan` a row
+ * keeps its metadata (purpose, model, tokens, latency, status, error) and
+ * loses its text: `prompt` is NOT NULL, so it becomes ''. `applied_effects`
+ * had no retention at all; a completed journal row older than `olderThan`
+ * says nothing a boot replay can use, so it goes. Started, failed and
+ * indeterminate rows stay: those are the ones a replay reads.
+ */
+export async function trimAuditBodies(olderThan: string): Promise<{ llmBodiesCleared: number; effectsDeleted: number }> {
+  const db = getDb();
+  const cleared = await db
+    .update(llmAudit)
+    .set({ prompt: '', responseContent: null })
+    .where(and(lt(llmAudit.requestedAt, olderThan), sql`(${llmAudit.prompt} <> '' OR ${llmAudit.responseContent} IS NOT NULL)`));
+  const journal = await db.delete(appliedEffects).where(and(lt(appliedEffects.appliedAt, olderThan), sql`${appliedEffects.status} = 'completed'`));
+  return { llmBodiesCleared: cleared.rowsAffected, effectsDeleted: journal.rowsAffected };
+}
+
+/**
  * The short-horizon sweep: only `signals` of the given `signal_type`s older
  * than `olderThan`. Built for `screen:ocr`, whose raw text should not sit on
  * disk for the six months the rest of the log keeps (its moments keep the
  * derived topics and excerpt). Touches nothing else.
+ *
+ * `apps` narrows it to rows whose payload `processName` or `bundleId` contains
+ * one of them (case-insensitive, the sensor's own substring test): the purge of
+ * screens captured before an app joined the sensitive list. At most `limit`
+ * rows a call, so a first purge over a large log is spread across days rather
+ * than one long write lock; it deletes nothing once they are gone.
+ *
+ * `eventTypes` narrows a sweep to those `event_type`s (`audio:transcript`
+ * without the headphone rows that share its `signal_type`).
  */
-export async function deleteSignalsOlderThan(olderThan: string, signalTypes: readonly string[]): Promise<number> {
+export async function deleteSignalsOlderThan(
+  olderThan: string,
+  signalTypes: readonly string[],
+  { apps = [], eventTypes, limit = 5000 }: { apps?: readonly string[]; eventTypes?: readonly string[]; limit?: number } = {},
+): Promise<number> {
   if (signalTypes.length === 0) return 0;
   const db = getDb();
-  const result = await db.delete(signals).where(and(lt(signals.capturedAt, olderThan), inArray(signals.signalType, [...signalTypes])));
+  if (apps.length === 0) {
+    const result = await db
+      .delete(signals)
+      .where(and(lt(signals.capturedAt, olderThan), inArray(signals.signalType, [...signalTypes]), eventTypes ? inArray(signals.eventType, [...eventTypes]) : undefined));
+    return result.rowsAffected;
+  }
+  const who = sql`lower(coalesce(json_extract(data, '$.processName'), '') || ' ' || coalesce(json_extract(data, '$.bundleId'), ''))`;
+  const match = sql.join(apps.map((app) => sql`${who} LIKE ${`%${app.toLowerCase()}%`}`), sql` OR `);
+  const types = sql.join(signalTypes.map((t) => sql`${t}`), sql`, `);
+  const result = await db.run(sql`
+    DELETE FROM signals WHERE id IN (
+      SELECT id FROM signals WHERE signal_type IN (${types}) AND captured_at < ${olderThan} AND (${match}) LIMIT ${limit}
+    )
+  `);
   return result.rowsAffected;
 }

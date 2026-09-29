@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { getDb, resetDb } from '../db-client.js';
-import { insertSignal, getRecentSignals, getSignalFreshness, getRedactionSummary, getSignalsForDate, getSignalsInRange } from './signals.js';
+import { insertSignal, getRecentSignals, getSignalFreshness, getRedactionSummary, getSignalsForDate, getSignalsInRange, getSignalsAfter } from './signals.js';
 
 async function setupTestDb() {
   resetDb();
@@ -147,6 +147,12 @@ describe('getSignalsInRange', () => {
     }
   }
 
+  it('breaks a tie in captured_at by id, so offset pages never shuffle', async () => {
+    for (const id of ['t3', 't1', 't2']) await insertSignal({ id, signalType: 'window', eventType: 'changed', data: { id }, capturedAt: '2026-01-01T10:00:00.000Z' });
+    const pages = [...(await getSignalsInRange('2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z', 2)), ...(await getSignalsInRange('2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z', 2, undefined, 2))];
+    expect(pages.map((r) => r.id)).toEqual(['t1', 't2', 't3']);
+  });
+
   it('returns the window chronologically, inclusive of `from`', async () => {
     await seed();
     const rows = await getSignalsInRange('2026-01-01T10:00:00.000Z', '2026-01-01T11:00:00.000Z');
@@ -284,5 +290,22 @@ describe('getRecentSignals with a list of types', () => {
   it('an empty list is not a filter at all', async () => {
     const rows = await getRecentSignals(1, []);
     expect(rows).toHaveLength(1);
+  });
+});
+
+describe('getSignalsAfter (boot replay)', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+  });
+
+  it('returns what was written after the offset, even when its id sorts lower', async () => {
+    const put = (id: string) => insertSignal({ id, signalType: 'clock', eventType: 'tick', data: {}, capturedAt: '2026-01-01T00:00:00.000Z' });
+    await put('01B');
+    await put('01C'); // the snapshot's offset
+    await put('01A'); // a derived child with an older millisecond
+    await put('01D');
+    expect((await getSignalsAfter('01C')).map((r) => r.id)).toEqual(['01A', '01D']);
+    expect((await getSignalsAfter(null)).map((r) => r.id)).toEqual(['01B', '01C', '01A', '01D']);
+    expect((await getSignalsAfter('01BB')).map((r) => r.id), 'an offset no longer in the log: id order').toEqual(['01C', '01D']);
   });
 });

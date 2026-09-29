@@ -1,5 +1,5 @@
 import { getLlmConfig } from './config.js';
-import type { ChatCompletionMessage, ChatCompletionResult, ToolCall, ToolDefinition } from './types.js';
+import type { ChatCompletionMessage, ChatCompletionResult, LlmPurpose, ToolCall, ToolDefinition } from './types.js';
 
 /**
  * Fine for a moment-intent call on a five-line prompt. Not fine for the journal,
@@ -73,9 +73,9 @@ function toWireMessage(message: ChatCompletionMessage): Record<string, unknown> 
  */
 export async function callChatCompletion(
   messages: ChatCompletionMessage[],
-  opts: { model?: string; maxTokens?: number; temperature?: number; tools?: ToolDefinition[]; toolChoice?: 'auto' | 'none'; timeoutMs?: number } = {},
+  opts: { purpose?: LlmPurpose; model?: string; maxTokens?: number; temperature?: number; tools?: ToolDefinition[]; toolChoice?: 'auto' | 'none'; timeoutMs?: number } = {},
 ): Promise<ChatCompletionResult> {
-  const config = getLlmConfig();
+  const config = getLlmConfig(opts.purpose);
   if (!config) {
     throw new Error('No LLM endpoint configured — set SUNDIAL_LLM_BASE_URL, and SUNDIAL_LLM_MODEL for any endpoint other than TensorX.');
   }

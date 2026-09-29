@@ -38,11 +38,11 @@ describe('listenToReply', () => {
 
   it('puts a goal answer to the judge with the open goals, one slot each', () => {
     const base = withOpenAsk('owner-ask:goals-2026-09-21', 'New week. Your open goals: sleep; demo. Which got real time?');
-    const state: KernelState = { ...base, memory: { ...base.memory, factCursor: { 'goal:consistent-sleep:status': { object: 'active', factId: 'f1', pendingObject: null, pendingCount: 0 } as never, 'goal:demo-0hh1:status': { object: 'active', factId: 'f2', pendingObject: null, pendingCount: 0 } as never } } };
+    const state: KernelState = { ...base, memory: { ...base.memory, factCursor: { 'goal:consistent-sleep:status': { object: 'active', factId: 'f1', pendingObject: null, pendingCount: 0 } as never, 'goal:demo-puzzlebox:status': { object: 'active', factId: 'f2', pendingObject: null, pendingCount: 0 } as never } } };
     const judge = judgeOf(listenToReply(state, answered('owner-ask:goals-2026-09-21', 'demo landed, pause sleep for now')).effects);
-    expect((judge?.state as Record<string, unknown>).open_goals).toEqual({ g0: 'consistent sleep', g1: 'demo 0hh1' });
+    expect((judge?.state as Record<string, unknown>).open_goals).toEqual({ g0: 'consistent sleep', g1: 'demo puzzlebox' });
     expect(Object.keys(judge?.questions ?? {})).toContain('goal_g1');
-    expect(judge?.metadata).toMatchObject({ goals: [{ entityId: 'goal:consistent-sleep', name: 'consistent sleep' }, { entityId: 'goal:demo-0hh1', name: 'demo 0hh1' }], meeting: null });
+    expect(judge?.metadata).toMatchObject({ goals: [{ entityId: 'goal:consistent-sleep', name: 'consistent sleep' }, { entityId: 'goal:demo-puzzlebox', name: 'demo puzzlebox' }], meeting: null });
   });
 
   it('ignores a stale answer, an empty answer, and no open ask', () => {
@@ -67,7 +67,7 @@ describe('applyOwnerReply', () => {
   });
 
   it('a goal the owner pauses or drops becomes a status assertion on THAT goal, at the choice threshold', () => {
-    const meta = { askId: 'owner-ask:goals-2026-09-21', question: 'New week…', answer: 'demo landed, pause sleep, drop screen recording', meeting: null, goals: [{ entityId: 'goal:consistent-sleep', name: 'consistent sleep' }, { entityId: 'goal:demo-0hh1', name: 'demo 0hh1' }, { entityId: 'goal:screen-recording', name: 'screen recording' }] };
+    const meta = { askId: 'owner-ask:goals-2026-09-21', question: 'New week…', answer: 'demo landed, pause sleep, drop screen recording', meeting: null, goals: [{ entityId: 'goal:consistent-sleep', name: 'consistent sleep' }, { entityId: 'goal:demo-puzzlebox', name: 'demo puzzlebox' }, { entityId: 'goal:screen-recording', name: 'screen recording' }] };
     const { effects } = applyOwnerReply(
       state,
       judged(

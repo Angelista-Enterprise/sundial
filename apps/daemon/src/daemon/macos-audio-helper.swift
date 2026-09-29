@@ -383,6 +383,14 @@ private func transcribe(samples: [Int16], startedAt: Date, endedAt: Date, source
     body.append(contentsOf: Array("\r\n".utf8))
     field("response_format", "verbose_json")
     field("language", "auto")
+    // whisper-server's own silence handling, per request (an older server
+    // ignores a field it does not know). Greedy at temperature 0: the sampled
+    // fallback is where invented sentences come from. `suppress_nst` drops
+    // non-speech tokens; the server has read it under both names.
+    field("temperature", "0")
+    field("no_speech_thold", "0.6")
+    field("suppress_nst", "true")
+    field("suppress_non_speech", "true")
     body.append(contentsOf: Array("--\(boundary)--\r\n".utf8))
 
     var request = URLRequest(url: url)

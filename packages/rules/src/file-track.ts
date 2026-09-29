@@ -11,8 +11,13 @@ interface FileChangedPayload {
 /** Hot files kept per day; the rest of the tail falls off by change count. */
 export const MAX_HOT_FILES = 50;
 
-/** Files that are never the owner's own work, whatever the watcher says. */
-const IGNORED_PATH = /(^|\/)(node_modules|dist|\.git|\.pnpm|coverage)\/|\.(lock|log|map|timestamp-[0-9a-z-]+\.mjs)$|(^|\/)\.[^/]*\.mjs$/;
+/**
+ * Files that are never the owner's own work, whatever the watcher says. Any
+ * folder whose name starts with a dot is a tool's (U2-F21): agent worktrees,
+ * skill caches, patch backups were 9.7% of changes. `.github` is the exception,
+ * since workflows are work.
+ */
+export const IGNORED_PATH = /(^|\/)(node_modules|dist|coverage|\.(?!github\/)[^/]+)\/|\.(lock|log|map|timestamp-[0-9a-z-]+\.mjs)$|(^|\/)\.[^/]*\.mjs$/;
 
 function trimHot(hot: Record<string, HotFile>): Record<string, HotFile> {
   const entries = Object.entries(hot);
@@ -24,7 +29,7 @@ function trimHot(hot: Record<string, HotFile>): Record<string, HotFile> {
 /**
  * `file:changed` had 3,207 rows and no rule: `getCodeActivityForDate` parsed it
  * on demand for the evidence tool, and nothing else ever saw it
- * (`enhancements/collected-but-unused-data`). This folds it into
+ * (`enhancements/collected-but-unused-data`, retired from the almanac once built). This folds it into
  * `state.files.hot` — how many times each file was touched today, and how many
  * of those touches landed while the editor was the focused window — so the
  * presence line can say "you have been in this one file all afternoon" and a

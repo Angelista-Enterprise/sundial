@@ -81,3 +81,16 @@ describe('routineLearn', () => {
     expect(next).toBe(state);
   });
 });
+
+describe('a full table can still learn a new habit', () => {
+  it('routines unseen for two weeks make room: a new sequence repeated three times is learned', () => {
+    const base = createInitialState('d');
+    const old = '2026-08-01T09:00:00.000Z';
+    const learned = Object.fromEntries(Array.from({ length: MAX_ROUTINES }, (_, i) => [`Old${i} > B > C`, { support: 50, steps: [`Old${i}/work`, 'B/work', 'C/work'], firstSeenAt: old, lastSeenAt: old }]));
+    let s: KernelState = { ...base, routines: { trail: [], learned } };
+    const day = Date.parse('2026-09-20T09:00:00.000Z');
+    for (let rep = 0; rep < 3; rep++) s = walk(s, ['Mail', 'Arc', 'Code', 'Notes'], day + rep * 3_600_000);
+    expect(Object.keys(s.routines.learned)).toHaveLength(MAX_ROUTINES);
+    expect(confirmedRoutines(s).find((r) => r.key.startsWith('Mail/') && r.steps.length === 3)?.support).toBe(3);
+  });
+});

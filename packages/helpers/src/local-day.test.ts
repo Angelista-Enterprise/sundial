@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hostTimeZone, localDate, localDayRange } from './local-day.js';
+import { hostTimeZone, localDate, localDayRange, localMinuteOfDay, localWeekday } from './local-day.js';
 
 describe('localDate', () => {
   /**
@@ -81,5 +81,15 @@ describe('localDayRange', () => {
 describe('hostTimeZone', () => {
   it('returns a usable IANA zone', () => {
     expect(localDate('2026-07-29T12:00:00.000Z', hostTimeZone())).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+});
+
+describe('localMinuteOfDay / localWeekday (M3)', () => {
+  it('read the configured zone, not the host', () => {
+    // Thursday 2026-01-01 03:30 UTC is Wednesday 22:30 in New York and 09:00 in Kolkata.
+    expect(localMinuteOfDay('2026-01-01T03:30:00.000Z', 'America/New_York')).toBe(22 * 60 + 30);
+    expect(localMinuteOfDay('2026-01-01T03:30:00.000Z', 'Asia/Kolkata')).toBe(9 * 60);
+    expect(localWeekday('2026-01-01T03:30:00.000Z', 'America/New_York')).toBe(3);
+    expect(localWeekday('2026-01-01T03:30:00.000Z', 'UTC')).toBe(4);
   });
 });

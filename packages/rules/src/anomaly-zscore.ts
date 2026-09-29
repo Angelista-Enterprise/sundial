@@ -1,4 +1,5 @@
 import { deriveId } from '@sundial/helpers/derive-id.js';
+import { localHour } from '@sundial/helpers/local-day.js';
 import { attendedMs } from './focus-score.js';
 import type { Effect, KernelState, Rule } from '@sundial/kernel/types.js';
 import { coverageOver } from './coverage-track.js';
@@ -146,7 +147,7 @@ function evaluateAnomaly(
   const gapMs = unobservedGapMs(state, Date.parse(startTime), Date.parse(ts));
   if (gapMs !== null && gapMs > MAX_UNOBSERVED_GAP_MS) return { state, effects: [] };
 
-  const hour = new Date(startTime).getHours();
+  const hour = localHour(startTime, state.config.timezone);
   const bucketKey = String(hour);
   const samples = state.baselines.hourlyDurationsByKind[bucketKey] ?? [];
   const z = computeZScore(durationMinutes, samples);

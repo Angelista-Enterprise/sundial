@@ -1,6 +1,6 @@
 // dsh's session store → the owner's typed turns, for `RunConversationExtraction`.
 //
-// Lives here rather than in the `gnomon-kernel` plugin because this package
+// Lives here rather than in the `sundial-kernel` plugin because this package
 // already depends on `@sundial/rules` (for the pure turn selection) and the
 // plugin does not; the plugin hands in dsh's `sessionQuery` service and gets a
 // `ConversationSource` back.

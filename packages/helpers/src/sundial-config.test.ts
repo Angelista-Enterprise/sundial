@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadSundialConfig, DEFAULT_SUNDIAL_CONFIG, canonicalProjectName, writeLocationLabel, resolveActionPolicy } from './sundial-config.js';
+import { loadSundialConfig, DEFAULT_SUNDIAL_CONFIG, canonicalProjectName, resolveActionPolicy } from './sundial-config.js';
 
 let scratchDir: string;
 const ORIGINAL_GNOMON_DIR = process.env.SUNDIAL_HOME;
@@ -34,6 +34,22 @@ describe('loadSundialConfig', () => {
     writeConfig('{ this is not valid json');
     expect(() => loadSundialConfig()).not.toThrow();
     expect(loadSundialConfig()).toEqual(DEFAULT_SUNDIAL_CONFIG);
+  });
+
+  it('ignores an old telegram block — the bridge is gone, the key is not an error', () => {
+    writeConfig(JSON.stringify({ telegram: { token: 'made-up-token', chatId: 12345 } }));
+    expect(loadSundialConfig()).toEqual(DEFAULT_SUNDIAL_CONFIG);
+    expect('telegram' in loadSundialConfig()).toBe(false);
+  });
+
+  // lane E (#12)
+  it('jobs: the night shift is off unless enabled is exactly true, and a bad cap falls back', () => {
+    const off = { enabled: false, maxUsdPerJob: 2, maxUsdPerNight: 5, maxJobsPerNight: 2, maxMinutes: 90 };
+    expect(loadSundialConfig().jobs).toEqual(off);
+    writeConfig(JSON.stringify({ jobs: { enabled: 'true', maxUsdPerJob: -1, maxMinutes: 'long' } }));
+    expect(loadSundialConfig().jobs).toEqual(off);
+    writeConfig(JSON.stringify({ jobs: { enabled: true, maxUsdPerJob: 0.5, maxJobsPerNight: 1.7 } }));
+    expect(loadSundialConfig().jobs).toEqual({ ...off, enabled: true, maxUsdPerJob: 0.5, maxJobsPerNight: 1 });
   });
 
   it('hands: Claude is off unless it is exactly true, and a bad path or budget falls back', () => {
@@ -69,7 +85,6 @@ describe('loadSundialConfig', () => {
         decayFactor: 0.9,
         pollIntervalMs: 2000,
         clipboardEnabled: true,
-        apiPort: 9000,
       }),
     );
 
@@ -83,15 +98,6 @@ describe('loadSundialConfig', () => {
     expect(config.decayFactor).toBe(0.9);
     expect(config.pollIntervalMs).toBe(2000);
     expect(config.clipboardEnabled).toBe(true);
-    expect(config.apiPort).toBe(9000);
-  });
-
-  it('D4: rejects an out-of-range or non-integer apiPort and falls back to the default', () => {
-    writeConfig(JSON.stringify({ apiPort: 70000 }));
-    expect(loadSundialConfig().apiPort).toBe(DEFAULT_SUNDIAL_CONFIG.apiPort);
-
-    writeConfig(JSON.stringify({ apiPort: 8080.5 }));
-    expect(loadSundialConfig().apiPort).toBe(DEFAULT_SUNDIAL_CONFIG.apiPort);
   });
 
   it('falls back to defaults field-by-field for a partially-filled config.json', () => {
@@ -215,77 +221,6 @@ describe('loadSundialConfig', () => {
       writeConfig(JSON.stringify({ actions: { filesystemAllow: ['~/Projects/sundial', '/tmp/gnomon'] } }));
       expect(loadSundialConfig().actions.filesystemAllow).toEqual(['~/Projects/sundial', '/tmp/gnomon']);
     });
-  });
-});
-
-describe('writeLocationLabel', () => {
-  beforeEach(() => {
-    scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gnomon-config-test-'));
-    process.env.SUNDIAL_HOME = scratchDir;
-  });
-
-  afterEach(() => {
-    fs.rmSync(scratchDir, { recursive: true, force: true });
-    process.env.SUNDIAL_HOME = ORIGINAL_GNOMON_DIR;
-  });
-
-  function readConfig(): Record<string, unknown> {
-    return JSON.parse(fs.readFileSync(path.join(scratchDir, 'config.json'), 'utf-8')) as Record<string, unknown>;
-  }
-
-  it('creates the file and the map when neither exists yet', () => {
-    expect(writeLocationLabel('net2_abc', 'office')).toEqual({ net2_abc: 'office' });
-    expect(readConfig().locationLabels).toEqual({ net2_abc: 'office' });
-  });
-
-  /** This file is hand-edited by the owner; a label write must not be a rewrite. */
-  it('preserves every other key in the file', () => {
-    writeConfig(JSON.stringify({ ownerAliases: ['ada'], privacy: { redactionTier: 3 }, locationLabels: { net2_home: 'home' } }));
-
-    writeLocationLabel('net2_abc', 'office');
-
-    const config = readConfig();
-    expect(config.ownerAliases).toEqual(['ada']);
-    expect(config.privacy).toEqual({ redactionTier: 3 });
-    expect(config.locationLabels).toEqual({ net2_home: 'home', net2_abc: 'office' });
-  });
-
-  it('renames in place rather than accumulating a second entry', () => {
-    writeLocationLabel('net2_abc', 'офис');
-    expect(writeLocationLabel('net2_abc', 'office')).toEqual({ net2_abc: 'office' });
-  });
-
-  /**
-   * Blank is removal, not an empty name. `loadSundialConfig` drops empty values, so
-   * storing one would produce a label that works until the next boot and then does
-   * not — the worst of the three possible behaviours.
-   */
-  it('treats null and blank as removal', () => {
-    writeLocationLabel('net2_abc', 'office');
-    expect(writeLocationLabel('net2_abc', null)).toEqual({});
-
-    writeLocationLabel('net2_abc', 'office');
-    expect(writeLocationLabel('net2_abc', '   ')).toEqual({});
-    expect(readConfig().locationLabels).toEqual({});
-  });
-
-  it('trims the stored name, matching what loadSundialConfig would have done on read', () => {
-    expect(writeLocationLabel('net2_abc', '  office  ')).toEqual({ net2_abc: 'office' });
-  });
-
-  /**
-   * Refuses rather than starting from `{}`, which would silently drop every other
-   * setting in the owner's file to save one label.
-   */
-  it('refuses to write over a config file it could not parse', () => {
-    writeConfig('{ not json');
-    expect(() => writeLocationLabel('net2_abc', 'office')).toThrow(/unparseable/);
-    expect(fs.readFileSync(path.join(scratchDir, 'config.json'), 'utf-8')).toBe('{ not json');
-  });
-
-  it('round-trips through loadSundialConfig', () => {
-    writeLocationLabel('net2_abc', 'office');
-    expect(loadSundialConfig().locationLabels).toEqual({ net2_abc: 'office' });
   });
 });
 

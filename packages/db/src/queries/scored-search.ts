@@ -1,4 +1,4 @@
-import { bm25, computeEmbedding, computeRecencyWeight, computeScore, cosineSimilarity, lexicalWeightFor, reciprocalRankFusion, salienceFromConfidence, salienceFromScore } from '@sundial/memory/index.js';
+import { bm25, computeEmbedding, tokenize, computeRecencyWeight, computeScore, cosineSimilarity, lexicalWeightFor, reciprocalRankFusion, salienceFromConfidence, salienceFromScore } from '@sundial/memory/index.js';
 import { embeddingSpace } from '@sundial/helpers/moment-embed-text.js';
 import { deleteEmbeddingsByIds, getAllEmbeddings } from './embeddings.js';
 import { getEntityFactsWithEntityByIds } from './entities.js';
@@ -25,8 +25,7 @@ export interface ScoredSearchHit {
 }
 
 /**
- * Shared by `gnomon search`, `gnomon ask`, and the MCP `gnomon_semantic_search`
- * tool — one implementation of §1's scored ranking (recency + importance +
+ * Behind the `gnomon_semantic_search` tool (chat and MCP) — one implementation of §1's scored ranking (recency + importance +
  * relevance) over `memory_embeddings`, rather than three near-duplicates.
  * Linear scan, not a vector index (see `embeddings.ts`'s doc comment).
  * Bumps `lastAccessedAt` on every returned hit (an LRU-like signal,
@@ -69,23 +68,42 @@ export interface ScoredSearchOptions {
   /**
    * `false` ranks by the semantic (embedding × recency × salience) score alone —
    * the retriever as it was before 2026-08. Exists for measurement
-   * (`lab/measure-retrieval.mjs` compares the two on the live corpus); every
+   * (`lab/measure-retrieval.mjs` compared the two on the live corpus; removed in
+   * 9a6988c, recoverable with `git show 9a6988c^:lab/measure-retrieval.mjs`); every
    * product caller leaves it on.
    */
   fusion?: boolean;
   /** Per-retriever vote weights for the rank fusion. Defaults to `DEFAULT_FUSION_WEIGHTS`; exists for measurement. */
-  weights?: { semantic?: number; lexical?: number; graph?: number };
+  weights?: { semantic?: number; lexical?: number; graph?: number; name?: number };
 }
 
 /**
- * Chosen by measurement, not taste — see `lab/measure-retrieval.mjs` and the
- * numbers in its commit. Semantic carries the full vote. The lexical vote
+ * Chosen by measurement, not taste — see `lab/measure-retrieval.mjs` (removed
+ * in 9a6988c; `git show 9a6988c^:lab/measure-retrieval.mjs`) and the numbers
+ * in its commit. Semantic carries the full vote. The lexical vote
  * FOLLOWS THE QUERY (`lexicalWeightFor`): full for an identifier-shaped query
  * the embedding cannot place, a boost for prose. The graph hop is a small vote
  * always: its job is to bring a colleague's other facts into the top five,
  * never to displace an exact hit from the top.
  */
-export const DEFAULT_FUSION_WEIGHTS = { semantic: 1, lexical: undefined as number | undefined, graph: 0.15 };
+export const DEFAULT_FUSION_WEIGHTS = { semantic: 1, lexical: undefined as number | undefined, graph: 0.15, name: 3 };
+
+/**
+ * M5 — whether `query` names `name`. A name of two or more words names the
+ * query when its words appear in it as one run ("who is Mira Bakker?" names
+ * "Mira Bakker"). A one-word name must BE the whole query: "Mira" names
+ * "Mira", "is Mira free" does not — one word inside a sentence is too often a
+ * first name, a common noun or a tool to rank a whole entity first. Case and
+ * punctuation fold away, as they do for BM25. A name under three characters
+ * names nothing.
+ */
+export function queryNames(query: string, name: string): boolean {
+  const tokens = tokenize(name);
+  const words = tokens.join(' ');
+  const asked = tokenize(query).join(' ');
+  if (words.length < 3) return false;
+  return asked === words || (tokens.length >= 2 && ` ${asked} `.includes(` ${words} `));
+}
 
 export async function scoredSearch(query: string, limit: number, now: string = new Date().toISOString(), options: ScoredSearchOptions = {}): Promise<ScoredSearchHit[]> {
   const { vector: queryVector, model: queryModel } = await computeEmbedding(query);
@@ -219,12 +237,34 @@ export async function scoredSearch(query: string, limit: number, now: string = n
     }
   }
 
+  // M5 — the exact-name retriever. Entity names were the weakest class
+  // (recall@5 35.5% on 107 questions): a small embedding places "Mira Bakker"
+  // no nearer her facts than anyone else's, and BM25 splits the name across
+  // every row that shares a first name. A query that NAMES an entity — by its
+  // canonical name or by a `knownAs` alias — ranks that entity's facts first.
+  const namedEntityIds = new Set<string>();
+  for (const fact of factsById.values()) {
+    if (fact.validTo !== null) continue;
+    if (queryNames(query, fact.canonicalName) || (fact.predicate === 'knownAs' && queryNames(query, fact.object))) namedEntityIds.add(fact.entityId);
+  }
+  const nameRanking = new Map<string, number>();
+  for (const [key, hit] of byId) {
+    const fact = hit.refType === 'entity_fact' ? factsById.get(hit.refId) : undefined;
+    if (fact && namedEntityIds.has(fact.entityId)) nameRanking.set(key, fact.confidence);
+  }
+
   const weights = { ...DEFAULT_FUSION_WEIGHTS, ...(options.weights ?? {}) };
   const rankings = [semanticRanking, lexicalRanking];
   const votes = [weights.semantic ?? 1, weights.lexical ?? lexicalWeightFor(query)];
   if (graphRanking.size > 0) {
     rankings.push(graphRanking);
     votes.push(weights.graph ?? 0.15);
+  }
+  // Three votes: at k = 60 that keeps a named entity's first twenty facts above
+  // a row that tops both other retrievers (3/(60+20) > 2.15/61).
+  if (nameRanking.size > 0) {
+    rankings.push(nameRanking);
+    votes.push(weights.name ?? 3);
   }
   const fused = options.fusion === false ? semanticRanking : reciprocalRankFusion(rankings, 60, votes);
 

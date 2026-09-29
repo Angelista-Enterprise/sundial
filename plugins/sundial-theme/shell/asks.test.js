@@ -11,15 +11,15 @@ const LIVE = [
   { id: 'owner-ask:meeting-01M31C7CC0Q9', askedAt: '2026-09-21T08:32:04.940Z', answeredAt: '2026-09-21T08:55:35.045Z', outcome: 'answered', verdict: null, routed: [] },
   { id: 'owner-ask:goals-2026-09-20', askedAt: '2026-09-20T22:08:04.468Z', answeredAt: '2026-09-21T07:38:32.426Z', outcome: 'answered', verdict: null, routed: [] },
   { id: 'owner-ask:meeting-01M2WKQ0', askedAt: '2026-09-18T10:02:29.386Z', answeredAt: null, outcome: 'expired', verdict: null, routed: [] },
-  { id: 'owner-ask:who-person-35941f3bc4', askedAt: '2026-09-09T14:22:48.973Z', answeredAt: '2026-09-09T14:24:00.112Z', outcome: 'answered', verdict: 'wrong', routed: [] },
-  { id: 'owner-ask:who-person-31321a245a', askedAt: '2026-09-09T14:24:48.974Z', answeredAt: '2026-09-09T14:26:30.237Z', outcome: 'answered', verdict: null, routed: [] },
-  { id: 'owner-ask:who-person-74b836557b', askedAt: '2026-09-09T14:26:48.975Z', answeredAt: '2026-09-09T14:28:19.157Z', outcome: 'answered', verdict: 'useful', routed: [{ id: 'f1', subject: 'person-74b836557b', predicate: 'knownAs', object: 'Jordan', retracted: false }] },
+  { id: 'owner-ask:who-person-4b3c2d1e0f', askedAt: '2026-09-09T14:22:48.973Z', answeredAt: '2026-09-09T14:24:00.112Z', outcome: 'answered', verdict: 'wrong', routed: [] },
+  { id: 'owner-ask:who-person-e1e2e3e4e5', askedAt: '2026-09-09T14:24:48.974Z', answeredAt: '2026-09-09T14:26:30.237Z', outcome: 'answered', verdict: null, routed: [] },
+  { id: 'owner-ask:who-person-c1c2c3c4c5', askedAt: '2026-09-09T14:26:48.975Z', answeredAt: '2026-09-09T14:28:19.157Z', outcome: 'answered', verdict: 'useful', routed: [{ id: 'f1', subject: 'person-c1c2c3c4c5', predicate: 'knownAs', object: 'Jordan', retracted: false }] },
   { id: 'owner-ask:mu6o3nsw', askedAt: '2026-09-18T07:59:18.848Z', answeredAt: '2026-09-18T07:59:55.870Z', outcome: 'answered', verdict: null, routed: [] },
 ]
 
 describe('which question this is', () => {
   it('reads the template off the id, never off the text', () => {
-    expect(askKind('owner-ask:who-person-35941f3bc4')).toBe('who')
+    expect(askKind('owner-ask:who-person-4b3c2d1e0f')).toBe('who')
     expect(askKind('owner-ask:meeting-01M31C7CC0Q9')).toBe('meeting')
     expect(askKind('owner-ask:goals-2026-09-20')).toBe('goals')
     expect(askKind('owner-ask:mu6o3nsw')).toBe('other')
@@ -28,7 +28,7 @@ describe('which question this is', () => {
 
   it('reads an id that was minted without the prefix the same way', () => {
     // `ownerAsk` accepts both shapes and re-prefixes; the card must not care.
-    expect(askKind('who-person-35941f3bc4')).toBe('who')
+    expect(askKind('who-person-4b3c2d1e0f')).toBe('who')
   })
 })
 
@@ -97,7 +97,7 @@ describe('the census', () => {
 
 describe('what the routing door may fill in for the owner', () => {
   it('fills the subject and predicate a who-is question proves, and never the claim', () => {
-    expect(routePrefill(LIVE[3])).toEqual({ entityKind: 'person', canonicalName: 'person-35941f3bc4', predicate: 'knownAs' })
+    expect(routePrefill(LIVE[3])).toEqual({ entityKind: 'person', canonicalName: 'person-4b3c2d1e0f', predicate: 'knownAs' })
   })
 
   it('leaves everything blank when the id proves nothing', () => {
@@ -205,5 +205,17 @@ describe('what pressing a word has done to the asking', () => {
   it('puts the loudest complaint first and drops an entry that fired zero times', () => {
     const q = askQuieting({ meeting: { gain: 0.4, at: 'a', fires: 1 }, who: { gain: 0.16, at: 'b', fires: 3 }, goals: { gain: 1, at: 'c', fires: 0 } })
     expect(q.map((x) => x.kind)).toEqual(['who', 'meeting'])
+  })
+})
+
+describe('the Work card question (UC1-X3)', () => {
+  // app.js is the DOM entry point and cannot be imported under vitest, so the card is read as source.
+  const APP = readFileSync(new URL('./app.js', import.meta.url), 'utf8')
+  const card = APP.slice(APP.indexOf('function drawWorkAsk('), APP.indexOf('\n}\n', APP.indexOf('function drawWorkAsk(')))
+
+  it('"Moved — tell me when" opens the composer as an answer, not as the last message\'s "not an answer"', () => {
+    // A composer left at data-answering="0" sends the typed date as a chat turn, and the question stays open.
+    expect(card).toContain('answerInComposer()')
+    expect(card).not.toContain('input.focus(')
   })
 })

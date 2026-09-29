@@ -76,3 +76,25 @@ describe('classifyCalendarPoll', () => {
     expect(contextEvent?.payload.reason).toBe('not-self-attendee');
   });
 });
+
+describe('the week ahead (UC1-X1)', () => {
+  it('lists a week of events, but a context event is still only the next day\'s', async () => {
+    const { classifyCalendarPoll, createCalendarClassifyState } = await import('./index.js');
+    const now = new Date('2026-09-29T08:00:00.000Z');
+    const ev = (id: string, startDate: string) => ({ eventId: id, title: id, startDate, endDate: startDate, attendees: [], isRecurring: false, calendar: 'c', isAllDay: true });
+    const out = classifyCalendarPoll({ events: [ev('soon', '2026-09-29T12:00:00.000Z'), ev('later', '2026-10-03T12:00:00.000Z')], timestamp: now.toISOString(), accessGranted: true }, createCalendarClassifyState(), now);
+    expect(out.find((e) => e.type === 'calendar:upcoming')?.payload.events).toHaveLength(2);
+    expect(out.filter((e) => e.type === 'calendar:context-event').map((e) => (e.payload.event as { eventId: string }).eventId)).toEqual(['soon']);
+  });
+});
+
+describe('reminders, as one event when the list changed (UC1)', () => {
+  it('emits the list with the title as text, and nothing when it did not change', async () => {
+    const { remindersEvent } = await import('./index.js');
+    const output = { reminders: [{ id: 'R1', title: 'Send Mira the draft', due: '2026-10-01T08:00:00.000Z', completed: false, completedAt: null, list: 'Reminders' }], created: null, error: null, timestamp: '2026-09-29T08:00:00.000Z', accessGranted: true };
+    const first = remindersEvent(output, '');
+    expect(first.event).toEqual({ type: 'reminders:snapshot', payload: { timestamp: output.timestamp, items: [{ id: 'R1', text: 'Send Mira the draft', due: '2026-10-01T08:00:00.000Z', completed: false, completedAt: null, list: 'Reminders' }] } });
+    expect(remindersEvent(output, first.fingerprint).event).toBeNull();
+    expect(remindersEvent({ ...output, reminders: [{ ...output.reminders[0]!, completed: true }] }, first.fingerprint).event).not.toBeNull();
+  });
+});

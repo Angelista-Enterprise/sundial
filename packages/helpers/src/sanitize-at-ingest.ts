@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { displayNameFromAddress } from './person-name.js';
+import { displayNameFromAddress, looksLikePersonName } from './person-name.js';
 import {
   isHiddenProcess,
   isSensitiveProcess,
@@ -38,10 +38,10 @@ const SHELL_PATTERN_FIELDS = ['command', 'commitLine', 'lastCommit', 'query', 't
 /**
  * Free text from the sensors added after the field list above was written —
  * browser page text, mail subjects, message chat names, screen-vision facts,
- * vault note names, shelved work — which reached the log (and the page text a
+ * vault note names, shelved work, a coding agent's last prompt — which reached the log (and the page text a
  * remote model) with no secret-pattern pass at all (release audit S13).
  */
-const FREE_TEXT_FIELDS = ['text', 'subject', 'chat', 'body', 'facts', 'notes', 'sources', 'pageExcerpt'];
+const FREE_TEXT_FIELDS = ['text', 'subject', 'chat', 'body', 'facts', 'notes', 'sources', 'pageExcerpt', 'lastPrompt'];
 
 /**
  * Fields treated as local file paths. `projectRoot`/`fromProjectRoot`/
@@ -236,6 +236,16 @@ function sanitizeObject(obj: Record<string, unknown>, parentCtx: RedactionCtx, t
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(obj)) {
     out[key] = sanitizeValue(key, value, ctx, tally);
+  }
+  // M4 — a mail sender's display name. When it reads as a person's name it IS
+  // the sender as the log keeps it: the address never lands, and no hash is
+  // minted for someone Mail already names. Either way the field itself goes.
+  // UC1: a sent mail's recipient (`to` + `toName`) is kept the same way.
+  for (const [field, nameField] of [['from', 'fromName'], ['to', 'toName']] as const) {
+    if (!(nameField in obj)) continue;
+    const name = typeof obj[nameField] === 'string' ? (obj[nameField] as string).trim() : '';
+    if (typeof obj[field] === 'string' && out[field] !== obj[field] && !name.includes('@') && looksLikePersonName(name)) out[field] = name;
+    delete out[nameField];
   }
   return out;
 }

@@ -1,6 +1,7 @@
 import { deriveId } from '@sundial/helpers/derive-id.js';
+import { localDate as localDay, localHour } from '@sundial/helpers/local-day.js';
 import type { Effect, HourFragmentedPrediction, KernelState, ResolvedPrediction, Rule } from '@sundial/kernel/types.js';
-import { bumpCalibration, clampProb, pastRate } from './forward-model.js';
+import { bumpCalibration, clampProb, hasSkill, pastRate } from './forward-model.js';
 import { MAX_ACCUMULATED } from './surprise-drive.js';
 
 /**
@@ -84,16 +85,6 @@ const UNINFORMED_FRAGMENT_RATE = 0.14;
 
 /** `input:activity` emits before an hour counts as active. Identical to `dayShapeForecast`'s `ACTIVE_HOUR_MIN_EMITS` and to the measurement script's, so all three agree on what an hour is. */
 const ACTIVE_HOUR_MIN_EMITS = 3;
-
-/** Local day and local hour, paired — never one of each, the mismatch `day-shape-forecast.ts` warns about in its own header. */
-function localDay(ts: string): string {
-  const d = new Date(ts);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-function localHour(ts: string): number {
-  return new Date(ts).getHours();
-}
 
 type Cell = 'prev-frag' | 'prev-calm';
 
@@ -179,7 +170,7 @@ function closeHour(state: KernelState, ts: string): { state: KernelState; effect
       // The one master surprise scalar, shared with `anomalyZscore` and
       // `dayShapeForecast` — mood and reflection read the accumulator, never a
       // single forecaster's own record.
-      memory: { ...cleared.memory, accumulatedImportance: Math.min(MAX_ACCUMULATED, cleared.memory.accumulatedImportance + -Math.log(pActual)) },
+      memory: hasSkill(cleared.predictions.calibration, 'hour-fragmented') ? { ...cleared.memory, accumulatedImportance: Math.min(MAX_ACCUMULATED, cleared.memory.accumulatedImportance + -Math.log(pActual)) } : cleared.memory,
       predictions: {
         ...cleared.predictions,
         calibration: bumpCalibration(cleared.predictions.calibration, 'hour-fragmented', outcome, open.priorProb),
@@ -242,7 +233,7 @@ export const hourFragmentedForecast: Rule = (state, event) => {
   // bet, and crediting it to the open one would inflate a different hour's count.
   if (event.type === 'event:context-switch') {
     const current = frag.current;
-    if (current === null || current.day !== localDay(event.ts) || current.hour !== localHour(event.ts)) return { state, effects: [] };
+    if (current === null || current.day !== localDay(event.ts, state.config.timezone) || current.hour !== localHour(event.ts, state.config.timezone)) return { state, effects: [] };
     return {
       state: { ...state, predictions: { ...state.predictions, fragmentation: { ...frag, current: { ...current, switchesThisHour: current.switchesThisHour + 1 } } } },
       effects: [],
@@ -251,8 +242,8 @@ export const hourFragmentedForecast: Rule = (state, event) => {
 
   if (event.type !== 'input:activity') return { state, effects: [] };
 
-  const day = localDay(event.ts);
-  const hour = localHour(event.ts);
+  const day = localDay(event.ts, state.config.timezone);
+  const hour = localHour(event.ts, state.config.timezone);
   const key = `${day}|${hour}`;
 
   // Already the open hour: nothing to promote, nothing to count.

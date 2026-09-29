@@ -1,4 +1,5 @@
 import { getAllProjects, getMomentsForProject } from '@sundial/db/index.js';
+import { localDate as localDay } from '@sundial/helpers/local-day.js';
 import { canonicalProjectName } from '@sundial/helpers/sundial-config.js';
 import { buildFocus, buildPhaseMix, minutes, viewMoment, type MomentView } from './daily-context.js';
 import type { MomentKind } from './types.js';
@@ -47,15 +48,12 @@ export interface BuildProjectStatusContextOptions {
   maxMoments?: number;
   /** Cap on the recent narrative entries serialized. */
   maxRecent?: number;
+  /** lane Q (Q11): the owner's zone (`config.timezone`) the days are read in, never the host's. UTC when absent. */
+  timeZone?: string;
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
-/** YYYY-MM-DD in the host's local tz (the daemon runs in the owner's tz). */
-function localDate(iso: string): string {
-  const d = new Date(iso);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
@@ -73,6 +71,8 @@ export async function buildProjectStatusContext(
   const aliases = options?.projectAliases ?? {};
   const maxMoments = options?.maxMoments ?? 400;
   const maxRecent = options?.maxRecent ?? 14;
+  const timeZone = options?.timeZone ?? 'UTC';
+  const localDate = (iso: string): string => localDay(iso, timeZone);
 
   const [rows, allProjects] = await Promise.all([getMomentsForProject(projectId, maxMoments), getAllProjects()]);
   if (rows.length === 0) return null;

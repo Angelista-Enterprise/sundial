@@ -10,7 +10,7 @@ import {
   getOpenCommitments,
   getPipelineCoverage,
 } from '@sundial/db/index.js';
-import { localDate } from '@sundial/helpers/local-day.js';
+import { localDate, localMinuteOfDay } from '@sundial/helpers/local-day.js';
 import { loadSundialConfig } from '@sundial/helpers/sundial-config.js';
 import { buildDailyContext } from '../daily-context.js';
 import type { Figure } from '../types.js';
@@ -32,8 +32,7 @@ function hm(totalMinutes: number): string {
 }
 
 function hourOf(iso: string): number {
-  const d = new Date(iso);
-  return d.getHours() + d.getMinutes() / 60;
+  return localMinuteOfDay(iso, ownerTimeZone()) / 60;
 }
 
 /**

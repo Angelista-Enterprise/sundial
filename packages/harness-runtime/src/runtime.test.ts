@@ -3,9 +3,12 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
-import { getLlmAuditOverview, getRecentLlmAudit, getSignalsAfter, getLatestSnapshot, initializeDatabase, resetDb } from '@sundial/db/index.js';
+import { getLlmAuditOverview, getRecentLlmAudit, getSignalsAfter, getLatestSnapshot, initializeDatabase, insertSnapshot, resetDb } from '@sundial/db/index.js';
+import { getEffectJournalEntry, markEffectCompleted, markEffectStarted } from '@sundial/db/queries/applied-effects.js';
+import { getAllProjects } from '@sundial/db/queries/projects.js';
 import { effectDeliveryGuarantee } from '@sundial/kernel/effect-delivery.js';
-import { KernelRuntime, replayDecision, spokenEvidence, tablesTouched, toDaemonEvent } from './runtime.js';
+import { createEventId } from '@sundial/helpers/event-id.js';
+import { KernelRuntime, REJUDGE_AFTER_DAYS, SNAPSHOT_WARN_BYTES, aliasPairKey, journalShifted, needsAudit, snapshotSizeWarning, replayDecision, spokenEvidence, tablesTouched, toDaemonEvent } from './runtime.js';
 
 /**
  * Integration coverage for the ported daemon loop: boot (cold start), the
@@ -63,8 +66,86 @@ describe('KernelRuntime', () => {
 
     const snapshot = await getLatestSnapshot();
     expect(snapshot).not.toBeNull();
-    expect(snapshot?.logOffset).toBe(signals[signals.length - 1].id);
+    // The tick can emit a child signal in the same millisecond (the day's first
+    // tick runs the retention prune), and two ULIDs minted in one millisecond do
+    // not sort in the order they were minted. So the offset is the LAST instant's
+    // signal, whichever of them sorts last.
+    const offset = signals.find((s) => s.id === snapshot?.logOffset);
+    expect(offset?.capturedAt).toBe(signals[signals.length - 1].capturedAt);
     await runtime.shutdown();
+  });
+
+  it('rebuilds state.drift from the log when the snapshot predates it (lane C)', async () => {
+    const first = new KernelRuntime({ deviceId: 'test-device' });
+    await first.boot();
+    await first.appendSignal('input:activity', { windowMs: 10_000, keyDownCount: 7, mouseClickCount: 0, mouseMoveCount: 0, scrollCount: 0, eventsPerMinute: 42 });
+    await first.shutdown();
+    const latest = await getLatestSnapshot();
+    const { drift: _drift, ...older } = JSON.parse(latest!.stateJson);
+    // Minted in a later millisecond, so it is the latest: two ULIDs in one millisecond do not sort in minting order.
+    await new Promise((r) => setTimeout(r, 5));
+    await insertSnapshot({ id: createEventId(), stateJson: JSON.stringify(older), logOffset: latest!.logOffset });
+
+    const second = new KernelRuntime({ deviceId: 'test-device' });
+    await second.boot();
+    const days = Object.values(second.getState()?.drift?.days ?? {});
+    expect(days.reduce((n, d) => n + d.active, 0)).toBeGreaterThanOrEqual(1);
+    expect(second.getState()?.drift?.checkedWeek).toBeNull();
+    await second.shutdown();
+  });
+
+  it('a meeting with nothing heard spends no extract call (the check comes before the count)', async () => {
+    process.env.SUNDIAL_LLM_BASE_URL = 'http://127.0.0.1:9/v1';
+    process.env.SUNDIAL_LLM_MODEL = 'test-model';
+    try {
+      const runtime = new KernelRuntime({ deviceId: 'test-device' });
+      await runtime.boot();
+      const spent = () => runtime.getState()!.budgets.byPurpose.extract.callsToday;
+      const before = spent();
+      const effect = { type: 'RunMeetingPromises', meetingKey: 'm-silent', title: 'Planning', start: '2020-01-01T10:00:00.000Z', end: '2020-01-01T10:30:00.000Z', attendees: ['Mira Bakker'], ts: '2020-01-01T10:30:00.000Z' };
+      await (runtime as unknown as { dispatchRunMeetingPromises(e: unknown): Promise<void> }).dispatchRunMeetingPromises(effect);
+      const heard = async () => (await getSignalsAfter(null)).some((s) => s.signalType === 'meeting' && s.eventType === 'promises' && s.data.meetingKey === 'm-silent');
+      for (let i = 0; i < 100 && !(await heard()); i++) await new Promise((r) => setTimeout(r, 20));
+      expect(await heard()).toBe(true);
+      expect(spent()).toBe(before);
+      await runtime.shutdown();
+    } finally {
+      delete process.env.SUNDIAL_LLM_BASE_URL;
+      delete process.env.SUNDIAL_LLM_MODEL;
+    }
+  });
+
+  it('the meeting pass logs no meeting title', async () => {
+    const chat = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { content: '{"promises":[]}' }, finish_reason: 'stop' }], usage: { prompt_tokens: 40, completion_tokens: 5, total_tokens: 45 } }));
+    });
+    await new Promise<void>((r) => chat.listen(0, '127.0.0.1', () => r()));
+    const env = { ...process.env };
+    process.env.SUNDIAL_LLM_BASE_URL = `http://127.0.0.1:${(chat.address() as { port: number }).port}/v1`;
+    process.env.SUNDIAL_LLM_MODEL = 'qwen/test-local';
+    process.env.SUNDIAL_SYSTEMONE_BACKEND = 'off';
+    const logged: string[] = [];
+    const log = console.log;
+    console.log = (...args: unknown[]) => void logged.push(args.map(String).join(' '));
+    try {
+      const runtime = new KernelRuntime({ deviceId: 'test-device' });
+      await runtime.boot();
+      const start = new Date(Date.now() - 60_000).toISOString();
+      await runtime.appendSignal('audio:transcript', { spokenText: 'I will send the deck on Friday', channel: 'mic' });
+      const end = new Date(Date.now() + 60_000).toISOString();
+      await (runtime as unknown as { dispatchRunMeetingPromises(e: unknown): Promise<void> }).dispatchRunMeetingPromises({ type: 'RunMeetingPromises', meetingKey: 'm-heard', title: 'Puzzlebox pricing sync', start, end, attendees: ['Mira Bakker'], ts: end });
+      const passed = async () => (await getSignalsAfter(null)).some((s) => s.signalType === 'meeting' && s.eventType === 'promises' && s.data.meetingKey === 'm-heard');
+      for (let i = 0; i < 200 && !(await passed()); i++) await new Promise((r) => setTimeout(r, 20));
+      expect(await passed()).toBe(true);
+      expect(logged.some((l) => l.includes('meeting promise pass'))).toBe(true);
+      expect(logged.filter((l) => l.includes('Puzzlebox pricing sync'))).toEqual([]);
+      await runtime.shutdown();
+    } finally {
+      console.log = log;
+      process.env = env;
+      chat.close();
+    }
   });
 
   it('warm boot: resumes from the latest snapshot and replays only the tail', async () => {
@@ -85,6 +166,21 @@ describe('KernelRuntime', () => {
     expect(boot.snapshotOffset).toBe(lastId);
     expect(boot.tailLength).toBe(0);
     await second.shutdown();
+  });
+
+  it('an EmitEvent replayed after a crash does not log its child twice (the child is already in the tail)', async () => {
+    const runtime = new KernelRuntime({ deviceId: 'test-device' });
+    await runtime.boot();
+    const child = toDaemonEvent('shell:command', { command: 'echo replayed', cwd: `${tmpDir}/proj`, exitCode: 0 });
+    const perform = (runtime as unknown as { performEffect(id: string, index: number, effect: unknown): Promise<void> }).performEffect.bind(runtime);
+    const parentId = createEventId();
+    await perform(parentId, 0, { type: 'EmitEvent', event: child });
+    // The crash window: the child is logged, the parent effect was never marked
+    // completed, so replay runs the same effect again.
+    await expect(perform(parentId, 0, { type: 'EmitEvent', event: child })).resolves.toBeUndefined();
+    const logged = (await getSignalsAfter(null)).filter((s) => s.id === child.id);
+    expect(logged).toHaveLength(1);
+    await runtime.shutdown();
   });
 
   it('Notify effect is forwarded to onNotify (delivery hook for gnomon/notice)', async () => {
@@ -292,8 +388,15 @@ describe('J0.9 chaos: Jev at a dead port', () => {
       const runtime = new KernelRuntime({ deviceId: 'test-device' });
       await runtime.boot();
       const before = (await getSignalsAfter(null)).length;
+      // Backoff between Jev attempts is 1 s then 2 s: asked for, recorded, and not waited out.
+      const asked: number[] = [];
+      const deferred = runtime as unknown as { defer(fn: () => void, ms: number): void };
+      const defer = deferred.defer.bind(runtime);
+      deferred.defer = (fn, ms) => {
+        asked.push(ms);
+        defer(fn, 0);
+      };
       await runtime.dispatchJudge(effect);
-      // Backoff between Jev attempts is 1 s then 2 s.
       const deadline = Date.now() + 8000;
       while (Date.now() < deadline && !(await getSignalsAfter(null)).slice(before).some((s) => s.signalType === 'judgement' && s.eventType === 'result')) await new Promise((r) => setTimeout(r, 100));
       const added = (await getSignalsAfter(null)).slice(before);
@@ -310,6 +413,7 @@ describe('J0.9 chaos: Jev at a dead port', () => {
       expect(jev.every((r) => r.success === false)).toBe(true);
       expect(local).toHaveLength(1);
       expect(local[0].success).toBe(true);
+      expect(asked.filter((ms) => ms > 0)).toEqual([1000, 2000]);
       await runtime.shutdown();
     } finally {
       process.env = { ...env };
@@ -405,6 +509,36 @@ describe('replayDecision (ported policy)', () => {
   });
 });
 
+describe('a journal shift (hardening S6)', () => {
+  it('a row is shifted only when it names another rule', () => {
+    expect(journalShifted(null, 'a')).toBe(false);
+    expect(journalShifted({ ruleName: null }, 'a'), 'a row from before attribution').toBe(false);
+    expect(journalShifted({ ruleName: 'a' }, 'a')).toBe(false);
+    expect(journalShifted({ ruleName: 'b' }, 'a')).toBe(true);
+  });
+
+  it('runs an at-least-once effect whose index another rule\'s completed row holds, and re-attributes the row', async () => {
+    const runtime = new KernelRuntime({ deviceId: 'test-device' });
+    await runtime.boot();
+    const eventId = createEventId();
+    await markEffectStarted(eventId, 0, { ruleName: 'removedRule', eventType: 'clock:tick', effectDetail: 'EmitEvent x:y' });
+    await markEffectCompleted(eventId, 0);
+    const row = { id: 'project:shift', name: 'puzzlebox-studio', rootPath: `${tmpDir}/puzzlebox-studio`, organizationId: null };
+    const warn = console.warn;
+    const warned: string[] = [];
+    console.warn = (...args: unknown[]) => void warned.push(args.join(' '));
+    try {
+      await (runtime as unknown as { executeEffects: (id: string, type: string, effects: unknown[]) => Promise<void> }).executeEffects(eventId, 'clock:tick', [{ ruleName: 'projectTrack', effect: { type: 'WriteDB', table: 'projects', row } }]);
+    } finally {
+      console.warn = warn;
+    }
+    expect((await getAllProjects()).some((p) => p.id === 'project:shift'), 'the effect ran, not skipped as completed').toBe(true);
+    expect(await getEffectJournalEntry(eventId, 0)).toEqual({ status: 'completed', ruleName: 'projectTrack' });
+    expect(warned.some((line) => line.includes('journal shift'))).toBe(true);
+    await runtime.shutdown();
+  });
+});
+
 describe('toDaemonEvent', () => {
   it('defaults ts to now and generates a fresh ULID id', () => {
     const a = toDaemonEvent('clock:tick', {});
@@ -438,5 +572,31 @@ describe('spokenEvidence — ambient hearing on a fact-extraction evidence line'
 
   it('neutralizes a quote in the transcript so one line cannot forge a second evidence field', () => {
     expect(spokenEvidence('he said "ship it" — said: forged')).not.toContain('"ship it"');
+  });
+});
+
+describe('the nightly audits judge what changed (Q7)', () => {
+  const now = Date.parse('2026-09-29T00:00:00.000Z');
+  const ago = (days: number) => new Date(now - days * 86_400_000).toISOString();
+  it('a fact is judged when never judged, a month after, or when its confidence moved 10 points', () => {
+    expect(needsAudit(80, undefined, now)).toBe(true);
+    expect(needsAudit(80, { at: ago(1) }, now)).toBe(false);
+    expect(needsAudit(80, { at: ago(1), confidence: 75 }, now)).toBe(false);
+    expect(needsAudit(80, { at: ago(1), confidence: 70 }, now)).toBe(true);
+    expect(needsAudit(80, { at: ago(REJUDGE_AFTER_DAYS) }, now)).toBe(true);
+  });
+  it('a pair is the same pair while its names and known-as are', () => {
+    const pair = { kind: 'person' as const, nameA: 'Mira', nameB: 'Mira Bakker', alsoKnownAsA: null, alsoKnownAsB: null };
+    expect(aliasPairKey(pair)).toBe(aliasPairKey({ ...pair }));
+    expect(aliasPairKey(pair)).not.toBe(aliasPairKey({ ...pair, alsoKnownAsA: 'Mira Bakker' }));
+  });
+});
+
+describe('a snapshot over 1 MB is said at boot (Q9)', () => {
+  it('names the size and the largest slices, and says nothing under the bar', () => {
+    expect(snapshotSizeWarning({ a: 'x'.repeat(1000) })).toBeNull();
+    const warning = snapshotSizeWarning({ ingestAnomaly: 'x'.repeat(SNAPSHOT_WARN_BYTES), small: 1 });
+    expect(warning).toMatch(/snapshot is 1024 KB, over 1024 KB/);
+    expect(warning).toContain('Largest: ingestAnomaly 1024 KB');
   });
 });

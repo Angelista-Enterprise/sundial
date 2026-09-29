@@ -40,7 +40,8 @@ const REDACTABLE_EVENT_TYPES = ['changed', 'edited', 'detected', 'switched', 'st
  *
  * `privacy:redacted` rows are written on every redaction and, until 2026-08-14, were
  * read by absolutely nothing — 8,712 rows and 602 KB of audit trail nobody audited.
- * The decision recorded in `almanac/enhancements/collected-but-unused-data` was to
+ * The decision recorded in `enhancements/collected-but-unused-data` (retired from
+ * the almanac once built) was to
  * keep them and give them a reader rather than stop writing them, because they are
  * the ONLY evidence that redaction is running at all. Redaction failing open is a
  * silent, security-relevant failure: nothing errors, nothing looks wrong, and

@@ -24,8 +24,8 @@ import * as McpClient from '@deepseek-ai/dsh-mcp-client'
 import { isIntegrationRead, loadSundialConfig, resolveActionPolicy } from '@sundial/helpers/sundial-config.js'
 import { getCalendarHelperPath } from '@sundial/helpers/sundial-paths.js'
 import { mountIntegrations } from './integrations.js'
-import { calendarCreateTool } from './tools.js'
-import { decideAction, escalate, GNOMON_TOOLS, judgedAction, openedByOwner, parseMcpToolName, unverifiedNotice } from './gate.js'
+import { calendarCreateTool, reminderCreateTool } from './tools.js'
+import { callRecord, decideAction, escalate, GNOMON_TOOLS, judgedAction, openedByOwner, outwardCall, unverifiedNotice } from './gate.js'
 import { internalTools } from './tools.js'
 import { runShellTool } from './run-shell.js'
 import { webTools } from './web-tools.js'
@@ -116,6 +116,7 @@ export function apply(ctx, config = {}) {
     ...internalTools(appendSignal, getState),
     runShellTool(appendSignal, config.cwd ?? process.cwd(), ctx.shell),
     calendarCreateTool(appendSignal, getCalendarHelperPath(), execFile),
+    reminderCreateTool(appendSignal, getCalendarHelperPath(), execFile),
     // Web tasks in Gnomon's own browser: web_page reads, web_act acts (outward).
     ...webTools(appendSignal),
   ]
@@ -189,7 +190,7 @@ export function apply(ctx, config = {}) {
       }
 
       if (decision.kind === 'allow') return next()
-      recordCall(exec.name, 'refused', decision.reason ?? null)
+      recordCall(exec, 'refused', decision.reason ?? null)
       return decision
     }),
   )
@@ -216,26 +217,14 @@ export function apply(ctx, config = {}) {
   // `outcome` being present and never double-counts. That is one derived
   // field rather than a list of tools to skip, which would drift the first
   // time a tool learned to report itself.
-  const recordCall = (toolName, outcome, reason = null) => {
-    const mcp = parseMcpToolName(toolName)
-    void appendSignal('action:performed', {
-      tool: toolName,
-      server: mcp?.server ?? null,
-      // The bare tool name as the SERVER knows it, which is what the Reach
-      // card's own rows are keyed by — `mcp__obsidian__get_vault_file` is this
-      // client's name for it and `get_vault_file` is the thing that ran.
-      action: mcp?.tool ?? toolName,
-      outcome,
-      ...(reason === null ? {} : { reason }),
-    })
-  }
+  const recordCall = (exec, outcome, reason = null) => void appendSignal('action:performed', callRecord(exec, outcome, reason))
 
   // The outcome of everything that was allowed to run. Separate from the J4.2
   // verify hook below, which only fires for judged actions and asks a model a
   // question; this one asks nothing and fires for every call.
   ctx.effect(() =>
     ctx.on('tools/result', (exec, result) => {
-      recordCall(exec.name, result?.isError === true ? 'failed' : 'ok')
+      recordCall(exec, result?.isError === true ? 'failed' : 'ok')
     }),
   )
 
@@ -247,11 +236,17 @@ export function apply(ctx, config = {}) {
     ctx.on('tools/result', (exec, result) => {
       if (!judgedAction(exec.name) || typeof ctx.gnomonKernel?.verifyAction !== 'function') return
       const args = exec.args ?? exec.arguments
+      // Only an outward or irreversible call is worth the judge's second look and a notice.
+      const what = outwardCall(exec.name, args, (server, tool) => {
+        const integration = integrations.find((i) => i.name === server)
+        return integration === undefined ? undefined : isIntegrationRead(integration, tool)
+      })
+      if (what === null) return
       void (async () => {
         const verdict = await ctx.gnomonKernel.verifyAction(exec.name, args, { isError: result?.isError === true, value: result?.value ?? result?.content ?? null }).catch(() => null)
         if (!verdict) return
         await appendSignal('action:verified', { tool: exec.name, carriedOut: verdict.carriedOut, failed: verdict.failed, isError: result?.isError === true })
-        if (verdict.failed) await appendSignal('notice:candidate', unverifiedNotice(exec.name, args, verdict.carriedOut, new Date().toISOString()))
+        if (verdict.failed) await appendSignal('notice:candidate', unverifiedNotice(exec.name, what, verdict.carriedOut, new Date().toISOString()))
       })()
     }),
   )

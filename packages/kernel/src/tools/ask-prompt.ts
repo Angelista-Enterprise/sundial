@@ -3,8 +3,8 @@ import { loadSundialConfig } from '@sundial/helpers/sundial-config.js';
 import { EVIDENCE_DISCIPLINE, withPersona } from '../persona.js';
 
 /**
- * The system prompt for `/ask` and `gnomon ask`, in one place because they are
- * one product.
+ * The system prompt behind Gnomon's persona (`plugins/sundial-tools/persona.js`),
+ * in one place so every surface that answers the owner says the same thing.
  *
  * The previous instruction was "answer using ONLY the context below", which was
  * correct when the context was everything the model would ever get: eight ranked
@@ -21,18 +21,19 @@ import { EVIDENCE_DISCIPLINE, withPersona } from '../persona.js';
  *
  * The Markdown line replaced a flat "no markdown formatting" that the model
  * ignored — it emitted `**Files you edited:**` and backticked paths regardless,
- * and both apps rendered the punctuation literally. Fighting it was the wrong
- * side of the trade: an answer listing fifteen file paths genuinely reads better
- * with them set as code. So the instruction now permits a narrow subset and
- * `GnomonMarkdownText` renders exactly that subset. The two have to stay in
+ * and both (since deleted) native apps rendered the punctuation literally.
+ * Fighting it was the wrong side of the trade: an answer listing fifteen file
+ * paths genuinely reads better with them set as code. So the instruction now
+ * permits a narrow subset, which the web client's `renderMarkdown`
+ * (`plugins/sundial-theme/shell/markdown.js`) renders. The two have to stay in
  * step — permitting a construct here that the renderer does not handle puts the
  * raw punctuation back on screen.
  *
  * Two later corrections (2026-08-15):
  *
  * The old second paragraph named "the context block in the first message" as
- * the thing not to trust. Under `/ask` that block exists — `askContextBlock`
- * builds it — but this same text is the dsh harness persona
+ * the thing not to trust. Under the retired `/ask` that block existed (built by
+ * `askContextBlock`, since deleted), but this same text is the dsh harness persona
  * (`plugins/sundial-tools/persona.js`), and nothing in dsh ever sends one. The
  * persona was telling the agent to discount a message it would never receive,
  * which is worse than saying nothing: it implies a pre-packed context is the
@@ -40,7 +41,7 @@ import { EVIDENCE_DISCIPLINE, withPersona } from '../persona.js';
  * whatever context happens to be present, so it is true on both surfaces.
  *
  * The identity line was widened from "you answer questions" because Gnomon no
- * longer only answers. `gnomon-proactive` injects an admitted notice and, on
+ * longer only answers. `sundial-proactive` injects an admitted notice and, on
  * the phasic channel, opens a turn — the assistant speaks unprompted. That
  * behaviour was described only in the per-notice wake-up message, so the
  * persona and the act contradicted each other. It is stated here instead.
@@ -62,6 +63,10 @@ export const ASK_SYSTEM_PROMPT = withPersona(
 
   // What the record KNOWS beyond events, named so the model reaches for it.
   'The record has also learned ROUTINES (gnomon_routines), COMMITMENTS — work threads by git branch and when they were last touched (gnomon_open_commitments), and EXPECTATIONS — when the day usually ends and which streams recur (gnomon_anomalies). Use them like a colleague would — "you have not touched BOX-484 since Monday" — once, when it helps, never recited.',
+  // lane A (UC5, UC10, UC9): three question shapes with one tool each. All
+  // three are deferred (behind gnomon_call), so the shape is named here; on
+  // the record, 4 of 160 routed asks were "what was I doing at…".
+  'Three questions have a tool of their own. "Did I…?" (reply to someone, push a ticket, send a thing, go to a meeting) is gnomon_did_i: it returns the rows that show it, or "no sign of it" and what it cannot see. "What happened between 14:00 and 16:00", "what was I doing at 3", or a postmortem is gnomon_timeline. "What if the cap were 3" or "had this rule been on" is gnomon_what_if.',
   EVIDENCE_DISCIPLINE,
 
   'If the record does not have it, say so in one sentence and stop. If you are unsure what they mean, ask one short question instead of guessing. A guess you must make is labelled as one ("my guess:"), never dressed as a finding.',
@@ -128,11 +133,3 @@ export function gnomonClockLine(options: { now?: Date; timeZone?: string } = {})
   return nowLine(options.now ?? new Date(), options.timeZone ?? loadSundialConfig().timezone);
 }
 
-export function askContextBlock(lines: string[], options: { now?: Date; timeZone?: string } = {}): string {
-  const clock = nowLine(options.now ?? new Date(), options.timeZone ?? loadSundialConfig().timezone);
-  const body =
-    lines.length > 0
-      ? `Possibly relevant, from a quick semantic search of the record:\n${lines.join('\n')}`
-      : 'A quick semantic search of the record surfaced nothing for this question. That is common for questions about specific files, commands, dates, or counts — use the tools.';
-  return `${clock}\n\n${body}`;
-}

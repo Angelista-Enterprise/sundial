@@ -1,3 +1,4 @@
+import { othersIn } from '@sundial/kernel/briefs.js';
 import type { Rule, UpcomingEvent } from '@sundial/kernel/types.js';
 
 /** Bounded state — the forward model needs the next few events, not the whole calendar. */
@@ -9,6 +10,7 @@ interface RawEvent {
   endDate?: unknown;
   attendees?: unknown;
   isAllDay?: unknown;
+  isRecurring?: unknown;
 }
 
 function toUpcoming(raw: unknown): UpcomingEvent | null {
@@ -22,6 +24,8 @@ function toUpcoming(raw: unknown): UpcomingEvent | null {
     end: typeof e.endDate === 'string' ? e.endDate : start,
     attendees: Array.isArray(e.attendees) ? e.attendees.filter((a): a is string => typeof a === 'string') : [],
     isAllDay: e.isAllDay === true,
+    // Lane B: a standup is told from its shape, and a series is part of the shape.
+    ...(e.isRecurring === true ? { recurring: true } : {}),
   };
 }
 
@@ -43,14 +47,15 @@ export const scheduleTrack: Rule = (state, event) => {
   // itself; holding it on the schedule slice is what lets a `meetingContains`
   // rule fire for the whole call rather than only until the next moment opens.
   if (event.type === 'calendar:active') {
-    const ev = (event.payload as { event?: { title?: unknown; startDate?: unknown; endDate?: unknown } }).event;
+    const ev = (event.payload as { event?: { title?: unknown; startDate?: unknown; endDate?: unknown; attendees?: unknown } }).event;
     const title = typeof ev?.title === 'string' ? ev.title.trim() : '';
     if (title === '') return { state, effects: [] };
     const start = typeof ev?.startDate === 'string' ? ev.startDate : event.ts;
     const end = typeof ev?.endDate === 'string' ? ev.endDate : event.ts;
     const active = state.schedule.active;
     if (active && active.title === title && active.end === end) return { state, effects: [] };
-    return { state: { ...state, schedule: { ...state.schedule, active: { title, start, end } } }, effects: [] };
+    const others = othersIn(state, Array.isArray(ev?.attendees) ? ev.attendees.filter((a): a is string => typeof a === 'string') : []).length;
+    return { state: { ...state, schedule: { ...state.schedule, active: { title, start, end, others } } }, effects: [] };
   }
 
   // A meeting that has ended stops being the active one, on the next tick

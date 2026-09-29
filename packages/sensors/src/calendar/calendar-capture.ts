@@ -60,3 +60,39 @@ function persistCalendarGrantMarker(accessGranted: boolean): void {
     // ignore — marker is a convenience for permission reporting, not load-bearing.
   }
 }
+
+/** UC1: one reminder as the helper reports it. Never notes, never a location. */
+export interface ReminderItem {
+  id: string;
+  title: string;
+  due: string | null;
+  completed: boolean;
+  completedAt: string | null;
+  list: string;
+}
+
+export interface RemindersOutput {
+  reminders: ReminderItem[];
+  created: ReminderItem | null;
+  error: string | null;
+  timestamp: string;
+  accessGranted: boolean;
+}
+
+/** Reminders access waits up to 20 s for a first answer; leave the helper room to report. */
+const REMINDERS_TIMEOUT_MS = 25_000;
+
+/** UC1: the owner's open reminders and the ones completed in the last fortnight, via the same helper (a Reminders grant of its own). */
+export function readReminders(): Promise<RemindersOutput | null> {
+  if (process.env.SUNDIAL_NATIVE_HELPERS === '0') return Promise.resolve(null);
+  return new Promise((resolve) => {
+    execFile(getCalendarHelperPath(), ['--reminders'], { timeout: REMINDERS_TIMEOUT_MS }, (error, stdout) => {
+      if (error) return resolve(null);
+      try {
+        resolve(JSON.parse(stdout) as RemindersOutput);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}

@@ -1,4 +1,4 @@
-import { eq, and, isNull, inArray, ne, sql } from 'drizzle-orm';
+import { eq, and, getTableColumns, isNull, inArray, ne, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
 import { getDb } from '../db-client.js';
 import { entities, entityFacts, memoryEmbeddings } from '../schemas/db-schema.js';
@@ -59,7 +59,7 @@ export interface StoredEntityFact {
 /** Default total Beta evidence count for an inferred fact — light enough that a single re-observation visibly moves the posterior. */
 const INFERENCE_EVIDENCE_WEIGHT = 10;
 /**
- * assertions-versus-observations — an owner assertion seeds a much heavier
+ * Provenance (almanac concepts/entity-facts-and-belief) — an owner assertion seeds a much heavier
  * evidence count so `decayCurrentFactConfidence`'s daily drift barely moves
  * it (decay is a multiplicative pull toward the uninformative (1,1) prior;
  * a bigger starting count takes proportionally longer to reach it), unlike
@@ -157,7 +157,7 @@ export async function supersedeEntityFact(factId: string, supersededByFactId: st
  * currently-believed read already filters on `valid_to IS NULL`, so this removes
  * the fact from belief without any read path needing to know retraction exists;
  * every history read keeps the row, which is the point — a correction is itself
- * information (`assertions-versus-observations`).
+ * information (`concepts/entity-facts-and-belief`).
  *
  * `WHERE valid_to IS NULL` makes it a no-op against an already-closed fact rather
  * than reopening and re-closing one: retraction must never move a boundary an
@@ -179,8 +179,18 @@ export async function retractEntityFact(factId: string, validTo: string): Promis
  * successful prediction it generated (Phase 2b). The record is untouched — only
  * the certainty moves.
  */
-export async function reinforceEntityFact(factId: string, delta: number): Promise<void> {
+export async function reinforceEntityFact(factId: string, delta: number, side: 'alpha' | 'beta' = 'alpha'): Promise<void> {
   const db = getDb();
+  if (side === 'beta') {
+    // lane C: evidence against — a failed prediction (`factTestTrack`). Same record rule: only the certainty moves.
+    await db.run(
+      sql`UPDATE entity_facts
+          SET beta = beta + ${delta},
+              confidence = CAST(ROUND(100.0 * alpha / (alpha + beta + ${delta})) AS INTEGER)
+          WHERE id = ${factId}`,
+    );
+    return;
+  }
   await db.run(
     sql`UPDATE entity_facts
         SET alpha = alpha + ${delta},
@@ -274,6 +284,17 @@ export async function getCurrentEntityFacts(entityId: string): Promise<StoredEnt
     .select()
     .from(entityFacts)
     .where(and(eq(entityFacts.entityId, entityId), isNull(entityFacts.validTo)))
+    .orderBy(entityFacts.validFrom);
+}
+
+/** lane Q: currently-valid facts of one predicate on every entity of one kind — for a boot repair of a one-value predicate. */
+export async function getCurrentFactsOfKind(kind: string, predicate: string): Promise<StoredEntityFact[]> {
+  const db = getDb();
+  return db
+    .select(getTableColumns(entityFacts))
+    .from(entityFacts)
+    .innerJoin(entities, eq(entities.id, entityFacts.entityId))
+    .where(and(eq(entities.kind, kind), eq(entityFacts.predicate, predicate), isNull(entityFacts.validTo)))
     .orderBy(entityFacts.validFrom);
 }
 
@@ -739,4 +760,24 @@ export async function getWorldForHygiene(): Promise<{
     `),
   ]);
   return { entities: rows, facts: factRows };
+}
+
+/**
+ * M2 — current facts whose LATEST owner verdict is `wrong`. `feedbackTrack`
+ * retracts at verdict time, but the verdicts before 2026-09-17 never landed
+ * theirs; the log still holds them, so hygiene repairs from it. A later
+ * `useful` on the same fact wins.
+ */
+export async function getCurrentFactIdsLastMarkedWrong(): Promise<string[]> {
+  const rows = await getDb().all<{ id: string }>(sql`
+    with verdicts as (
+      select json_extract(data, '$.artifactId') as id, json_extract(data, '$.verdict') as verdict,
+             row_number() over (partition by json_extract(data, '$.artifactId') order by captured_at desc, signals.rowid desc) as rn
+        from signals
+       where signal_type = 'feedback' and event_type = 'verdict' and json_extract(data, '$.artifactKind') = 'entity_fact'
+    )
+    select f.id from verdicts v join entity_facts f on f.id = v.id
+     where v.rn = 1 and v.verdict = 'wrong' and f.valid_to is null
+  `);
+  return rows.map((r) => r.id);
 }

@@ -1,5 +1,6 @@
 import { deriveId } from '@sundial/helpers/derive-id.js';
-import type { KernelState, Rule } from '@sundial/kernel/types.js';
+import { localDate } from '@sundial/helpers/local-day.js';
+import type { Effect, KernelState, Rule } from '@sundial/kernel/types.js';
 import type { FactCandidate } from './entity-extract.js';
 import { predicateCardinality } from './predicate-cardinality.js';
 import { knownProjectNames, rejectEntityName, REDACTION_ALIAS } from './entity-name-validation.js';
@@ -107,7 +108,7 @@ const EMPTY_CURSOR_ENTRY: FactCursorEntry = { object: null, factId: null, confid
 /** Backfills `pendingObject`/`pendingCount`/`projectId` for a cursor entry written before those fields existed — see `types.ts`'s `factCursor` doc comment. */
 function normalizeCursorEntry(entry: FactCursorEntry | undefined): FactCursorEntry {
   if (!entry) return EMPTY_CURSOR_ENTRY;
-  return { object: entry.object, factId: entry.factId, confidence: entry.confidence, pendingObject: entry.pendingObject ?? null, pendingCount: entry.pendingCount ?? 0, projectId: entry.projectId ?? null };
+  return { object: entry.object, factId: entry.factId, confidence: entry.confidence, pendingObject: entry.pendingObject ?? null, pendingCount: entry.pendingCount ?? 0, projectId: entry.projectId ?? null, ...(entry.reinforcedOn ? { reinforcedOn: entry.reinforcedOn } : {}) };
 }
 
 function pushRecentEntity(recentEntityIds: string[], entityId: string): string[] {
@@ -222,12 +223,13 @@ export const contradictionCheck: Rule = (state, event) => {
   // each value is tracked and promoted independently and coexists — the fix for
   // `collaboratesOn`-style predicates wrongly superseding each other.
   const key =
-    predicateCardinality(candidate.predicate) === 'set'
+    predicateCardinality(candidate.predicate, candidate.entityKind) === 'set'
       ? `${candidate.entityId}:${candidate.predicate}:${candidate.object}`
       : `${candidate.entityId}:${candidate.predicate}`;
   const existing = normalizeCursorEntry(state.memory.factCursor[key]);
 
   const recentEntityIds = pushRecentEntity(state.memory.recentEntityIds, candidate.entityId);
+  const today = localDate(event.ts, state.config.timezone);
 
   /**
    * A confirmed `knownAs` on a redaction alias, mirrored into
@@ -271,7 +273,7 @@ export const contradictionCheck: Rule = (state, event) => {
       return { state: nextState, effects: [upsert, embed] };
     }
     // Superseded, never deleted — even an owner's correction keeps the prior
-    // fact's timeline (see assertions-versus-observations: "you used to
+    // fact's timeline (see concepts/entity-facts-and-belief: "you used to
     // believe X and I corrected it" is itself information worth keeping).
     return { state: nextState, effects: [{ type: 'SupersedeFact' as const, factId: existing.factId, supersededByFactId: factId, ts: event.ts }, upsert, embed] };
   }
@@ -281,16 +283,22 @@ export const contradictionCheck: Rule = (state, event) => {
   // posterior so its confidence rises with re-observation instead of staying
   // pinned at its insert value. `confidence` on the cursor is a stale hint; the
   // authoritative posterior lives on the DB row the executor updates.
+  //
+  // lane Q: once a local day. Re-seen every few minutes, `usesTool` made 94% of
+  // all fact candidates and pushed one fact's alpha past 3,000: a count of
+  // windows, not of evidence. The first repeat of a day reinforces; the rest
+  // of that day only keep the cursor fresh.
   if (existing.object !== null && existing.object === candidate.object) {
-    const nextState = withCursor({ ...existing, confidence: candidate.confidence, pendingObject: null, pendingCount: 0, projectId: candidate.projectId ?? existing.projectId });
-    if (existing.factId === null) return { state: nextState, effects: [] };
-    return { state: nextState, effects: [{ type: 'ReinforceFact', factId: existing.factId, delta: REINFORCE_DELTA, ts: event.ts }] };
+    const reinforce = existing.factId !== null && existing.reinforcedOn !== today;
+    const nextState = withCursor({ ...existing, confidence: candidate.confidence, pendingObject: null, pendingCount: 0, projectId: candidate.projectId ?? existing.projectId, ...(reinforce ? { reinforcedOn: today } : {}) });
+    if (!reinforce) return { state: nextState, effects: [] };
+    return { state: nextState, effects: [{ type: 'ReinforceFact', factId: existing.factId!, delta: REINFORCE_DELTA, ts: event.ts }] };
   }
 
   // An assertion (the owner directly stating or correcting a fact) supersedes
   // on a single observation — being told something twice doesn't make it
   // truer, and an inference's corroboration bar doesn't apply to a claim that
-  // was never a noisy signal in the first place (assertions-versus-observations).
+  // was never a noisy signal in the first place (concepts/entity-facts-and-belief).
   if (provenance === 'assertion') return promote();
   // Same for a fact the owner stated in chat: the sentence was said once and
   // will not recur as the same triple, so a corroboration bar would keep every
@@ -326,3 +334,40 @@ export const contradictionCheck: Rule = (state, event) => {
 
   return { state: withCursor({ ...existing, confidence: candidate.confidence, pendingObject: candidate.object, pendingCount: 1, projectId: candidate.projectId ?? existing.projectId }), effects: [] };
 };
+
+/**
+ * lane Q (Q6): a one-time boot repair for a predicate made one-value per kind
+ * (`predicateCardinality(predicate, kind)`), given every current fact of it.
+ * Per entity the best-evidenced fact stays (highest alpha, then the newest);
+ * every other one is superseded by it, never deleted. The cursor's slot for
+ * the entity is set to the kept fact, so the next observation of a different
+ * value competes with it instead of filing another row beside it, and the old
+ * one-slot-per-value keys go. Pure; with one fact per entity and the slots in
+ * place it returns the state unchanged and no effects.
+ */
+export function oneValueRepair(
+  state: KernelState,
+  predicate: string,
+  facts: readonly { id: string; entityId: string; object: string; confidence: number; alpha: number; validFrom: string }[],
+  ts: string,
+): { state: KernelState; effects: Effect[]; superseded: number; entities: number } {
+  const byEntity = new Map<string, (typeof facts)[number][]>();
+  for (const f of facts) byEntity.set(f.entityId, [...(byEntity.get(f.entityId) ?? []), f]);
+  const effects: Effect[] = [];
+  let cursor = state.memory.factCursor;
+  let changed = false;
+  let entities = 0;
+  for (const [entityId, group] of byEntity) {
+    const [keep, ...rest] = [...group].sort((a, b) => b.alpha - a.alpha || b.validFrom.localeCompare(a.validFrom));
+    if (rest.length > 0) entities += 1;
+    for (const f of rest) effects.push({ type: 'SupersedeFact', factId: f.id, supersededByFactId: keep!.id, ts });
+    const slot = `${entityId}:${predicate}`;
+    const perValue = Object.keys(cursor).filter((k) => k.startsWith(`${slot}:`));
+    if (cursor[slot]?.factId === keep!.id && perValue.length === 0) continue;
+    const next = Object.fromEntries(Object.entries(cursor).filter(([k]) => !k.startsWith(`${slot}:`)));
+    next[slot] = { object: keep!.object, factId: keep!.id, confidence: keep!.confidence, pendingObject: null, pendingCount: 0, projectId: null };
+    cursor = next;
+    changed = true;
+  }
+  return { state: changed ? { ...state, memory: { ...state.memory, factCursor: cursor } } : state, effects, superseded: effects.length, entities };
+}

@@ -31,7 +31,7 @@ describe('meetingFollowup', () => {
     expect(out.effects).toHaveLength(1);
     expect(out.effects[0]).toMatchObject({
       type: 'EmitEvent',
-      event: { type: 'ask:owner-opened', payload: { question: expect.stringContaining('How did "Sanity certification" go?'), reason: expect.stringContaining('Bob, Noah'), choices: ['Fine, nothing to keep', 'Let me tell you'] } },
+      event: { type: 'ask:owner-opened', payload: { question: 'How did "Sanity certification" go — did you promise anything?', reason: expect.stringContaining('Bob, Noah'), choices: ['No', 'Yes — tell me'] } },
     });
     expect(Object.values(state.meetings.seen)[0].askedAt).toBe(at(0));
 
@@ -62,13 +62,26 @@ describe('meetingFollowup', () => {
       state = meetingFollowup(state, tick(-50 * 60_000)).state;
       for (let i = 0; i < utterances; i += 1) state = meetingFollowup(state, heard(-40 * 60_000 + i)).state;
       state = { ...state, hearing: { ...state.hearing, listening: false } };
-      return meetingFollowup(state, tick(0)).effects.length;
+      // UC1-X3: the question waits up to eight minutes for the meeting's promise pass.
+      const first = meetingFollowup(state, tick(0));
+      return [...first.effects, ...meetingFollowup(first.state, tick(9 * 60_000)).effects].filter((e) => e.type === 'EmitEvent').length;
     };
     expect(run(16, true), 'the skipped standup: 16 utterances').toBe(0);
     expect(run(96, true), 'an attended one').toBe(1);
     expect(run(1, true), 'the skipped Crrntlive: one stray utterance').toBe(0);
     expect(run(0, false), 'hearing asleep: silence says nothing, so ask').toBe(1);
     expect(run(0, true), 'awake but nothing at all: the transcriber may be down, so ask').toBe(1);
+  });
+
+  it('counts only the microphone as the owner being there — the far side of a call is heard in an empty room too', () => {
+    let state = withMeeting(createInitialState('d'), ['Bob']);
+    state = meetingFollowup(state, tick(-70 * 60_000)).state;
+    state = { ...state, hearing: { ...state.hearing, listening: true } };
+    state = meetingFollowup(state, tick(-50 * 60_000)).state;
+    for (let i = 0; i < 200; i += 1) state = meetingFollowup(state, { id: `s${++seq}`, type: 'audio:transcript', ts: at(-40 * 60_000 + i), payload: { spokenText: 'the far side', channel: 'system' }, sanitized: true }).state;
+    state = meetingFollowup(state, { id: `m${++seq}`, type: 'audio:transcript', ts: at(-30 * 60_000), payload: { spokenText: 'ja', channel: 'mic' }, sanitized: true }).state;
+    expect(Object.values(state.meetings.seen)[0]!.heard).toBe(1);
+    expect(meetingFollowup(state, tick(0)).effects).toEqual([]);
   });
 
   it('forgets meetings older than two days', () => {

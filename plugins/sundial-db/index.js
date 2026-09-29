@@ -9,6 +9,11 @@ import path from 'node:path'
 import { getDb, initializeDatabase } from '@sundial/db/index.js'
 import * as gnomonDbQueries from '@sundial/db/index.js'
 import { getSundialHome } from '@sundial/helpers/config.js'
+// lane H (H5): every line in logs/sundial.log gets its time. The first Sundial
+// plugin with no service to wait on, so it runs before the others print.
+import { stampConsole } from '@sundial/helpers/log-stamp.js'
+
+stampConsole()
 
 export const name = 'sundial-db'
 export const inject = []

@@ -5,7 +5,8 @@
 // the slice is built from database reads. So the provider returns a cached
 // string and a refresher rebuilds it in the background: once at registration,
 // then on an interval. The almanac page that asked for this
-// (`enhancements/ambient-context-injection`) named the cache as the first of
+// (`enhancements/ambient-context-injection`, since retired; the loop is now
+// `architecture/llm/tool-loop`) named the cache as the first of
 // its two honest costs: an idle conversation must not re-run retrieval per
 // message. The interval is the cache key here rather than the current moment,
 // because a moment can stay open for an hour while a commitment closes or a

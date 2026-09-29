@@ -9,7 +9,7 @@ const candidate: SanitizedEvent = {
   id: 'e-cand',
   type: 'notice:candidate',
   ts: TS,
-  payload: { shape: 'transition', kind: 'commitment-quiet', key: 'commitment-quiet:commitment:crossword-zoom-fix', surprise: 1.0, precision: 1, concerns: [], valueHalfLifeMs: null, observation: 'crossword-zoom-fix has been quiet 14 days, after 2 days of work across 68 sessions', evidence: ['branch feature/crossword-zoom-fix', '2 active days', 'last touched 2026-09-08'] },
+  payload: { shape: 'transition', kind: 'commitment-quiet', key: 'commitment-quiet:commitment:crossword-pan-fix', surprise: 1.0, precision: 1, concerns: [], valueHalfLifeMs: null, observation: 'crossword-pan-fix has been quiet 14 days, after 2 days of work across 68 sessions', evidence: ['branch feature/crossword-pan-fix', '2 active days', 'last touched 2026-09-08'] },
   sanitized: true,
 };
 
@@ -19,11 +19,11 @@ describe('gateFeaturesJudge (J1.6)', () => {
     const { effects } = gateFeaturesJudge(state, candidate);
     const judge = effects.find((e) => e.type === 'Judge') as Extract<Effect, { type: 'Judge' }>;
     expect(judge).toMatchObject({ purpose: 'classify', questionSetId: 'gate-features', delayMs: 0 });
-    expect(judge.state).toMatchObject({ notice: { title: 'crossword-zoom-fix has been quiet 14 days, after 2 days of work across 68 sessions', body: 'branch feature/crossword-zoom-fix; 2 active days; last touched 2026-09-08' } });
+    expect(judge.state).toMatchObject({ notice: { title: 'crossword-pan-fix has been quiet 14 days, after 2 days of work across 68 sessions', body: 'branch feature/crossword-pan-fix; 2 active days; last touched 2026-09-08' } });
     // No gate arithmetic in the state: Jev judged numbers when it was given them.
     expect(JSON.stringify(judge.state)).not.toContain('surprise');
     const decision = noticeGate(state, candidate).effects.find((e) => e.type === 'RecordGateDecision') as Extract<Effect, { type: 'RecordGateDecision' }> | undefined;
-    expect(judge.metadata).toEqual({ decisionId: gateDecisionId(TS, 'e-cand', 'commitment-quiet:commitment:crossword-zoom-fix'), noticeKey: 'commitment-quiet:commitment:crossword-zoom-fix', artifactId: 'commitment-quiet:commitment:crossword-zoom-fix' });
+    expect(judge.metadata).toEqual({ decisionId: gateDecisionId(TS, 'e-cand', 'commitment-quiet:commitment:crossword-pan-fix'), noticeKey: 'commitment-quiet:commitment:crossword-pan-fix', artifactId: 'commitment-quiet:commitment:crossword-pan-fix' });
     if (decision) expect(decision.id).toBe(judge.metadata?.decisionId);
   });
 

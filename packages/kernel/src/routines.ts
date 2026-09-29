@@ -7,9 +7,10 @@
  * no route and no notice. This is the read side, kept pure so the rule, the tool,
  * and the presence line all ask the same question and get the same answer.
  *
- * Why a FORECAST and not a notice. The rule's own measurement is on record in its
- * header: out-of-sample, a learned routine predicts the next step about 40% of the
- * time. That is worth *knowing* — "you usually open Warp after this" is a useful
+ * Why a FORECAST and not a notice. Out of sample, a learned routine predicts the
+ * next step about 27% of the time: 26.8% on a 70/30 holdout of thirteen days,
+ * with the alternation guard in place. The 40.3% in the rule's header is the
+ * figure from BEFORE that guard, inflated by alt-tab texture. That is worth *knowing* — "you usually open Warp after this" is a useful
  * thing for an assistant to have in hand — and it is not worth an *interruption*.
  * Priced honestly through the gate a departure would never clear the tonic bar, so
  * it is not offered as one. It is handed to the model as context and to the owner

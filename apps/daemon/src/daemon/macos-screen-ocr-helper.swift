@@ -28,6 +28,7 @@
 // argv: [outFile, fullIntervalMs, cursorIntervalMs, cursorRegionPx]
 
 import AppKit
+import Carbon
 import CoreGraphics
 import Foundation
 import ScreenCaptureKit
@@ -106,6 +107,8 @@ struct ScreenOcrSnapshot: Codable {
     let text: String
     let topics: [String]
     let captureTimestamp: String
+    /// Some app holds a secure text field. Written, not acted on: the TS sensor drops the capture.
+    let secureInput: Bool
 }
 
 // MARK: - Args
@@ -179,8 +182,13 @@ func deriveTopics(text: String, appName: String) -> [String] {
 
 func recognizeText(in cgImage: CGImage) -> String {
     let request = VNRecognizeTextRequest()
-    request.recognitionLevel = .fast
-    request.usesLanguageCorrection = false
+    // `.accurate` with correction, in the two languages read on this screen.
+    // `.fast` without correction misread small UI text badly enough that the
+    // capture was mostly noise; accurate costs more CPU per frame, at the same
+    // cadence.
+    request.recognitionLevel = .accurate
+    request.usesLanguageCorrection = true
+    request.recognitionLanguages = ["en-US", "nl-NL"]
     let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
     do {
         try handler.perform([request])
@@ -239,8 +247,11 @@ func captureFrontmost(cursorRegion: Bool) async -> (cgImage: CGImage, appName: S
         let localYTop = display.frame.maxY - mouse.y
         let rect = CGRect(x: localX - Double(side) / 2, y: localYTop - Double(side) / 2, width: Double(side), height: Double(side))
         config.sourceRect = rect.intersection(CGRect(x: 0, y: 0, width: Double(display.width), height: Double(display.height)))
-        config.width = side
-        config.height = side
+        // sourceRect is in points; the output size is in pixels. Asking for the
+        // point size halves the resolution on a Retina display.
+        let scale = CGFloat(SCShareableContent.info(for: filter).pointPixelScale)
+        config.width = Int(CGFloat(side) * scale)
+        config.height = Int(CGFloat(side) * scale)
         guard let image = try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config) else { return nil }
         return (image, appName, bundleId)
     }
@@ -287,8 +298,10 @@ func captureFrontmost(cursorRegion: Bool) async -> (cgImage: CGImage, appName: S
         .intersection(CGRect(x: 0, y: 0, width: Double(display.width), height: Double(display.height)))
     guard !cropped.isNull, cropped.width >= 1, cropped.height >= 1 else { return nil }
     config.sourceRect = cropped
-    config.width = max(1, Int(cropped.width))
-    config.height = max(1, Int(cropped.height))
+    // Pixels, not points; see the cursor branch.
+    let scale = CGFloat(SCShareableContent.info(for: filter).pointPixelScale)
+    config.width = max(1, Int(cropped.width * scale))
+    config.height = max(1, Int(cropped.height * scale))
     guard let image = try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config) else { return nil }
     return (image, appName, bundleId)
 }
@@ -320,7 +333,8 @@ func captureAndWrite(cursorRegion: Bool) {
             bundleId: shot.bundleId,
             text: text,
             topics: deriveTopics(text: text, appName: shot.appName),
-            captureTimestamp: isoFormatter.string(from: Date())
+            captureTimestamp: isoFormatter.string(from: Date()),
+            secureInput: IsSecureEventInputEnabled()
         )
         writeSnapshot(snapshot)
     }

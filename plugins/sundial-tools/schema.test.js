@@ -23,13 +23,12 @@ function convertAll() {
   return out;
 }
 
-describe('toParameterSchemaSpec over all 20 real tool schemas', () => {
+describe('toParameterSchemaSpec over all 27 real tool schemas', () => {
   const converted = convertAll();
 
-  it('covers the full ASK_TOOL_REGISTRY (19 shared + gnomon_show_view)', () => {
-    expect(converted.size).toBe(20);
+  it('covers the full ASK_TOOL_REGISTRY (the 27 shared tools; lane D added gnomon_project_handoff, lane C gnomon_drift and gnomon_agent_yield, lane B gnomon_brief, lane A gnomon_did_i, gnomon_timeline and gnomon_what_if)', () => {
+    expect(converted.size).toBe(27);
     expect([...converted.keys()]).toContain('gnomon_routines');
-    expect([...converted.keys()]).toContain('gnomon_show_view');
   });
 
   it('every converted spec compiles to a dsh-supported JSON schema', () => {
@@ -76,13 +75,13 @@ describe('toParameterSchemaSpec over all 20 real tool schemas', () => {
     expect(spec.offset.description).toContain('nextOffset');
   });
 
-  it('folds string bounds into the description (gnomon_show_view.because maxLength)', () => {
-    const { spec } = converted.get('gnomon_show_view');
+  it('folds string bounds into the description (no real tool has one today)', () => {
+    const spec = toParameterSchemaSpec({ type: 'object', properties: { because: { type: 'string', maxLength: 80, description: 'why' } } });
     expect(spec.because.maxLength).toBeUndefined();
     expect(spec.because.description).toContain('max length 80');
   });
 
-  it('preserves enums verbatim (gnomon_compose_figure.kind, gnomon_show_view.range)', () => {
+  it('preserves enums verbatim (gnomon_compose_figure.kind)', () => {
     expect(converted.get('gnomon_compose_figure').spec.kind.enum).toEqual([
       'dial-slice',
       'trend-slice',
@@ -91,7 +90,6 @@ describe('toParameterSchemaSpec over all 20 real tool schemas', () => {
       'commitment-thread',
       'census',
     ]);
-    expect(converted.get('gnomon_show_view').spec.range.enum).toEqual(['7d', '28d']);
   });
 
   it('an empty-schema tool (gnomon_current_context) converts to an empty parameter map', () => {
@@ -157,7 +155,12 @@ describe('toDshTool definitions', () => {
     gnomon_entity_history: { name: 'x' },
     gnomon_semantic_search: { query: 'q' },
     gnomon_compose_figure: { kind: 'census' },
-    gnomon_show_view: { altitude: 'today' },
+    // lane D
+    gnomon_project_handoff: { project: 'puzzlebox-studio' },
+    // lane B
+    gnomon_brief: { kind: 'standup' },
+    // lane A
+    gnomon_did_i: { what: 'reply to Mira' },
   };
 
   it('produces registry-ready definitions for all 13 (name, description, supported parameters, json output)', () => {
@@ -173,7 +176,7 @@ describe('toDshTool definitions', () => {
   });
 
   it('rejects invalid args before the gnomon handler runs (dsh-side validation)', async () => {
-    const showView = toDshTool(ASK_TOOL_REGISTRY.find((tool) => tool.name === 'gnomon_show_view'));
-    await expect(showView.execute({}, undefined)).rejects.toThrow();
+    const momentDetail = toDshTool(ASK_TOOL_REGISTRY.find((tool) => tool.name === 'gnomon_moment_detail'));
+    await expect(momentDetail.execute({}, undefined)).rejects.toThrow();
   });
 });

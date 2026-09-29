@@ -31,8 +31,10 @@ import { readFileSync } from 'node:fs'
 import { ensureCompanion } from './companion.js'
 import { createDelivery } from './delivery.js'
 import { createNativeNotifier, watchNoticeVerdicts } from './native-notify.js'
-import { createPush } from './push.js'
+import { createPush, phoneVerdicts } from './push.js'
 import { installWorkLoop } from './work.js'
+// lane E (#12)
+import { installNightShift } from './night-shift.js'
 
 export const name = 'sundial-proactive'
 // `subagents` is deliberately NOT injected. Cordis reads an injected name as a
@@ -63,10 +65,10 @@ export async function apply(ctx, config = {}) {
   // verdict to the :8767 listener. Signed with the ingest token the listener
   // already holds, so the token itself never rides the public topic. Read
   // lazily — the sensors plugin writes the file on its first boot.
-  const taps = (artifactKind, artifactId) => {
+  const taps = (artifactKind, artifactId, verdicts) => {
     if (notifications.verdictUrl === '') return []
     try {
-      return verdictActions(notifications.verdictUrl, readFileSync(getApiTokenPath(), 'utf-8').trim(), artifactKind, artifactId)
+      return verdictActions(notifications.verdictUrl, readFileSync(getApiTokenPath(), 'utf-8').trim(), artifactKind, artifactId, verdicts)
     } catch {
       return []
     }
@@ -75,6 +77,16 @@ export async function apply(ctx, config = {}) {
   ctx.effect(() => () => {
     disposed = true
   }, 'sundial-proactive shutdown')
+
+  // lane H (H4): what became of a push. Recorded either way (Settings shows
+  // the last one that reached the phone); a failed one falls back to the
+  // banner when the route had skipped it, so the notice is not lost.
+  const pushed = (sending, payload = null) =>
+    sending.then((outcome) => {
+      if (outcome.reason === 'disabled' || outcome.reason === 'empty') return
+      ctx.gnomonKernel.appendSignal(outcome.pushed ? 'push:sent' : 'push:failed', outcome.pushed ? {} : { reason: outcome.reason }).catch(() => {})
+      if (!outcome.pushed && payload?.route === 'phone') notifier.post(payload)
+    })
 
   // The companion is built on the FIRST notice, not at boot. Creating an agent
   // eagerly would put an empty session in the owner's sidebar on every start,
@@ -92,10 +104,12 @@ export async function apply(ctx, config = {}) {
     onDropCompanion: () => {
       companion = null
     },
-    notifyNative: (payload) => {
-      void push.post({ title: 'Gnomon', body: payload?.observation ?? '', actions: taps('notice', payload?.noticeKey ?? '') })
-      return notifier.post(payload)
-    },
+    notifyNative: (payload) => notifier.post(payload),
+    // lane D — #6: ntfy on every route; the route only drops the banner when away.
+    // lane H (H4): titled by the notice's group; an agent wait offers only "Not now".
+    notifyPhone: (payload) =>
+      void pushed(push.post({ title: payload?.title ?? 'Gnomon', body: payload?.observation ?? '', actions: taps('notice', payload?.noticeKey ?? '', phoneVerdicts(payload?.kind)) }), payload),
+    pushAtMac: notifications.pushAtMac !== false,
   })
 
   ctx.on('gnomon/notice', (notice) => delivery.enqueue(notice))
@@ -104,9 +118,11 @@ export async function apply(ctx, config = {}) {
   // the same `gnomon/notice` event on their own channel and wake a separate
   // worker session, so a job never lands in the companion's conversation.
   ctx.effect(
-    () => installWorkLoop(ctx, { home, cwd, hands: loadSundialConfig().hands, isDisposed: () => disposed, onShelved: (title) => void push.post({ title: 'Left for you', body: title }) }),
+    () => installWorkLoop(ctx, { home, cwd, hands: loadSundialConfig().hands, isDisposed: () => disposed, onShelved: (title) => void pushed(push.post({ title: 'Left for you', body: title })) }),
     'sundial-proactive work loop',
   )
+  // lane E (#12): the night shift. Off unless `jobs.enabled`; off, it registers and hears nothing.
+  ctx.effect(() => installNightShift(ctx, { home, jobs: loadSundialConfig().jobs }), 'sundial-proactive night shift')
 
   // The banner's return path. A button press is the same fact as the owner
   // saying "not now" in chat, so it enters through the same signal the
@@ -116,7 +132,7 @@ export async function apply(ctx, config = {}) {
       () =>
         watchNoticeVerdicts(home, ({ noticeKey, verdict }) => {
           ctx.gnomonKernel
-            .appendSignal('feedback:verdict', { artifactKind: 'notice', artifactId: noticeKey, verdict })
+            .appendSignal('feedback:verdict', { artifactKind: 'notice', artifactId: noticeKey, verdict, via: 'banner' })
             .then(() => console.log(`[sundial-proactive] banner verdict "${verdict}" on ${noticeKey}`))
             .catch((error) =>
               console.warn(`[sundial-proactive] could not record a banner verdict: ${error instanceof Error ? error.message : String(error)}`),

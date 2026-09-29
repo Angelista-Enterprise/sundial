@@ -53,6 +53,35 @@ export async function transcriptFor(deps: AttachTranscriptDeps, start: string, e
   return excerpts.length > 0 ? { text: excerpts.join('\n\n').slice(0, MAX_TRANSCRIPT_CHARS), source: 'moments' } : null;
 }
 
+/** Meet's own captions add at most this much to a meeting's words. */
+const MAX_CAPTION_CHARS = 6_000;
+
+/**
+ * UC1: what Google Meet captioned inside the window, from the page text the
+ * browser helper already reads (`page:text` on meet.google.com). The page is
+ * read whole every time it changes, so the same lines come back again and
+ * again; each line is kept once, in the order first seen.
+ */
+export async function captionsFor(deps: Pick<AttachTranscriptDeps, 'getSignalsInRange'>, start: string, end: string): Promise<string | null> {
+  const from = new Date(Date.parse(start) - WINDOW_PAD_MS).toISOString();
+  const to = new Date(Date.parse(end) + WINDOW_PAD_MS).toISOString();
+  const pages = (await deps.getSignalsInRange(from, to, 500, ['page:text'])).filter((s) => s.data.host === 'meet.google.com' && typeof s.data.text === 'string');
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  let total = 0;
+  for (const page of pages) {
+    for (const raw of (page.data.text as string).split(/\n|(?<=[.!?])\s+/)) {
+      const line = raw.trim();
+      if (line.length < 12 || seen.has(line)) continue;
+      seen.add(line);
+      if (total + line.length > MAX_CAPTION_CHARS) return lines.join('\n');
+      lines.push(line);
+      total += line.length + 1;
+    }
+  }
+  return lines.length > 0 ? lines.join('\n') : null;
+}
+
 /** Performs the effect. Returns what it did, so the executor's log line says it. */
 export async function performAttachTranscript(effect: AttachTranscriptEffect, deps: AttachTranscriptDeps): Promise<'attached' | 'already' | 'nothing-on-record'> {
   const found = await transcriptFor(deps, effect.start, effect.end, effect.attendees ?? []);

@@ -4,7 +4,7 @@ const callChatCompletion = vi.fn();
 vi.mock('./transport.js', () => ({ callChatCompletion: (...args: unknown[]) => callChatCompletion(...args) }));
 vi.mock('./config.js', () => ({ getLlmConfig: () => ({ baseUrl: 'x', apiKey: null, model: 'qwen/qwen3.8-flash-next' }) }));
 
-const { callSystemOneLocal, systemOneBackend } = await import('./systemone-local.js');
+const { callSystemOneTextModel, systemOneBackend } = await import('./systemone-text-model.js');
 
 const questions = {
   is_work: { type: 'noul' as const, instructions: 'Working?' },
@@ -14,7 +14,7 @@ const questions = {
 
 beforeEach(() => callChatCompletion.mockReset());
 
-describe('callSystemOneLocal', () => {
+describe('callSystemOneTextModel', () => {
   it('asks the text model for probabilities as JSON and maps them to Jev\'s answer shape', async () => {
     callChatCompletion.mockResolvedValueOnce({
       content: '```json\n{"answers":{"is_work":{"noul":0.8},"subject":{"probabilities":{"project":3,"app":1}},"depth":{"probabilities":{"0":0.2,"1":0.8}}}}\n```',
@@ -25,7 +25,7 @@ describe('callSystemOneLocal', () => {
       toolCalls: [],
       finishReason: 'stop',
     });
-    const result = await callSystemOneLocal({ minutes: 31 }, questions);
+    const result = await callSystemOneTextModel({ minutes: 31 }, questions);
     expect(result.model).toBe('qwen/qwen3.8-flash-next');
     expect(result.answers.is_work).toEqual({ type: 'noul', noul: 0.8 });
     expect(result.answers.subject).toEqual({ type: 'choice', choice: 'project', probabilities: { project: 0.75, app: 0.25 }, confidence: 0.75 });
@@ -38,7 +38,7 @@ describe('callSystemOneLocal', () => {
 
   it('throws on prose instead of JSON so the executor can count it as a failure', async () => {
     callChatCompletion.mockResolvedValueOnce({ content: 'I think they were working.', statusCode: 200, promptTokens: 1, completionTokens: 1, totalTokens: 2, toolCalls: [], finishReason: 'stop' });
-    await expect(callSystemOneLocal({}, questions)).rejects.toThrow(/no JSON/);
+    await expect(callSystemOneTextModel({}, questions)).rejects.toThrow(/no JSON/);
   });
 });
 
@@ -48,11 +48,14 @@ describe('systemOneBackend', () => {
     try {
       delete process.env.SUNDIAL_SYSTEMONE_BACKEND;
       delete process.env.TYPESAFE_API_KEY;
-      expect(systemOneBackend()).toBe('local');
+      expect(systemOneBackend()).toBe('text-model');
       process.env.TYPESAFE_API_KEY = 'k';
       expect(systemOneBackend()).toBe('jev');
+      process.env.SUNDIAL_SYSTEMONE_BACKEND = 'text-model';
+      expect(systemOneBackend()).toBe('text-model');
+      // The old name, from an .env written before the rename.
       process.env.SUNDIAL_SYSTEMONE_BACKEND = 'local';
-      expect(systemOneBackend()).toBe('local');
+      expect(systemOneBackend()).toBe('text-model');
       process.env.SUNDIAL_SYSTEMONE_BACKEND = 'nonsense';
       expect(systemOneBackend()).toBe('jev');
     } finally {

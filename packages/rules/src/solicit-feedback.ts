@@ -1,7 +1,7 @@
 import type { FeedbackSolicitation, KernelState, Rule } from '@sundial/kernel/types.js';
 
 /**
- * The ASKING half of the feedback loop (enhancements/outcome-feedback-signal).
+ * The ASKING half of the feedback loop (decisions/assistant-as-an-event-source).
  *
  * The return path — `feedback:verdict`, `state.feedback`, `POST /feedback`,
  * `gnomon feedback`, macOS verdict buttons, and (842d46b) a consumer that

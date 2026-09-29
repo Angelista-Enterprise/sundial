@@ -25,7 +25,8 @@ export const agentSessionTrack: Rule = (state, event) => {
   const branch = typeof payload.branch === 'string' && payload.branch.length > 0 ? payload.branch : null;
 
   return {
-    state: { ...state, agent: { session: cwd ? { cwd, branch } : null } },
+    // Spread: the fleet and the nudge memory live in this slice too (U3-F1).
+    state: { ...state, agent: { ...state.agent, session: cwd ? { cwd, branch } : null } },
     effects: [],
   };
 };

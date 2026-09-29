@@ -21,7 +21,8 @@ describe('the sensor manifest', () => {
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
       .sort()
-    const claimed = SENSORS.map((sensor) => sensor.package).filter(Boolean).sort()
+    // One package may hold two rows: `mail` reads Mail and Messages behind two switches.
+    const claimed = [...new Set(SENSORS.map((sensor) => sensor.package).filter(Boolean))].sort()
     expect(claimed, 'every sensor package owes the Trust card a row').toEqual(folders)
   })
 

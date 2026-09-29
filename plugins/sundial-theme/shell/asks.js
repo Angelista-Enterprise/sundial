@@ -190,7 +190,7 @@ export function askCensus(asks) {
 export function routePrefill(ask) {
   const tail = String(ask?.id ?? '').replace(/^owner-ask:/, '')
   // `people-ask.ts` mints the id as `owner-ask:who-<alias>` and the alias IS
-  // the entity's canonical name (`person-35941f3bc4`), so the subject needs no
+  // the entity's canonical name (`person-4b3c2d1e0f`), so the subject needs no
   // reconstruction — only the one prefix taken off.
   if (tail.startsWith('who-')) return { entityKind: 'person', canonicalName: tail.slice('who-'.length), predicate: 'knownAs' }
   return { entityKind: 'topic', canonicalName: '', predicate: '' }

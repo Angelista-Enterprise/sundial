@@ -98,3 +98,127 @@ describe('sundial install', () => {
     expect(fs.readFileSync(path.join(sibling, 'data.txt'), 'utf8')).toBe('precious')
   })
 })
+
+describe('sundial claude-hooks (report-only, U3-F8 / F50)', () => {
+  const owner = {
+    permissions: { defaultMode: 'auto' },
+    hooks: { Notification: [{ matcher: 'permission_prompt', hooks: [{ type: 'command', command: 'say done' }] }] },
+    statusLine: { type: 'command', command: '~/.claude/statusline.sh' },
+  }
+  const setup = () => {
+    const home = path.join(root, 'home')
+    const claude = path.join(home, '.claude')
+    const data = path.join(root, 'sundial')
+    fs.mkdirSync(claude, { recursive: true })
+    fs.mkdirSync(path.join(data, '.daemon'), { recursive: true })
+    const original = `${JSON.stringify(owner, null, 2)}\n`
+    fs.writeFileSync(path.join(claude, 'settings.json'), original)
+    const env = { HOME: home, CLAUDE_CONFIG_DIR: claude, SUNDIAL_HOME: data }
+    return { claude, data, original, env, settings: () => fs.readFileSync(path.join(claude, 'settings.json'), 'utf8') }
+  }
+
+  it('adds its hooks idempotently, keeps the owner\'s, and removes exactly its own', () => {
+    const t = setup()
+    expect(sundial(['claude-hooks'], t.env).code).toBe(0)
+    const once = t.settings()
+    expect(sundial(['claude-hooks'], t.env).code).toBe(0)
+    expect(t.settings()).toBe(once)
+    const parsed = JSON.parse(once)
+    expect(Object.keys(parsed)).toEqual(['permissions', 'hooks', 'statusLine'])
+    expect(Object.keys(parsed.hooks).sort()).toEqual(['Notification', 'PostToolUse', 'PreCompact', 'SessionEnd', 'SessionStart', 'Stop', 'StopFailure', 'UserPromptSubmit'])
+    expect(parsed.hooks.Notification[0]).toEqual(owner.hooks.Notification[0])
+    const ours = parsed.hooks.Stop[0].hooks[0]
+    expect(ours).toMatchObject({ type: 'command', async: true })
+    expect(ours.command).toContain('claude-hook.mjs')
+    expect(ours.command.endsWith(`'${t.data}'`)).toBe(true)
+    expect(sundial(['claude-hooks', '--remove'], t.env).code).toBe(0)
+    expect(t.settings()).toBe(t.original)
+  })
+
+  it('the hook writes one whitelisted line and prints nothing', () => {
+    const t = setup()
+    sundial(['claude-hooks'], t.env)
+    const command = JSON.parse(t.settings()).hooks.Stop[0].hooks[0].command
+    const payload = { session_id: 'abcdef12-3456', hook_event_name: 'Stop', cwd: '/Users/pat/Projects/acme', transcript_path: '/x.jsonl', last_assistant_message: 'the secret answer', stop_hook_active: false }
+    const r = spawnSync('/bin/sh', ['-c', command], { input: JSON.stringify(payload), encoding: 'utf8' })
+    expect(r.status).toBe(0)
+    expect(r.stdout).toBe('')
+    const file = path.join(t.data, '.daemon', 'claude-hooks.jsonl')
+    const line = JSON.parse(fs.readFileSync(file, 'utf8').trim())
+    expect(line).toMatchObject({ event: 'Stop', session: 'abcdef12', cwd: '/Users/pat/Projects/acme' })
+    expect(JSON.stringify(line)).not.toContain('secret')
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600)
+    const edit = { session_id: 'abcdef12', hook_event_name: 'PostToolUse', cwd: '/Users/pat/Projects/acme', tool_name: 'Edit', tool_input: { file_path: '/Users/pat/Projects/acme/src/x.ts', old_string: 'secret', new_string: 'secret' } }
+    spawnSync('/bin/sh', ['-c', command], { input: JSON.stringify(edit), encoding: 'utf8' })
+    const last = JSON.parse(fs.readFileSync(file, 'utf8').trim().split('\n').pop())
+    expect(last).toMatchObject({ event: 'PostToolUse', tool: 'Edit', file: 'src/x.ts' })
+    expect(JSON.stringify(last)).not.toContain('secret')
+  })
+
+  it('a test install leaves Claude alone; uninstall takes the hooks back out', () => {
+    if (process.platform !== 'darwin') return
+    const t = setup()
+    const dir = path.join(root, 'sundial-install')
+    const env = { ...t.env, SUNDIAL_HOME: dir }
+    expect(sundial(['install', '--skip-build', '--no-launchagent', '--no-sidecars'], env).code).toBe(0)
+    expect(t.settings()).toBe(t.original)
+    sundial(['claude-hooks'], env)
+    expect(t.settings()).not.toBe(t.original)
+    expect(sundial(['uninstall'], env).out).toMatch(/Sundial's hooks in/)
+    expect(sundial(['uninstall', '--yes'], env).code).toBe(0)
+    expect(t.settings()).toBe(t.original)
+  })
+
+  it('refuses a settings file that is not JSON, and changes nothing', () => {
+    const t = setup()
+    fs.writeFileSync(path.join(t.claude, 'settings.json'), '{ not json')
+    expect(sundial(['claude-hooks'], t.env).code).toBe(1)
+    expect(t.settings()).toBe('{ not json')
+  })
+})
+
+describe('sundial start opens the app without the caller\'s install variables (hardening S2)', () => {
+  it("drops the caller's SUNDIAL_* and DSH_* from the env `open` gets, and passes this install's home", () => {
+    const home = path.join(root, 'install')
+    const bin = path.join(root, 'bin')
+    const app = path.join(root, 'Sundial.app')
+    fs.mkdirSync(home, { recursive: true })
+    fs.mkdirSync(bin)
+    fs.writeFileSync(path.join(home, '.sundial-install.json'), JSON.stringify({ tool: 'sundial', home, mode: 'app', app }))
+    const seen = path.join(root, 'open.txt')
+    fs.writeFileSync(path.join(bin, 'open'), `#!/bin/sh\necho "ARGS=$*" > '${seen}'\nenv >> '${seen}'\n`, { mode: 0o755 })
+    for (const command of ['start', 'restart']) {
+      fs.rmSync(seen, { force: true })
+      const r = sundial([command], { SUNDIAL_HOME: home, PATH: `${bin}:${process.env.PATH}`, DSH_HOME: '/Users/mira/.sundial/dsh', SUNDIAL_WEB_PORT: '4567', SUNDIAL_CHROME_PORT: '9333' })
+      expect(r.code, r.out).toBe(0)
+      const lines = fs.readFileSync(seen, 'utf8').split('\n')
+      expect(lines[0]).toBe(`ARGS=${app}`)
+      expect(lines.filter((l) => /^(SUNDIAL|DSH)_/.test(l))).toEqual([`SUNDIAL_HOME=${home}`])
+      expect(lines.some((l) => l.startsWith(`PATH=${bin}:`))).toBe(true)
+    }
+  })
+})
+
+// lane H (H7)
+describe('sundial status and doctor on an existing install', () => {
+  it('doctor fails when the Node app.env names is gone', () => {
+    const home = path.join(root, 'inst')
+    fs.mkdirSync(home, { recursive: true })
+    fs.writeFileSync(path.join(home, 'app.env'), `SUNDIAL_NODE=${path.join(root, 'no-such-node')}\n`)
+    const r = sundial(['doctor'], { SUNDIAL_HOME: home })
+    expect(r.code).toBe(1)
+    expect(r.out).toMatch(/app\.env's Node .* rewrites app\.env/s)
+    fs.writeFileSync(path.join(home, 'app.env'), `SUNDIAL_NODE=${process.execPath}\n`)
+    expect(sundial(['doctor'], { SUNDIAL_HOME: home }).out).toMatch(/ok\s+app\.env's Node/)
+  })
+
+  it('status warns about a stray bundle in the data folder of an app install', () => {
+    const home = path.join(root, 'inst2')
+    const app = path.join(root, 'Applications', 'Sundial.app')
+    fs.mkdirSync(path.join(home, 'Sundial.app', 'Contents'), { recursive: true })
+    fs.mkdirSync(app, { recursive: true })
+    fs.writeFileSync(path.join(home, '.sundial-install.json'), JSON.stringify({ tool: 'sundial', home, mode: 'app', app }))
+    const r = sundial(['status'], { SUNDIAL_HOME: home, SUNDIAL_WEB_PORT: '1' })
+    expect(r.out).toMatch(/a second Sundial\.app is in/)
+  })
+})

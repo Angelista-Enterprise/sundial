@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { personAliasFor } from '@sundial/helpers/sanitize-at-ingest.js';
-import { matchAliases } from './resolve-aliases.js';
+import { addressesFromMail, matchAliases } from './resolve-aliases.js';
 
 /**
  * The pairs below are REAL rows from the live record, kept verbatim on purpose.
@@ -86,5 +86,25 @@ describe('matchAliases with a name from the source', () => {
     const roleAlias = personAliasFor(roleAddress);
     expect(matchAliases([roleAlias], [roleAddress])).toEqual([]);
     expect(matchAliases([roleAlias], [[roleAddress, 'Sam Rye']])).toEqual([{ alias: roleAlias, name: 'Sam Rye' }]);
+  });
+});
+
+describe('addressesFromMail (M4)', () => {
+  it("names a hashed attendee from Mail's display name for the same address", async () => {
+    const rows = [
+      { address: 'x7@example.com', name: 'Mira Bakker' },
+      { address: 'billing@example.com', name: 'billing@example.com' },
+      { address: 'x7@example.com', name: null },
+    ];
+    const mail = await addressesFromMail('Envelope Index', async () => JSON.stringify(rows));
+    expect(mail.get('x7@example.com')).toBe('Mira Bakker');
+    expect(mail.get('billing@example.com')).toBeNull();
+    const alias = personAliasFor('mailto:x7@example.com');
+    expect(matchAliases([alias], mail)).toEqual([{ alias, name: 'Mira Bakker' }]);
+  });
+
+  it('contributes nothing when the index cannot be read', async () => {
+    expect((await addressesFromMail(null)).size).toBe(0);
+    expect((await addressesFromMail('f', async () => Promise.reject(new Error('EPERM')))).size).toBe(0);
   });
 });

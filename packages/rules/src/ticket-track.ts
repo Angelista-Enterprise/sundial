@@ -24,7 +24,7 @@ export const TICKET_SOURCE_TYPES = ['window:changed', 'browser:tab', 'screen:ocr
 
 /**
  * Strict: an uppercase project key and a number, as trackers write them in
- * prose. Not followed by another `-number`: `AMS-1-07` and `RTM-1-08` are
+ * prose. Not followed by another `-number`: `HQ-3-02` and `HQ-2-14` are
  * meeting rooms, and they were on the radar for five days.
  */
 const TICKET = /\b([A-Z]{2,6})-(\d{1,6})\b(?!-\d)/g;
@@ -40,7 +40,7 @@ export function ticketKeys(text: string): string[] {
 }
 
 /** A branch's ticket, case-insensitively, the way `entityExtract` names tasks. */
-function branchKey(branch: unknown): string | null {
+export function branchKey(branch: unknown): string | null {
   if (typeof branch !== 'string' || branch === '') return null;
   const id = taskIdentity(branch, '');
   return id && ticketKeys(id).length === 1 && ticketKeys(id)[0] === id ? id : null;

@@ -3,6 +3,7 @@ import type {
   DailyMeeting,
   DailyTimelineEntry,
 } from './daily-context.js';
+import { formatClock } from '@sundial/helpers/local-day.js';
 import { NO_DIAGNOSIS, withPersona } from './persona.js';
 import type { ChatMessage, MomentKind } from './types.js';
 
@@ -17,7 +18,7 @@ export interface JournalResult {
 
 // ─── Length budget ────────────────────────────────────────────────────────────
 //
-// The Today card (`apps/macos-ui`'s `TodayJournalColumn`) reserves a fixed
+// The Today card (the deleted `apps/macos-ui`'s `TodayJournalColumn`) reserved a fixed
 // reading measure rather than growing to fit whatever prose arrives — a
 // journal that ran long used to spill past the fold of a card the design
 // treats as fixed-height. Enforced twice: as the soft target below (and in
@@ -43,7 +44,8 @@ export const JOURNAL_LIST_MAX_ITEMS = 4;
 /**
  * The journal reads EVIDENCE and calls tools for what it does not have.
  *
- * `almanac/issues/journal-summarises-model-output-not-evidence` measured the old
+ * `issues/journal-summarises-model-output-not-evidence` (since retired from the
+ * almanac; the design is `decisions/daily-journal-design`) measured the old
  * version of this call: 90,550 characters of prompt, 95.8% timeline, and 88.3%
  * of that timeline was `intent`/`narrative` text a previous call had written
  * about each moment. The journal was a summary of sentences rather than of a
@@ -93,13 +95,8 @@ const SYSTEM_PROMPT = withPersona(
 
 // ─── Serialization of DailyContext → the user message ────────────────────────
 
-/** HH:MM in the host's local tz (the daemon runs in the owner's tz). */
-function clock(iso: string): string {
-  const d = new Date(iso);
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  return `${hh}:${mm}`;
-}
+/** HH:MM in the owner's configured zone — the zone the prompt tells the model its clock times are in. */
+const clock = (iso: string, timeZone: string): string => formatClock(iso, timeZone);
 
 /** System chrome that never belongs in the narrative timeline. */
 const CHROME = new Set(['loginwindow', 'WindowManager', 'Spotlight', 'Finder', 'ScreenSaverEngine']);
@@ -109,9 +106,9 @@ function condenseTimeline(timeline: DailyTimelineEntry[]): DailyTimelineEntry[] 
   return timeline.filter((t) => !CHROME.has(t.process) && (t.durationMin >= 2 || t.narrative || t.intent));
 }
 
-function timelineLine(t: DailyTimelineEntry): string {
+function timelineLine(t: DailyTimelineEntry, timeZone: string): string {
   // `12m/40m` reads as "12 minutes at the keyboard of 40 open": presence is not attention.
-  const parts = [`${clock(t.start)}-${clock(t.end)}`, `${t.process}${t.project ? ` · ${t.project}` : ''}`, `${t.kind}/${typeof t.activeMin === 'number' && t.activeMin !== t.durationMin ? `${t.activeMin}m/${t.durationMin}m` : `${t.durationMin}m`}`];
+  const parts = [`${clock(t.start, timeZone)}-${clock(t.end, timeZone)}`, `${t.process}${t.project ? ` · ${t.project}` : ''}`, `${t.kind}/${typeof t.activeMin === 'number' && t.activeMin !== t.durationMin ? `${t.activeMin}m/${t.durationMin}m` : `${t.durationMin}m`}`];
   if (t.intent) parts.push(`[${t.intent}]`);
   // `narrative` is deliberately NOT serialized. It is the same observation as
   // `intent` in the past tense, produced by the same call — 13,380 characters of
@@ -127,9 +124,9 @@ function timelineLine(t: DailyTimelineEntry): string {
   return `- ${parts.join(' · ')}${tail.length ? ` (${tail.join(' — ')})` : ''}`;
 }
 
-function meetingLine(m: DailyMeeting): string {
+function meetingLine(m: DailyMeeting, timeZone: string): string {
   const av = [m.micOn ? 'mic' : null, m.camOn ? 'cam' : null].filter(Boolean).join('+');
-  return `- "${m.title}" ${clock(m.start)}-${clock(m.end)}${m.attendees.length ? ` [${m.attendees.join(', ')}]` : ''}${av ? ` (${av})` : ''}`;
+  return `- "${m.title}" ${clock(m.start, timeZone)}-${clock(m.end, timeZone)}${m.attendees.length ? ` [${m.attendees.join(', ')}]` : ''}${av ? ` (${av})` : ''}`;
 }
 
 function phaseMixLine(phaseMix: Record<MomentKind, number>): string {
@@ -142,6 +139,7 @@ function phaseMixLine(phaseMix: Record<MomentKind, number>): string {
 
 /** Serialize a DailyContext into the plain-text activity log the model reads. Public for testing. */
 export function serializeDailyContext(ctx: DailyContext): string {
+  const timeZone = ctx.timeZone;
   const lines: string[] = [];
   lines.push(`DATE: ${ctx.date}. All clock times below are ${ctx.timeZone} local.`);
   // Stated because the TOOLS do not honour it. They return raw UTC ISO
@@ -149,7 +147,7 @@ export function serializeDailyContext(ctx: DailyContext): string {
   // 19:53 UTC" — which it did, in a journal for someone who was at the machine
   // at 21:53. The owner does not think in UTC and should never be shown it.
   lines.push(`TIME: tool results return UTC ISO timestamps. Convert them to ${ctx.timeZone} before quoting any time, and never write "UTC" in the journal.`);
-  lines.push(`COVERAGE: ${ctx.coverage.trackedMin} tracked min over ${ctx.coverage.wallClockMin} wall-clock min${ctx.coverage.firstActivity ? ` (${clock(ctx.coverage.firstActivity)}–${clock(ctx.coverage.lastActivity!)})` : ''}`);
+  lines.push(`COVERAGE: ${ctx.coverage.trackedMin} tracked min over ${ctx.coverage.wallClockMin} wall-clock min${ctx.coverage.firstActivity ? ` (${clock(ctx.coverage.firstActivity, timeZone)}–${clock(ctx.coverage.lastActivity!, timeZone)})` : ''}`);
 
   if (ctx.projects.length) {
     lines.push(
@@ -162,16 +160,16 @@ export function serializeDailyContext(ctx: DailyContext): string {
   const phaseMix = phaseMixLine(ctx.phaseMix);
   if (phaseMix) lines.push(`PHASE MIX: ${phaseMix}`);
   lines.push(`FOCUS: deep ${ctx.focus.deepMin}m, steady ${ctx.focus.steadyMin}m, shallow ${ctx.focus.shallowMin}m`);
-  if (ctx.deepWorkBlocks.length) lines.push(`DEEP-WORK BLOCKS: ${ctx.deepWorkBlocks.map((b) => `${clock(b.start)}-${clock(b.end)} (${b.durationMin}m${b.project ? `, ${b.project}` : ''})`).join('; ')}`);
+  if (ctx.deepWorkBlocks.length) lines.push(`DEEP-WORK BLOCKS: ${ctx.deepWorkBlocks.map((b) => `${clock(b.start, timeZone)}-${clock(b.end, timeZone)} (${b.durationMin}m${b.project ? `, ${b.project}` : ''})`).join('; ')}`);
 
   if (ctx.meetings.length) {
     lines.push('MEETINGS:');
-    lines.push(...ctx.meetings.map(meetingLine));
+    lines.push(...ctx.meetings.map((m) => meetingLine(m, timeZone)));
   }
   if (ctx.searches.length) lines.push(`SEARCHES: ${ctx.searches.map((s) => `"${s.query}"`).join(', ')}`);
   if (ctx.flows.length) lines.push(`FLOWS: ${ctx.flows.map((f) => `${f.from}→${f.to} ×${f.count}`).join(', ')}`);
   if (ctx.energyCurve.length) lines.push(`ENERGY (hourly): ${ctx.energyCurve.map((e) => `${e.hour}h:${e.score}`).join(' ')}`);
-  if (ctx.breaks.length) lines.push(`BREAKS: ${ctx.breaks.map((b) => `${clock(b.start)}-${clock(b.end)} ${b.kind} (${b.durationMin}m→${b.adjacentApp ?? '?'})`).join('; ')}`);
+  if (ctx.breaks.length) lines.push(`BREAKS: ${ctx.breaks.map((b) => `${clock(b.start, timeZone)}-${clock(b.end, timeZone)} ${b.kind} (${b.durationMin}m→${b.adjacentApp ?? '?'})`).join('; ')}`);
   if (ctx.anomalies.length) {
     lines.push('ANOMALIES:');
     lines.push(...ctx.anomalies.map((a) => `- ${a.title}: ${a.body}`));
@@ -181,7 +179,7 @@ export function serializeDailyContext(ctx: DailyContext): string {
   const timeline = condenseTimeline(ctx.timeline);
   if (timeline.length) {
     lines.push('TIMELINE:');
-    lines.push(...timeline.map(timelineLine));
+    lines.push(...timeline.map((t) => timelineLine(t, timeZone)));
   }
   return lines.join('\n');
 }

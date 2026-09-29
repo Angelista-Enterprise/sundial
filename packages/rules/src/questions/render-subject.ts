@@ -10,7 +10,6 @@
  * the text model (tier 1), and then through `verifyLine`.
  */
 export type SubjectKey = 'project' | 'branch' | 'meeting' | 'spoken' | 'commands' | 'window' | 'app';
-export const TEXT_RENDER_SUBJECTS: ReadonlySet<string> = new Set(['spoken', 'commands']);
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() !== '' ? v.trim() : null);
 const lastSegment = (p: unknown): string | null => (str(p) ? str(p)!.replace(/\/+$/, '').split('/').pop() || null : null);

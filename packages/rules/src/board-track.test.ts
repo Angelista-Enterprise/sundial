@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createInitialState } from '@sundial/kernel/initial-state.js';
 import type { KernelState, SanitizedEvent } from '@sundial/kernel/types.js';
-import { GAP, ROW_PAD, boardTrack, defaultSize, resolveSpan, DEFAULT_SIZE } from './board-track.js';
+import { GAP, ROW_PAD, boardTrack, defaultSize, liveSpan, resolveSpan, DEFAULT_SIZE } from './board-track.js';
 
 const ev = (type: string, payload: Record<string, unknown>, ts = '2026-09-12T10:00:00.000Z'): SanitizedEvent => ({ id: type + ts, type, ts, payload, sanitized: true });
 const fold = (state: KernelState, ...events: SanitizedEvent[]) => events.reduce((s, e) => boardTrack(s, e).state, state);
@@ -296,6 +296,15 @@ describe('boardTrack', () => {
     // Across a month end, by dates, so no clock arithmetic and no DST.
     expect(resolveSpan({ label: '7d' }, '2026-03-02')).toEqual({ from: '2026-02-24', to: '2026-03-02', label: '7d' });
     expect(resolveSpan({}, '2026-09-18')).toBeNull();
+  });
+
+  it('reads a stored preset against the day it is read on (L1)', () => {
+    const stored = { from: '2026-09-18', to: '2026-09-18', label: 'today', at: '2026-09-18T21:00:00.000Z' };
+    expect(liveSpan(stored, '2026-09-19')).toEqual({ ...stored, from: '2026-09-19', to: '2026-09-19' });
+    expect(liveSpan({ from: '2026-09-12', to: '2026-09-18', label: '7d' }, '2026-09-19')).toMatchObject({ from: '2026-09-13', to: '2026-09-19' });
+    const day = { from: '2026-09-16', to: '2026-09-16', label: 'day' };
+    expect(liveSpan(day, '2026-09-19')).toBe(day);
+    expect(liveSpan(null, '2026-09-19')).toBeNull();
   });
 
   it('keeps the owner\'s remark on a move, as on a place', () => {

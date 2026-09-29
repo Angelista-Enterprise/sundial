@@ -6,12 +6,14 @@
 // write tools can be refused by them, and every open tab agrees — and so a
 // replay reproduces the settings that were in force at the time.
 
+import { NOTICE_GROUPS } from '@sundial/kernel/notice-groups.js';
 import type { OwnerSettings, Rule } from '@sundial/kernel/types.js';
 
 const AUTONOMY = new Set(['off', 'notice', 'act']);
 const PAPER = new Set(['system', 'light', 'dark']);
 const MOTION = new Set(['full', 'reduced']);
 const BLUR = new Set(['off', 'soft', 'full']);
+const GROUPS = new Set(NOTICE_GROUPS.map((g) => g.id));
 
 /** How far the bar may be nudged: past this it is an off switch wearing a dial's clothes. */
 export const MAX_NOTICE_BIAS = 3;
@@ -42,12 +44,14 @@ export const settingsTrack: Rule = (state, event) => {
     motion: oneOf(p.motion, MOTION, prior.motion) as OwnerSettings['motion'],
     // `prior.blur` can be undefined on a state folded before this field existed.
     blur: oneOf(p.blur, BLUR, prior.blur ?? 'full') as OwnerSettings['blur'],
+    // A known group id, once each, in catalogue order; anything else is dropped.
+    quiet: Array.isArray(p.quiet) ? NOTICE_GROUPS.map((g) => g.id).filter((id) => GROUPS.has(id) && (p.quiet as unknown[]).includes(id)) : (prior.quiet ?? []),
     updatedAt: event.ts,
   };
 
   // Nothing actually changed: no new state, so no snapshot churn from a tab
   // that re-sends what it already has.
-  const same = (Object.keys(next) as (keyof OwnerSettings)[]).every((k) => k === 'updatedAt' || next[k] === prior[k]);
+  const same = (Object.keys(next) as (keyof OwnerSettings)[]).every((k) => k === 'updatedAt' || (k === 'quiet' ? (next.quiet ?? []).join() === (prior.quiet ?? []).join() : next[k] === prior[k]));
   if (same) return { state, effects: [] };
 
   return { state: { ...state, settings: next }, effects: [] };

@@ -23,3 +23,10 @@ onlyBuiltDependencies:
 # than re-roll four patches against a reshaped client.
 
 preferWorkspacePackages: true
+
+# One sharp. @xenova/transformers asks for ^0.32 and dsh for 0.35, which put two
+# native builds in the tree. transformers only imports sharp at load (its image
+# path, unused: embeddings are text); 0.35 loads the same way. Smoke test:
+# packages/memory/src/model-embedding.smoke.test.ts.
+overrides:
+  sharp: 0.35.4

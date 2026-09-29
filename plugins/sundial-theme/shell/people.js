@@ -26,10 +26,11 @@
 // another name.
 //
 // The rest of this file is about what is NOT a person. The calendar's attendee
-// list carries meeting rooms (`RTM-1-08 (12)`), distribution groups (`Acme
+// list carries meeting rooms (`HQ-2-14 (8)`), distribution groups (`Acme
 // Employees`, `Studio - developers`) and the owner themselves, and all three
 // became `person` entities. They are detected rather than listed, because the
 // list would be out of date the first time the office added a room.
+import { isMeetingRoom } from '@sundial/helpers/person-name.js'
 
 /** Nothing about a name should depend on its case, its accents or its punctuation. */
 export const normalizeName = (name) =>
@@ -44,16 +45,8 @@ export const normalizeName = (name) =>
 /** A hashed attendee: an address this machine could not match to a human. */
 export const isHash = (name) => /^person-[0-9a-f]{6,}$/i.test(String(name ?? ''))
 
-/**
- * A meeting room.
- *
- * Every room in the live record ends in its capacity — `RTM-1-08 (12)`,
- * `AMS-1-07 - The Board Room (14)`, `GTP-5-04-INTERNAL (4)` — and every one also
- * opens with a three-letter site code. Either is enough on its own; both are
- * tested so a site that names rooms one way and not the other still works. No
- * human name ends in a number in brackets.
- */
-export const isRoom = (name) => /\(\d+\)\s*$/.test(String(name ?? '')) || /^[A-Z]{2,4}-\d/.test(String(name ?? ''))
+/** A meeting room: one definition in @sundial/helpers (`isMeetingRoom`), shared with the situation and the entity-name gate. */
+export const isRoom = isMeetingRoom
 
 /**
  * A distribution list, a team, or the office itself.

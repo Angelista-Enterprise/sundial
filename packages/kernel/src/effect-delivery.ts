@@ -79,6 +79,9 @@ export function effectDeliveryGuarantee(effect: Effect): DeliveryGuarantee {
     case 'RunReflection':
     case 'RunFactExtraction':
     case 'RunConversationExtraction':
+    // A repeat is one more `extract` call; the promises it reads open under ids
+    // derived from the meeting and their position, so none opens twice.
+    case 'RunMeetingPromises':
     case 'RunJournal':
     // One extra nightly refutation pass costs a handful of cheap-model calls
     // against a budget, and it cannot double-write belief: every refutation it
@@ -155,7 +158,7 @@ export function effectDeliveryGuarantee(effect: Effect): DeliveryGuarantee {
 
     /**
      * The one to watch. `Notify` now HAS a delivery channel — the harness's
-     * `gnomon-proactive` plugin injects it into (and, for a phasic notice,
+     * `sundial-proactive` plugin injects it into (and, for a phasic notice,
      * wakes) the companion agent. The argument for keeping `at-least-once`,
      * made rather than inherited: a crash-window repeat is one duplicate
      * context block in the companion's inbox, and for phasic one duplicate
@@ -246,6 +249,7 @@ export const EFFECT_FAMILY: Record<Effect['type'], EffectFamily> = {
   RunReflection: 'think',
   RunFactExtraction: 'think',
   RunConversationExtraction: 'think',
+  RunMeetingPromises: 'think',
   RunRefutation: 'think',
   RunBeliefAudit: 'think',
   RunAliasAlignment: 'think',

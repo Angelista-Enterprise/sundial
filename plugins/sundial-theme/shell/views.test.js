@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest'
-import { ENGINE_TABS, PANEL_KEYS, briefLine, dayPanel, span, whatItSaw } from './views.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ENGINE_TABS, PANEL_KEYS, answerDoor, briefLine, briefParts, dayPanel, heardInPassing, jobWords, resumeDetails, span, todayParts, whatItSaw } from './views.js'
 import { INSTRUMENT_KEYS } from './cards.js'
 
 describe('briefLine', () => {
@@ -8,6 +8,31 @@ describe('briefLine', () => {
     const line = briefLine({ date: '2026-09-15', observedMin: 214, projects: [{ name: 'a', minutes: 7 }, { name: 'b', minutes: 73 }], meetings: 1, noticed: 2 })
     expect(line).toBe('Tuesday. 3h 34m observed, most of it on b, 1 meeting. Gnomon noticed 2 things.')
     expect(briefLine({ date: '2026-09-15', observedMin: 0 })).toBe('Tuesday. Nothing observed yet.')
+  })
+})
+
+describe('heardInPassing', () => {
+  it('lists what was said to the list today, newest first, without interruptions or questions', () => {
+    const row = (noticeKey, channel, kind = 'work-shelved', observation = `said ${noticeKey}`) => ({ noticeKey, channel, kind, observation })
+    const said = [row('a', 'tonic'), row('b', 'phasic'), row('c', 'tonic', 'owner-question'), row('d', 'tonic'), row('e', 'tonic'), row('f', 'tonic'), row('g', 'tonic', 'x', null)]
+    expect(heardInPassing({ said }).map((r) => r.noticeKey)).toEqual(['f', 'e', 'd'])
+    expect(heardInPassing(null)).toEqual([])
+    // The moment block draws a return line itself (U2-F8).
+    expect(heardInPassing({ said: [row('r', 'tonic', 'return-from-break')] })).toEqual([])
+  })
+})
+
+describe('resumeDetails', () => {
+  it('says what the line left out, then the links (U2-F16 F20)', () => {
+    const pieces = { leftFromAgent: true, intent: { text: 'Fixing the retry test' }, agent: { lastPrompt: 'why does it flake' }, unpushed: { ahead: 2, branch: 'main' } }
+    const links = [{ piece: 'tab', label: 'Open it', href: 'https://example.test/' }]
+    expect(resumeDetails({ pieces, links }).map((d) => d.label)).toEqual(['Before it: Fixing the retry test', 'You last asked it: “why does it flake”', '2 commits not pushed on main', 'Open it'])
+    expect(resumeDetails(null)).toEqual([])
+    // The use counts carry their n (U2-F36).
+    const use = { pieces: { tab: { shown: 4, opened: 1 }, intent: { shown: 9, opened: 0 } }, lines: 9, followed: 5 }
+    expect(resumeDetails({ pieces: {}, links }, use)[0].label).toBe('Opened so far: tab 1 of 4; back on the project within 10 min after 5 of 9 lines')
+    // Back after days, the digest of the last lines on the project (U2-F38).
+    expect(resumeDetails({ pieces: {}, digest: [{ at: '2026-01-03T09:00:00.000Z', what: 'Fixing the export' }] })[0].label).toMatch(/— Fixing the export$/)
   })
 })
 
@@ -27,7 +52,7 @@ const day = {
       processName: 'Code',
       projectId: '/x/sundial',
       intent: 'writing the day panel',
-      data: { activeMs: 1_200_000, shellCommandCount: 12, spokenExcerpt: 'keep that into its memory', windowTitles: ['views.js'] },
+      data: { activeMs: 1_200_000, shellCommandCount: 12, spokenExcerpt: 'it goes into the memory', windowTitles: ['views.js'] },
     },
     {
       id: 'm2',
@@ -91,7 +116,7 @@ describe('the day table folds open', () => {
     expect(said).not.toContain('shallow')
     expect(said).not.toContain('writing the day panel')
     expect(said).toContain('12 commands')
-    expect(said).toContain('keep that into its memory')
+    expect(said).toContain('it goes into the memory')
 
     summary.click()
     expect(fold.hidden).toBe(true)
@@ -144,5 +169,65 @@ describe('the Engine room', () => {
     // of one list; a tab added to one and not the others goes missing somewhere.
     expect(PANEL_KEYS.slice().sort()).toEqual(INSTRUMENT_KEYS.slice().sort())
     expect(ENGINE_TABS.map(([k]) => k)).toEqual(['cost', ...INSTRUMENT_KEYS])
+  })
+})
+
+describe('briefParts (lane B)', () => {
+  it('heads the standup draft and a prep by their meeting, adds the week, and is empty without either', () => {
+    expect(briefParts(null)).toEqual([])
+    expect(briefParts({ before: null, week: null })).toEqual([])
+    const parts = briefParts({ before: { kind: 'standup-draft', title: 'Standup', start: '2026-09-30T07:00:00.000Z', lines: ['Yesterday: 2 commits on puzzlebox-studio.'] }, week: { lines: ['Shipped: 8 commits on puzzlebox-studio.'] } })
+    expect(parts.map((p) => p.title)).toEqual([expect.stringMatching(/^For Standup, /), 'The week'])
+    expect(briefParts({ before: { kind: 'meeting-prep', title: 'BOX-484 review', start: '2026-09-30T12:00:00.000Z', lines: ['Open: the draft for Mira Bakker.'] } })[0].title).toMatch(/^Before BOX-484 review, /)
+  })
+
+  it('carries the notice key a brief was raised under, so it can take a verdict (L9)', () => {
+    const key = 'meeting-prep:BOX-484 review|2026-09-30T12:00:00.000Z'
+    expect(briefParts({ before: { kind: 'meeting-prep', title: 'BOX-484 review', start: '2026-09-30T12:00:00.000Z', lines: ['x'], key } })[0].key).toBe(key)
+    expect(briefParts({ week: { lines: ['y'] } })[0].key).toBeNull()
+  })
+})
+
+describe('jobWords (L9)', () => {
+  it('says a job kind in words, where the workbench wrote its slug', () => {
+    expect(jobWords('I left "Standup brief" on your shelf (meeting-brief · puzzlebox-studio).')).toBe('I left "Standup brief" on your shelf (meeting brief · puzzlebox-studio).')
+    expect(jobWords('owner-request · pnpm — you asked\n\nBody')).toBe('your request · pnpm — you asked\n\nBody')
+    // A slug that is part of something else is left alone.
+    expect(jobWords('see topic-brief.md')).toBe('see topic-brief.md')
+    expect(jobWords(null)).toBe('')
+  })
+})
+
+describe('todayParts (L2)', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('builds today again once the page has crossed midnight', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 8, 28, 23, 50))
+    const fetchMock = vi.fn(async (url) => ({ ok: true, json: async () => (String(url).startsWith('/gnomon/dial') ? { date: '2026-09-28', unavailable: 'nothing yet' } : {}) }))
+    vi.stubGlobal('fetch', fetchMock)
+    const first = await todayParts(() => {})
+    expect(await todayParts(() => {})).toBe(first)
+    const reads = fetchMock.mock.calls.length
+    vi.setSystemTime(new Date(2026, 8, 29, 0, 10))
+    const next = await todayParts(() => {})
+    expect(next).not.toBe(first)
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(reads)
+  })
+})
+
+describe('answerDoor (L5)', () => {
+  it('is a button that opens the conversation on the question, not a label', () => {
+    const door = answerDoor()
+    expect(door.tagName).toBe('BUTTON')
+    expect(door.textContent).toBe('Answer in the chat')
+    const heard = vi.fn()
+    document.addEventListener('gnomon:answer', heard)
+    door.click()
+    expect(heard).toHaveBeenCalledTimes(1)
+    document.removeEventListener('gnomon:answer', heard)
   })
 })

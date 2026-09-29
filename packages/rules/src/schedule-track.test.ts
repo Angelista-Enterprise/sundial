@@ -85,7 +85,7 @@ describe('the meeting in progress', () => {
     // before `windowTrack` — so on the very window change that enters a call the
     // title was blank and a `meetingContains` rule matched nothing all call.
     const { state } = scheduleTrack(createInitialState('d1'), active('RRA: Kruiswoorden testen', '2026-09-07T10:00:00.000Z', '2026-09-07T09:05:00.000Z'));
-    expect(state.schedule.active).toEqual({ title: 'RRA: Kruiswoorden testen', start: '2026-09-07T09:00:00.000Z', end: '2026-09-07T10:00:00.000Z' });
+    expect(state.schedule.active).toEqual({ title: 'RRA: Kruiswoorden testen', start: '2026-09-07T09:00:00.000Z', end: '2026-09-07T10:00:00.000Z', others: 0 });
   });
 
   it('clears it once the meeting has ended, on a tick — the sensor goes quiet between meetings', () => {

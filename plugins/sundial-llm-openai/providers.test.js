@@ -39,4 +39,10 @@ describe('routes', () => {
       globalThis.fetch = realFetch
     }
   })
+
+  it('declares a 64k window so compaction starts near 51k, and config can move it', async () => {
+    const facts = { baseUrl: 'http://x/v1', model: 'm', resolveApiKey: async () => 'k' }
+    expect((await new OpenAICompatAdapter(facts).resolveModel('openai', 'm')).context.contextWindow).toBe(64_000)
+    expect((await new OpenAICompatAdapter({ ...facts, contextWindow: 32_000 }).resolveModel('openai', 'm')).context.contextWindow).toBe(32_000)
+  })
 })

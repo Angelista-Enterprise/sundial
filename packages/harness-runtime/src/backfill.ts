@@ -21,7 +21,7 @@ import { promisify } from 'node:util';
 import { getRecentSignals, getSignalsInRange } from '@sundial/db/index.js';
 import { type CalendarEvent, readCalendarEvents } from '@sundial/sensors/calendar/calendar-capture.js';
 import { canonicalizeRepoDir } from '@sundial/sensors/project/project-capture.js';
-import { findEnvelopeIndex, mailSince } from '@sundial/sensors/mail/envelope-index.js';
+import { findEnvelopeIndex, mailEvent, mailSince } from '@sundial/sensors/mail/envelope-index.js';
 import { sanitizeAtIngest } from '@sundial/helpers/sanitize-at-ingest.js';
 
 const run = promisify(execFile);
@@ -158,17 +158,18 @@ export async function readMeetings(days: number, read = readCalendarEvents): Pro
  */
 const mailKey = (timestamp: unknown, subject: unknown) => `${String(timestamp ?? '').slice(0, 19)}|${String(subject ?? '')}`;
 
-/** Received mail from Mail.app's own index, or null when it cannot be read. */
-export async function readMails(days: number): Promise<Meeting[] | null> {
+/** Received and (UC1) sent mail from Mail.app's own index, or null when it cannot be read. */
+export async function readMails(days: number): Promise<(Meeting & { type: 'mail:sent' | 'mail:received' })[] | null> {
   if (days <= 0) return [];
   const file = findEnvelopeIndex();
   if (file === null) return null;
   try {
     const mails = await mailSince(file, Date.now() - days * 86_400_000, 20_000);
     return mails.map((m) => {
-      const payload = { timestamp: m.timestamp, from: m.from, subject: m.subject, backfill: true };
-      const stored = sanitizeAtIngest({ id: 'backfill', type: 'mail:received', ts: m.timestamp, payload }).payload;
-      return { ts: m.timestamp, key: mailKey(stored.timestamp, stored.subject), payload };
+      const { type, payload: fields } = mailEvent(m);
+      const payload = { ...fields, backfill: true };
+      const stored = sanitizeAtIngest({ id: 'backfill', type, ts: m.timestamp, payload }).payload;
+      return { ts: m.timestamp, key: mailKey(stored.timestamp, stored.subject), payload, type };
     });
   } catch {
     return null;
@@ -179,7 +180,7 @@ export async function readMails(days: number): Promise<Meeting[] | null> {
 async function recordedKeys(sinceMs: number): Promise<{ commits: Set<string>; meetings: Set<string>; mails: Set<string> }> {
   const from = new Date(sinceMs).toISOString();
   const to = new Date(Date.now() + 60_000).toISOString();
-  const [commitRows, meetingRows, mailRows] = await Promise.all([getSignalsInRange(from, to, 1_000_000, ['git:commit']), getSignalsInRange(from, to, 1_000_000, ['calendar:active']), getSignalsInRange(from, to, 1_000_000, ['mail:received'])]);
+  const [commitRows, meetingRows, mailRows] = await Promise.all([getSignalsInRange(from, to, 1_000_000, ['git:commit']), getSignalsInRange(from, to, 1_000_000, ['calendar:active']), getSignalsInRange(from, to, 1_000_000, ['mail:received', 'mail:sent'])]);
   const commits = new Set(commitRows.map((r) => String(r.data.commitLine ?? '').split(' ')[0]).filter(Boolean));
   const meetings = new Set(
     meetingRows.map((r) => {
@@ -228,7 +229,7 @@ export async function runBackfill(opts: BackfillOptions, append: (type: string, 
   const rows = [
     ...fresh.flatMap(({ commits }) => commits.map((c) => ({ type: 'git:commit', ...c }))),
     ...(freshMeetings ?? []).map((m) => ({ type: 'calendar:active', ...m })),
-    ...(freshMails ?? []).map((m) => ({ type: 'mail:received', ...m })),
+    ...(freshMails ?? []).map((m) => ({ ...m, type: m.type })),
   ].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
   for (const row of rows) await append(row.type, row.payload, row.ts);
   const result: BackfillResult = {

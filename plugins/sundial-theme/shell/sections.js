@@ -2,7 +2,7 @@
 // reads routes which already exist and holds no facts of its own — every row
 // opens the card that owns it.
 import { el } from './surfaces.js'
-import { read } from './read.js'
+import { keepCurrent, read } from './read.js'
 import { hm } from './views.js'
 
 // The shared reader: these two cards ask for goals, habits, asks, unsaid and
@@ -15,6 +15,10 @@ const day = (iso) => (iso ? new Date(iso).toLocaleDateString(undefined, { day: '
 
 /** Open things across five columns, each item a door or a question. */
 export async function kanbanCard(onAsk) {
+  const build = () => kanbanNode(onAsk)
+  return keepCurrent(await build(), build, ['/gnomon/goals', '/gnomon/habits', '/gnomon/attribution/proposals', '/gnomon/assistant/proposals', '/gnomon/asks', '/gnomon/shelf'])
+}
+async function kanbanNode(onAsk) {
   const [goals, habits, proposals, suggested, asks, shelf] = await Promise.all([
     get('/gnomon/goals'),
     get('/gnomon/habits'),

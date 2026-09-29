@@ -3,15 +3,17 @@ import type { KernelState, Rule } from '@sundial/kernel/types.js';
 const MAX_RECENT = 20;
 const text = (v: unknown, max: number): string => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 
-/** Subjects of mail received in the last `windowMs`, newest first — evidence for the fan-out, never bodies. */
+/** Subjects of mail received in the last `windowMs`, newest first — evidence for the fan-out, never bodies. Lane B (#17): mail from someone a promise is with ranks first. */
 export function recentMailSubjects(state: KernelState, now: string, windowMs = 3 * 3_600_000, max = 5): string[] {
   const since = Date.parse(now) - windowMs;
-  return [...(state.mail?.recent ?? [])].filter((m) => Date.parse(m.at) >= since).reverse().slice(0, max).map((m) => m.subject);
+  const owed = (m: { from: string }) => state.commitments.promises.some((c) => !!c.promise?.counterparty && c.promise.counterparty.toLowerCase() === m.from.toLowerCase());
+  const newest = [...(state.mail?.recent ?? [])].filter((m) => Date.parse(m.at) >= since).reverse();
+  return [...newest.filter(owed), ...newest.filter((m) => !owed(m))].slice(0, max).map((m) => m.subject);
 }
 
 /**
  * J3.6 — mail and messages as the readers report them: `mail:received`
- * (from, subject), `message:received` (from, chat, fromMe), `mail:status`
+ * (from, subject), `mail:sent` (UC1: recipients, subject), `message:received` (from, chat, fromMe), `mail:status`
  * (accessible). Senders arrive already sanitized (an address is a
  * `person-<hash>` after ingest); bodies never enter the log at all. Bounded
  * rings, no effects.
@@ -29,6 +31,13 @@ export const mailTrack: Rule = (state, event) => {
     if (subject === '') return { state, effects: [] };
     const at = typeof p.timestamp === 'string' && Number.isFinite(Date.parse(p.timestamp)) ? p.timestamp : event.ts;
     return { state: { ...state, mail: { ...mail, accessible: true, recent: [...mail.recent, { from: text(p.from, 120) || 'unknown', subject, at }].slice(-MAX_RECENT) } }, effects: [] };
+  }
+  // UC1: mail the owner sent, with its recipients — what "no mail to Mira since" is computed from.
+  if (event.type === 'mail:sent') {
+    const p = event.payload as { recipients?: unknown; subject?: unknown; timestamp?: unknown };
+    const to = Array.isArray(p.recipients) ? p.recipients.map((r) => text((r as { to?: unknown } | null)?.to, 120)).filter((t) => t !== '') : [];
+    const at = typeof p.timestamp === 'string' && Number.isFinite(Date.parse(p.timestamp)) ? p.timestamp : event.ts;
+    return { state: { ...state, mail: { ...mail, accessible: true, sent: [...(mail.sent ?? []), { to, subject: text(p.subject, 200), at }].slice(-MAX_RECENT) } }, effects: [] };
   }
   if (event.type === 'message:received') {
     const p = event.payload as { from?: unknown; chat?: unknown; fromMe?: unknown; timestamp?: unknown };

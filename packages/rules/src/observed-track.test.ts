@@ -26,6 +26,15 @@ describe('observedTrack', () => {
     expect(wouldDrop(state, event('location:network', { ...net, timestamp: '2026-07-29T13:00:00.000Z' }))).toBe(true);
   });
 
+  it('an agent fleet whose cost, lines or prompt moved is no new row; a state or title change is', () => {
+    const one = { id: 'a1', cwd: '~/Projects/puzzlebox-studio', branch: 'main', state: 'working', since: '2026-07-29T11:00:00.000Z', title: 'Split the gate', costUsd: 1.2, lines: { added: 10, removed: 2 }, lastPrompt: 'split it' };
+    let state = createInitialState('d1');
+    state = observedTrack(state, event('agent:fleet', { sessions: [one] })).state;
+    expect(wouldDrop(state, event('agent:fleet', { sessions: [{ ...one, costUsd: 1.9, lines: { added: 40, removed: 9 }, lastPrompt: 'and test it' }] }))).toBe(true);
+    expect(wouldDrop(state, event('agent:fleet', { sessions: [{ ...one, state: 'waiting' }] }))).toBe(false);
+    expect(wouldDrop(state, event('agent:fleet', { sessions: [{ ...one, title: 'Split the gate, then test' }] }))).toBe(false);
+  });
+
   it('lets a genuine change through', () => {
     let state = createInitialState('d1');
     state = observedTrack(state, event('location:network', { fingerprint: 'net2_home', gatewayIp: '192.168.1.1' })).state;

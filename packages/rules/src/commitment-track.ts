@@ -1,4 +1,5 @@
 import { deriveId } from '@sundial/helpers/derive-id.js';
+import { localDate as localDay } from '@sundial/helpers/local-day.js';
 import type { ClosedCommitment, Commitment, CommitmentRow, Effect, KernelState, Rule, SanitizedEvent } from '@sundial/kernel/types.js';
 import { BASE_BRANCH, namesAKnownProject, slugifyEntityName, taskIdentity } from './entity-extract.js';
 import { isMomentClosingBoundary } from './moment-close.js';
@@ -26,13 +27,7 @@ const MAX_RECENT_CLOSED = 20;
 /** Enough to show a thread's shape without letting one long-running branch grow its own row without bound. */
 const MAX_ACTIVE_DAYS = 30;
 
-/** LOCAL day, matching `dayShapeForecast` and `mindTrack` — "which days did I come back to this" is a claim about the owner's own calendar. */
-function localDay(ts: string): string {
-  const d = new Date(ts);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-function rowFor(commitment: Commitment, closed: { closedAt: string; closedBecause: string } | null): CommitmentRow {
+export function rowFor(commitment: Commitment, closed: { closedAt: string; closedBecause: string } | null): CommitmentRow {
   return {
     id: commitment.id,
     name: commitment.name,
@@ -46,6 +41,7 @@ function rowFor(commitment: Commitment, closed: { closedAt: string; closedBecaus
     activeDays: commitment.activeDays.length,
     closedAt: closed?.closedAt ?? null,
     closedBecause: closed?.closedBecause ?? null,
+    promise: commitment.promise ?? null,
   };
 }
 
@@ -73,7 +69,7 @@ function trackBranch(state: KernelState, event: SanitizedEvent): { state: Kernel
   if (namesAKnownProject(name, state)) return { state, effects: [] };
 
   const id = `commitment:${slugifyEntityName(name)}`;
-  const day = localDay(event.ts);
+  const day = localDay(event.ts, state.config.timezone);
   const existing = state.commitments.open.find((c) => c.id === id);
 
   /**
@@ -200,11 +196,19 @@ function maybeFinished(thread: { lastTouchUnpushed: number; pr?: { state: string
 }
 
 /**
+ * A branch a Claude session made for its own worktree (`claude/…`, `claude-…`).
+ * Its going quiet is the agent's work ending, not the owner's thread fading:
+ * 6 of 33 quiet and fading lines on the record were about one.
+ */
+const AGENT_BRANCH = /^claude[/-]/i;
+
+/**
  * A thread worth a word: returned to on more than one day, OR worked in
  * several sessions. `activeDays >= 2 && touches >= 5` together let nothing on
  * the live ledger through for a month.
  */
-function notable(thread: { activeDays: string[]; touches: number }): boolean {
+function notable(thread: { activeDays: string[]; touches: number; branch: string }): boolean {
+  if (AGENT_BRANCH.test(thread.branch)) return false;
   return (thread.activeDays.length >= NOTABLE_ACTIVE_DAYS && thread.touches >= 3) || thread.touches >= FADING_MIN_TOUCHES;
 }
 
@@ -353,6 +357,7 @@ function closeStale(state: KernelState, event: SanitizedEvent): { state: KernelS
     state: {
       ...state,
       commitments: {
+        ...state.commitments,
         open: state.commitments.open.filter((c) => !stale.some((s) => s.id === c.id)),
         recentClosed: [...state.commitments.recentClosed, ...closed].slice(-MAX_RECENT_CLOSED),
       },
@@ -398,51 +403,20 @@ function closeThread(state: KernelState, id: string, closedBecause: ClosedCommit
   return {
     state: {
       ...state,
-      commitments: { open: state.commitments.open.filter((c) => c.id !== id), recentClosed: [...state.commitments.recentClosed, closed].slice(-MAX_RECENT_CLOSED) },
+      commitments: { ...state.commitments, open: state.commitments.open.filter((c) => c.id !== id), recentClosed: [...state.commitments.recentClosed, closed].slice(-MAX_RECENT_CLOSED) },
     },
     effects: [{ type: 'WriteDB', table: 'commitments', row: rowFor(closed, { closedAt: ts, closedBecause }) }],
   };
 }
 
-/**
- * J4.4 — a promise heard aloud. `applyMomentJudgement` emits `commitment:heard`
- * when the fan-out's `contains_commitment` clears θ on a moment with speech;
- * the thread is named by the words themselves (already sanitized at ingest),
- * keyed by the moment so a replay finds the same thread. Closed by a later
- * moment's fan-out (`commitment:resolved`, two keys), by the owner
- * (`commitment:closed`), or by the fourteen-day sweep like any thread.
- */
-function trackHeard(state: KernelState, event: SanitizedEvent): { state: KernelState; effects: Effect[] } {
-  const payload = event.payload as { momentId?: unknown; text?: unknown; p?: unknown; projectId?: unknown; projectName?: unknown };
-  if (typeof payload.momentId !== 'string' || typeof payload.text !== 'string' || payload.text.trim() === '' || typeof payload.p !== 'number') return { state, effects: [] };
-  const id = `commitment:speech:${payload.momentId}`;
-  if (state.commitments.open.some((c) => c.id === id) || state.commitments.recentClosed.some((c) => c.id === id)) return { state, effects: [] };
-  const opened: Commitment = {
-    id,
-    name: payload.text.trim(),
-    source: 'speech',
-    branch: '',
-    projectId: typeof payload.projectId === 'string' ? payload.projectId : null,
-    projectName: typeof payload.projectName === 'string' ? payload.projectName : null,
-    openedAt: event.ts,
-    lastTouchedAt: event.ts,
-    touches: 1,
-    activeDays: [localDay(event.ts)],
-    lastTouchUnpushed: 0,
-    merged: false,
-    pr: null,
-    heardIn: { momentId: payload.momentId, p: payload.p },
-  };
-  return {
-    state: { ...state, commitments: { ...state.commitments, open: [...state.commitments.open, opened].slice(-MAX_OPEN) } },
-    effects: [{ type: 'WriteDB', table: 'commitments', row: rowFor(opened, null) }],
-  };
-}
-
 export const commitmentTrack: Rule = (state, event) => {
-  if (event.type === 'commitment:heard') return trackHeard(state, event);
+  // A promise heard aloud (`commitment:heard`) is `promiseTrack`'s since UC1:
+  // promises have their own list and cap. A speech thread opened here before
+  // that still closes here, by the owner or the sweep.
   if (event.type === 'commitment:resolved' || event.type === 'commitment:closed') {
-    const id = (event.payload as { id?: unknown }).id;
+    const { id, due } = event.payload as { id?: unknown; due?: unknown };
+    // A new due date moves a promise (`promiseTrack`); it never closes a thread.
+    if (due !== undefined) return { state, effects: [] };
     return typeof id === 'string' ? closeThread(state, id, event.type === 'commitment:resolved' ? 'seen-done' : 'owner', event.ts) : { state, effects: [] };
   }
   if (event.type === 'clock:tick') {

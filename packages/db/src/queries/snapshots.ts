@@ -48,27 +48,6 @@ export async function insertSnapshot(input: { id: string; stateJson: string; log
   }
 }
 
-/**
- * The retained snapshots, newest first — the whole history there is.
- *
- * `SNAPSHOT_RETENTION_COUNT` is TEN, so this is roughly the last ten minutes of
- * kernel state and nothing before it. That is a real and quite short window, and
- * any read surface built on this has to say so rather than implying it can show
- * the day: the snapshot table exists to bound boot-replay time, not to be a
- * history, and growing it to serve one would undo the reason it is pruned.
- */
-export async function getRecentSnapshots(limit = SNAPSHOT_RETENTION_COUNT): Promise<StoredSnapshot[]> {
-  const db = getDb();
-  return db
-    .select()
-    .from(kernelStateSnapshots)
-    .orderBy(desc(kernelStateSnapshots.id))
-    .limit(Math.min(limit, SNAPSHOT_RETENTION_COUNT));
-}
-
-/** How many snapshots are retained at most, so a read surface can state its own bound. */
-export const SNAPSHOT_HISTORY_DEPTH = SNAPSHOT_RETENTION_COUNT;
-
 export async function getLatestSnapshot(): Promise<StoredSnapshot | null> {
   const db = getDb();
   const rows = await db.select().from(kernelStateSnapshots).orderBy(desc(kernelStateSnapshots.id)).limit(1);

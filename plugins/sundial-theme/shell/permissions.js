@@ -24,8 +24,13 @@ export const PERMS = {
     optional: true,
   },
   fullDiskAccess: {
-    what: 'Only for Mail and Messages capture (privacy.mail in config.json) and to read the Focus mode name. Skip this unless you want those.',
+    what: 'Only for Mail capture (privacy.mail in config.json) and to read the Focus mode name. Skip this unless you want those.',
     pane: 'Privacy_AllFiles',
+    optional: true,
+  },
+  microphone: {
+    what: 'Only for hearing (audio.enabled in config.json): meetings and calls are transcribed on this Mac. Skip this if you do not use it.',
+    pane: 'Privacy_Microphone',
     optional: true,
   },
   locationServices: {

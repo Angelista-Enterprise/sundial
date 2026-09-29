@@ -1,6 +1,7 @@
 import { deriveId } from '@sundial/helpers/derive-id.js';
 import type { Rule } from '@sundial/kernel/types.js';
 import { parseAskProposals } from './ask-harvest.js';
+import { intentLanded } from './verify-line.js';
 
 interface LlmResultPayload {
   purpose?: string;
@@ -197,6 +198,7 @@ export const applyLlmResult: Rule = (state, event) => {
         momentId,
         patch: { intent: { status: 'done', text: analysis.intent, analyzedAt: event.ts }, narrative: analysis.narrative },
       },
+      intentLanded(momentId, payload.metadata?.evidence, analysis.intent, event.ts, event.id),
     ],
   };
 };

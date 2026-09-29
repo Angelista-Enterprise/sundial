@@ -24,3 +24,4 @@ export * from './browser/browser-capture.js';
 export * from './vault/index.js';
 export * from './screen-vision/index.js';
 export * from './mail/index.js';
+export * from './arc/index.js';

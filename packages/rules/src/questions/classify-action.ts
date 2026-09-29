@@ -3,7 +3,7 @@
  * judgements (docs/jarvis/05). Before an action: what rung of the ladder is
  * it, read off the tool and its arguments alone? After: did the result show
  * it happened? Neither is a key on its own — the code policy in
- * `gnomon-actions/gate.js` decides first, and the judge may only TIGHTEN it
+ * `sundial-actions/gate.js` decides first, and the judge may only TIGHTEN it
  * (two keys: no action above L2 on a model's word). "Matches policy" is not
  * asked: the policy is code, and Jev does not learn rules from text (PROBES
  * finding 10).

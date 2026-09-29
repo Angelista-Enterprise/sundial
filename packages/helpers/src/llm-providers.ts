@@ -41,6 +41,20 @@ export function isLocalUrl(baseUrl: string): boolean {
   }
 }
 
+/**
+ * The model id the ledger records for a call. The Ledger prices a call as
+ * remote only when its id carries a vendor prefix (`llmProvider` in
+ * packages/db/src/queries/llm-audit.ts), and a hosted API that names its models
+ * bare (`gpt-5`, `deepseek-chat`) would read as a free local tag: billed in
+ * reality, $0 on the Ledger, and missing from its unpriced list. So a bare id
+ * from a route that is not on this Mac is recorded under its route
+ * (`groq/llama-3.3-70b`). An unknown address keeps the id as it was.
+ */
+export function ledgerModel(model: string, routeId: string | undefined, baseUrl: string | undefined): string {
+  if (model.includes('/') || !routeId || !baseUrl || isLocalUrl(baseUrl)) return model;
+  return `${routeId}/${model}`;
+}
+
 /** A name a person recognizes: the service, "Ollama on this Mac", or the host. */
 export function providerLabel(baseUrl: string): string {
   let url: URL;
@@ -85,6 +99,12 @@ export function parseProviders(raw: unknown): LlmProvider[] {
     out.push({ id: p.id, baseUrl, model: p.model.trim(), label: typeof p.label === 'string' && p.label.trim() !== '' ? p.label.trim() : providerLabel(baseUrl) });
   }
   return out;
+}
+
+/** `config.json`'s `llm.use`: purpose (or `default`) → route id. Which ids exist is checked where it is used, so a removed provider falls back instead of failing. */
+export function parseUse(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  return Object.fromEntries(Object.entries(raw as Record<string, unknown>).filter(([k, v]) => /^[a-z]+$/.test(k) && typeof v === 'string' && /^[a-z][a-z0-9-]{1,30}$/.test(v)) as [string, string][]);
 }
 
 /**

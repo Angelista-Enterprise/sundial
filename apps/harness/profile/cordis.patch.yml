@@ -11,7 +11,8 @@
 
 # Compaction, which dsh-base mounts and dsh-web-app disables. Gnomon's chat is
 # one long-running conversation, and without compaction a long one silently
-# overflows the model's window. It compacts at 80% of the declared window and
+# overflows the model's window. It compacts at 80% of the declared window (64k,
+# `DEFAULT_CONTEXT_WINDOW` in plugins/sundial-llm-openai, so about 51k) and
 # keeps the last 16% verbatim; `command-compact` lets you compact on demand.
 - id: compaction-basic
   disabled: false

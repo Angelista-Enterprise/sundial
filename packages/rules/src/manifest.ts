@@ -10,6 +10,8 @@ import { coverageTrack } from './coverage-track.js';
 import { expectationLearn } from './expectation-learn.js';
 import { expectationWatch } from './expectation-watch.js';
 import { noticeGate } from './notice-gate.js';
+// lane D
+import { noticeRoute } from './notice-route.js';
 import { askTrack } from './ask-track.js';
 import { routineLearn } from './routine-learn.js';
 import { assistantTrack } from './assistant-track.js';
@@ -25,6 +27,7 @@ import { projectTouchForecast } from './project-touch-forecast.js';
 import { forecastTournament } from './forecast-tournament.js';
 import { embeddingIndex } from './embedding-index.js';
 import { commitmentTrack } from './commitment-track.js';
+import { promiseTrack } from './promise-track.js';
 import { entityExtract } from './entity-extract.js';
 import { factConfidenceDecay } from './fact-confidence-decay.js';
 import { feedbackTrack } from './feedback-track.js';
@@ -49,6 +52,9 @@ import { thrashing } from './life-event/thrashing.js';
 import { endogenousReflection } from './endogenous-reflection.js';
 import { memoryDecay } from './memory-decay.js';
 import { mindTrack } from './mind-track.js';
+// lane C
+import { driftTrack } from './drift-track.js';
+import { factTestTrack } from './fact-test-track.js';
 import { applyWorldHygiene, worldHygiene } from './world-hygiene.js';
 import { memoryPriorities } from './memory-priorities.js';
 import { memoryReflection } from './memory-reflection.js';
@@ -84,6 +90,8 @@ import { surpriseDrive } from './surprise-drive.js';
 import { uncertaintyMap } from './uncertainty-map.js';
 import { researchGoals } from './research-goals.js';
 import { workbench } from './workbench.js';
+// lane E (#12)
+import { nightShift } from './night-shift.js';
 import { meetingFollowup } from './meeting-followup.js';
 import { peopleAsk } from './people-ask.js';
 import { identityResolve } from './identity-resolve.js';
@@ -97,6 +105,11 @@ import { draftTrack } from './draft-track.js';
 import { goalPursuit } from './goal-pursuit.js';
 import { windowTrack } from './window-track.js';
 import { attributionPropose } from './attribution-propose.js';
+// lane B
+import { briefClock } from './brief-clock.js';
+import { mailMatters } from './mail-matters.js';
+// lane H
+import { sensorHealth } from './sensor-health.js';
 
 /**
  * Fixed fold order (decision #1, docs/design/00-overview.md). Phase 3 Wave
@@ -221,6 +234,12 @@ export const RULE_MANIFEST: Rule[] = [
   // branch, so both must fold before `momentClose`. They derive the same task
   // name from it: `entityExtract` mints the ENTITY, this tracks the THREAD.
   commitmentTrack,
+  // UC1: the promise ledger — its own list in `state.commitments`, its own
+  // events (`meeting:promises`, `commitment:heard`) and the evidence that keeps
+  // a promise. Reads nothing another rule writes on the same event.
+  // lane B: `mailMatters` goes first, so it reads a promise before this mail can close it.
+  mailMatters,
+  promiseTrack,
   contradictionCheck,
   embeddingIndex,
   // Decides which screen-capture lines are content, so `momentRollup` (next)
@@ -244,8 +263,9 @@ export const RULE_MANIFEST: Rule[] = [
   attributionPropose,
   projectTrack,
   // Before focusModeTrack and after projectTrack: it writes only its own slice,
-  // but `resolveAttribution`'s agent tier reads it, so it must be folded before
-  // any rule that resolves a window.
+  // but `resolveAttribution`'s agent tier reads it. `windowTrack` resolves a
+  // window and sits above it; that holds only because the two never fire on the
+  // same event (`agent:session` vs `window:changed`).
   agentSessionTrack,
   // The whole fleet of agent sessions, and the nudge when one waits on an owner who is elsewhere.
   agentFleetTrack,
@@ -336,7 +356,7 @@ export const RULE_MANIFEST: Rule[] = [
   flagged('gateFeatures', gateFeaturesJudge),
   flagged('gateFeatures', applyGateFeatures),
   retentionPrune,
-  // enhancements/outcome-feedback-signal: reacts to `feedback:verdict`, an
+  // feedbackTrack (decisions/assistant-as-an-event-source): reacts to `feedback:verdict`, an
   // event type no other rule touches, so it has no ordering constraint at all.
   feedbackTrack,
   // The asking half of the same loop: reacts only to `clock:tick`, opens/expires
@@ -458,6 +478,9 @@ export const RULE_MANIFEST: Rule[] = [
   // clears on the same event. Its plan effect runs on the Monday boundary.
   goalPursuit,
   workbench,
+  // lane E (#12): the night shift. After `agentFleetTrack` (it reads the fleet
+  // a sample just wrote) and next to `workbench`, whose `ownerIsAway` it shares.
+  nightShift,
   // The meeting loop's other half and the weekly goal check-in: both only
   // EMIT `ask:owner-opened`, which the ownerAsk rule folds on a later event.
   meetingFollowup,
@@ -505,6 +528,12 @@ export const RULE_MANIFEST: Rule[] = [
   memoryDecay,
   factConfidenceDecay,
   mindTrack,
+  // lane C (enhancements 8, 7). `driftTrack` before `factTestTrack`: the owner's
+  // clock facts are scored against the waking day `driftTrack` folds. Both after
+  // every tracker and before the noticing pipeline, which is readability only —
+  // a drift candidate reaches `noticeGate` in its own later pass.
+  driftTrack,
+  factTestTrack,
   // The noticing pipeline, last, and in this order for real reasons.
   //
   // `expectationLearn` folds occurrences into `state.expectations`, so it must run
@@ -526,10 +555,20 @@ export const RULE_MANIFEST: Rule[] = [
   expectationWatch,
   // The rules Gnomon writes: adopted watch specs, one interpreter. Before the gate that prices what they say.
   watchRules,
+  // lane D — #6 the right channel. Before `noticeGate` (only `briefClock` sits
+  // between), which reads `state.route` on the same event (a tick that ends a meeting releases what it
+  // held). After `callSpanTrack`, `scheduleTrack` and `focusModeTrack`, whose
+  // slices it reads.
+  noticeRoute,
+  // lane B: after `promiseTrack`, which on the same tick leaves a promise due at a meeting to this rule's prep.
+  briefClock,
   noticeGate,
+  // lane H: Sundial's own health. Order-free: it reads only its own slice and
+  // speaks through a `notice:candidate`, which reaches the gate in its own pass.
+  sensorHealth,
   // count-office-days is intentionally NOT a rule: "days at the office" is a
-  // read-time analytic over moments' `location`, delivered by `gnomon location`
-  // (Phase 5 #6, `getLocationDayCounts`), not something the reducer folds into
+  // read-time analytic over moments' `location` (Phase 5 #6,
+  // `getLocationDayCounts` in @sundial/db), not something the reducer folds into
   // KernelState. The earlier manifest stub that broke the build is gone.
 ];
 

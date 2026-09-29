@@ -65,6 +65,9 @@ export const GNOMON_TOOLS = {
   // interruption twice.
   gnomon_schedule_wakeup: { kind: 'internal', tool: 'schedule_wakeup', ownerTurnOnly: true },
   gnomon_cancel_wakeup: { kind: 'internal', tool: 'cancel_wakeup' },
+  // UC1: one `commitment:heard` to Gnomon's own ledger. Owner-turn-only: a
+  // promise is the owner's to state, never a job's to invent.
+  gnomon_track_promise: { kind: 'internal', tool: 'track_promise', ownerTurnOnly: true },
   // Asking the owner a question is internal for the same reason: it writes one
   // event to Gnomon's own record. Nothing leaves the machine, and the decision
   // about whether the question is worth the owner's attention belongs to the
@@ -76,6 +79,11 @@ export const GNOMON_TOOLS = {
   // a child with approvals pinned off, so the write here is the whole risk.
   gnomon_start_job: { kind: 'internal', tool: 'start_job', ownerTurnOnly: true },
   gnomon_stop_repeat: { kind: 'internal', tool: 'stop_repeat', ownerTurnOnly: true },
+  // lane E (#12): the night shift's two tools (registered by sundial-proactive,
+  // and only while `jobs.enabled`). One event each to Gnomon's own log; the job
+  // itself runs in its own worktree where every permission waits for the owner.
+  gnomon_night_job: { kind: 'internal', tool: 'night_job', ownerTurnOnly: true },
+  gnomon_night_job_stop: { kind: 'internal', tool: 'night_job_stop', ownerTurnOnly: true },
   // Gnomon's own rules: one event each to its own log. Owner-turn-only, because
   // a rule it adopts speaks on its own for as long as it is kept.
   gnomon_adopt_rule: { kind: 'internal', tool: 'adopt_rule', ownerTurnOnly: true },
@@ -86,6 +94,8 @@ export const GNOMON_TOOLS = {
   // workspace-write like run_shell does, and has no destructive-command check
   // because there is no command: the arguments ARE the event.
   gnomon_calendar_create: { kind: 'outward', tool: 'calendar_create' },
+  // UC1: a reminder in the owner's own Reminders is the same kind of write.
+  gnomon_reminder_create: { kind: 'outward', tool: 'reminder_create' },
   // Acting on a web page (Phase 5) changes something outside this machine —
   // a form sent, a button pressed on someone's site. Outward: under
   // workspace-write the owner approves every act; a background job, whose
@@ -195,6 +205,29 @@ function destructiveDeny(args) {
 export function parseMcpToolName(toolName) {
   const match = /^mcp__([A-Za-z0-9_-]{1,32})__(.+)$/.exec(toolName)
   return match === null ? null : { server: match[1], tool: match[2] }
+}
+
+/**
+ * The `action:performed` payload for one call: its fact, never its arguments.
+ *
+ * `action` is the bare tool name as the SERVER knows it, which is what the
+ * Reach card's rows are keyed by — `mcp__obsidian__get_vault_file` is this
+ * client's name for it and `get_vault_file` is the thing that ran. And
+ * `gnomon_call` is a door, not a tool: the row names the deferred tool that
+ * went through it (`inner`), or every deferred call reads as one tool.
+ */
+export function callRecord(exec, outcome, reason = null) {
+  const toolName = exec.name
+  const mcp = parseMcpToolName(toolName)
+  const inner = toolName === 'gnomon_call' ? String((exec.args ?? exec.arguments)?.name ?? '') || null : null
+  return {
+    tool: toolName,
+    server: mcp?.server ?? null,
+    action: inner ?? mcp?.tool ?? toolName,
+    ...(inner === null ? {} : { inner }),
+    outcome,
+    ...(reason === null ? {} : { reason }),
+  }
 }
 
 /**
@@ -340,9 +373,81 @@ export function judgedAction(toolName) {
   return toolName === 'bash' || GNOMON_TOOLS[toolName] !== undefined || parseMcpToolName(toolName) !== null
 }
 
-/** J4.2 — the notice a failed verification raises: one per tool, priced by the gate like everything else. */
-export function unverifiedNotice(toolName, args, carriedOut, ts) {
-  const what = typeof args?.command === 'string' ? args.command.slice(0, 120) : JSON.stringify(args ?? {}).slice(0, 120)
+// A shell command that changes something: a write verb, or output sent into a
+// file. `2>&1` and `> /dev/null` are not writes. A read (ls, git log, grep, a
+// loop of them) is not worth a "may not have worked": on the record all 15
+// such notices about a shell command in 14 days were reads.
+const SHELL_WRITE = /(?:^|[\s|;&(`])((?:rm|mv|cp|mkdir|rmdir|touch|ln|tee|chmod|chown|kill|pkill|killall|open|osascript|launchctl|brew|say|defaults\s+(?:write|delete)|sed\s+-i|(?:npm|pnpm|yarn)\s+(?:install|i|add|remove|publish|run|exec|build)|curl\b[^|;&]*\s(?:-X\s*(?:POST|PUT|PATCH|DELETE)|--data\S*|-d|-F|-T)|git\s+(?:commit|push|pull|merge|rebase|reset|checkout|switch|restore|tag|stash|clone|am|apply|cherry-pick|revert|add|rm|mv|init|fetch|worktree\s+(?:add|remove)|branch\s+-[dDmM]))(?=$|[\s|;&)`]))|(?<![0-9&>=-])>>?(?![&=])\s*(?!\/dev\/null)[^\s&|;]/
+// An integration tool named as a read, when the owner's config does not say.
+const READ_VERB = /^(get|list|search|show|read|fetch|find|query|lookup|describe|count|view)(_|$)/i
+
+/**
+ * Commands known to only read. A command is a read only when every part of it
+ * starts with one of these; anything else (`gh pr create`, `ssh`, `rsync`,
+ * `make deploy`, `python3 x.py`) is checked, because a failed outward act the
+ * owner never hears about is the case this exists for. Shell syntax words and
+ * `VAR=x` prefixes are skipped.
+ */
+const SHELL_READS = new Set(['ls', 'cat', 'grep', 'rg', 'head', 'tail', 'wc', 'echo', 'printf', 'pwd', 'which', 'type', 'date', 'stat', 'file', 'du', 'df', 'tree', 'jq', 'sort', 'uniq', 'cut', 'tr', 'awk', 'sed', 'less', 'more', 'diff', 'basename', 'dirname', 'realpath', 'readlink', 'test', '[', 'true', 'false', 'sleep', 'find', 'obsidian', 'cd', 'git'])
+const SHELL_SYNTAX = new Set(['for', 'in', 'do', 'done', 'while', 'until', 'if', 'then', 'else', 'elif', 'fi', 'case', 'esac', '{', '}', '!', 'time'])
+const GIT_READS = new Set(['log', 'status', 'branch', 'rev-parse', 'diff', 'show', 'remote', 'config', 'ls-files', 'blame', 'describe', 'shortlog', 'grep', 'reflog', 'cat-file', 'worktree', 'rev-list', 'for-each-ref', 'tag', 'stash'])
+
+/** The verb that makes a shell command a write (`git push`, `>`, `gh`), or null for a read. */
+export function shellWrite(command) {
+  if (typeof command !== 'string') return null
+  const m = SHELL_WRITE.exec(command)
+  if (m !== null) return (m[1] ?? '>').replace(/\s+/g, ' ')
+  // Quoted text is an argument, not a command; `2>&1` is a redirect, not a background `&`.
+  const bare = command.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, ' ARG ').replace(/\d*>&\d+|&>/g, ' ')
+  for (const part of bare.split(/\|\||&&|[|;&\n`]|\$\(|\)/)) {
+    const words = part.trim().split(/\s+/).filter((w) => w !== '' && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w))
+    const i = words.findIndex((w) => !SHELL_SYNTAX.has(w))
+    if (i < 0) continue
+    const [head, sub] = [words[i], words[i + 1]]
+    // `for x in a b c; do` — the loop's own words are not commands.
+    if (words[0] === 'for' || words[0] === 'case') continue
+    // sqlite3 reads unless the statement writes.
+    if (head === 'sqlite3' && !/\b(insert|update|delete|drop|create|alter|replace|vacuum|attach|reindex)\b/i.test(command)) continue
+    if (!SHELL_READS.has(head)) return head
+    if (head === 'git' && sub !== undefined && !sub.startsWith('-') && !GIT_READS.has(sub)) return `git ${sub}`
+    if (head === 'find' && words.some((w) => w === '-delete' || w === '-exec' || w === '-execdir')) return 'find'
+  }
+  return null
+}
+
+/**
+ * J4.2 — whether a call is one whose failure is worth telling the owner:
+ * outward or irreversible. Gnomon's own memory writes are not (the model sees
+ * its own result, and nothing left the machine); a read never is. `isRead`
+ * answers for a mounted integration; an unknown one is read by its verb.
+ * Returns the words for what was done, or null.
+ */
+export function outwardCall(toolName, args, isRead = () => undefined) {
+  const command = typeof args?.command === 'string' ? args.command : null
+  if (toolName === 'bash' || GNOMON_TOOLS[toolName]?.shell === true) {
+    const verb = shellWrite(command)
+    return verb === null ? null : `The command Gnomon ran (${verb === '>' ? 'writing to a file' : verb})`
+  }
+  const mcp = parseMcpToolName(toolName)
+  if (mcp !== null) {
+    const read = isRead(mcp.server, mcp.tool)
+    if (read === true || (read === undefined && READ_VERB.test(mcp.tool))) return null
+    return `Gnomon's call to ${mcp.server} (${mcp.tool.replace(/_/g, ' ')})`
+  }
+  return OUTWARD_WORDS[toolName] ?? null
+}
+const OUTWARD_WORDS = {
+  gnomon_calendar_create: 'The calendar event Gnomon made',
+  gnomon_reminder_create: 'The reminder Gnomon made',
+  web_act: 'What Gnomon did on a web page',
+}
+
+/**
+ * J4.2 — the notice a failed verification raises: one per tool, priced by the
+ * gate like everything else. Only for an outward call (`outwardCall`), and in
+ * words: never the call's arguments, which can hold the owner's own answer.
+ */
+export function unverifiedNotice(toolName, what, carriedOut, ts) {
   return {
     timestamp: ts,
     shape: 'self-report',
@@ -351,7 +456,7 @@ export function unverifiedNotice(toolName, args, carriedOut, ts) {
     surprise: 1.5,
     precision: 0.7,
     valueHalfLifeMs: 6 * 60 * 60 * 1000,
-    observation: `${toolName} may not have done what was asked (the judge put "carried out" at ${carriedOut.toFixed(2)}): ${what}`,
+    observation: `${what} may not have worked: its result does not show that it happened.`,
     evidence: [`tool ${toolName}`, `carried_out ${carriedOut.toFixed(2)}`],
     concerns: [],
   }

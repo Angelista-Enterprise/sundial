@@ -37,6 +37,9 @@ const MAX_TRAIL = 8;
 /** Bound on the learned table. Beyond this the least-supported routines are dropped. */
 export const MAX_ROUTINES = 64;
 
+/** A routine unseen this long is the first to make room: habits change (a new browser, a new tool). */
+export const STALE_MS = 14 * 24 * 60 * 60 * 1000;
+
 /**
  * A step is an app plus WHAT KIND of thing it was doing, not a raw window title.
  *
@@ -68,7 +71,8 @@ function distinctTargets(steps: string[]): number {
  * cleanly. Measured on the owner's real 13 days, that hole let switching texture
  * take every top slot — the strongest "routine" learned was
  * `Chrome > Claude > Chrome` at support 375, and out-of-sample precision sat at
- * 40.3%. Alternation is what a person does while thinking, not a procedure they
+ * 40.3%. With this guard the same holdout read 26.8%: lower, and the honest
+ * number. Alternation is what a person does while thinking, not a procedure they
  * follow, and a routine tier that reports it back has learned the shape of a
  * keyboard rather than the shape of the work.
  */
@@ -133,9 +137,18 @@ export const routineLearn: Rule = (state, event) => {
 
   // Bound the table by dropping the least-supported entries. Ties break on the
   // older `lastSeenAt`, so a routine still in use outlives one that has stopped.
+  //
+  // A routine not seen for `STALE_MS` goes first, whatever its support. Without
+  // that a full table is a trap: every newcomer enters at support 1, is the
+  // least supported, and is dropped on the spot, so the table can never learn
+  // a new habit. Measured 2026-09-28: the owner changed browsers on 09-16, the
+  // 16 strongest routines all ran through the old one and stopped that day, and
+  // nothing new could take their place.
   const keys = Object.keys(learned);
   if (keys.length > MAX_ROUTINES) {
-    const ordered = keys.sort((a, b) => learned[b]!.support - learned[a]!.support || Date.parse(learned[b]!.lastSeenAt) - Date.parse(learned[a]!.lastSeenAt));
+    const now = Date.parse(event.ts);
+    const stale = (k: string) => (now - Date.parse(learned[k]!.lastSeenAt) > STALE_MS ? 1 : 0);
+    const ordered = keys.sort((a, b) => stale(a) - stale(b) || learned[b]!.support - learned[a]!.support || Date.parse(learned[b]!.lastSeenAt) - Date.parse(learned[a]!.lastSeenAt));
     for (const stale of ordered.slice(MAX_ROUTINES)) delete learned[stale];
   }
 

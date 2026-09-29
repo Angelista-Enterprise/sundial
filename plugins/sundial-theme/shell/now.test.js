@@ -77,6 +77,14 @@ describe('nowSnapshot', () => {
 
   // Every field nullable, and null rather than zero: "0 minutes into nothing" is
   // a sentence the record never actually says.
+  it('shows the owner-state beliefs only while the judge is reading, and offers a due tap either way', () => {
+    const owner = (lastJudgedAt) => ({ focus: { alpha: 3, beta: 1 }, stuck: { alpha: 1, beta: 3 }, selfReports: [], brier: { n: 0 }, perception: { input: [], lastJudgedAt } })
+    const utc = { config: { timezone: 'UTC' } }
+    const stale = nowSnapshot(state({ ...utc, owner: owner(null) }), NOW).self
+    expect(stale).toMatchObject({ pFlow: null, pStuck: null, due: true })
+    expect(nowSnapshot(state({ ...utc, owner: owner(ago(1)) }), NOW).self.pFlow).toBeCloseTo(0.75, 6)
+  })
+
   it('is honest about nothing being observed', () => {
     const snap = nowSnapshot({}, NOW);
     expect(snap.app).toBeNull();
@@ -107,6 +115,12 @@ describe('noticedToday', () => {
     const s = state({ notices: { deferred: [], day: '2026-09-02', spentToday: 4, recentPhasic: [] } });
     expect(nowSnapshot(s, NOW).noticedToday).toBe(0);
   });
+  it('counts by the owner’s day, not the UTC one', () => {
+    // 14:00Z is already 2026-09-04 in Auckland (UTC+12): the gate's day and a
+    // notice from 13:30Z are both today there, and UTC would call them tomorrow.
+    const s = state({ config: { timezone: 'Pacific/Auckland' }, notices: { deferred: [], day: '2026-09-04', spentToday: 2, recentPhasic: [{ observation: 'a', at: ago(30) }] } });
+    expect(nowSnapshot(s, NOW).noticedToday).toBe(3);
+  });
 });
 
 describe('the routine forecast', () => {
@@ -116,7 +130,7 @@ describe('the routine forecast', () => {
   it('names the next step when the trail matches a learned routine', () => {
     const snap = nowSnapshot(state({ routines: { trail: ['Slack/work', 'Code/work', 'Warp/work'], learned } }), NOW);
     expect(snap.nextStep).toEqual({ process: 'Google Chrome', support: 40 });
-    expect(nowLine(snap)).toContain('they usually open Google Chrome next (seen 40 times; a tendency, about 40% reliable)');
+    expect(nowLine(snap)).toContain('they usually open Google Chrome next (seen 40 times; a tendency, about 27% reliable)');
   });
   it('is null when nothing is learned, and the line says nothing about it', () => {
     const snap = nowSnapshot(state(), NOW);
@@ -146,11 +160,12 @@ describe('nowLine', () => {
           { id: 'a', cwd: '~/Projects/sundial', branch: 'main', state: 'working', since: ago(1) },
           { id: 'b', cwd: '~/Projects/acme/puzzlebox-studio', branch: 'x', state: 'waiting', since: ago(7) },
           { id: 'c', cwd: '~/hub', branch: 'main', state: 'tool', since: ago(12) },
+          { id: 'e', cwd: '~/Projects/ledger', branch: 'main', state: 'permission', since: ago(9), title: 'Migrate the ledger' },
           { id: 'd', cwd: '~/old', branch: 'main', state: 'waiting', since: ago(300) },
         ],
       },
     });
-    expect(nowLine(nowSnapshot(s, NOW))).toContain('4 Claude sessions open, 1 working; waiting on the owner: hub 12 min (tool call, maybe an approval), puzzlebox-studio 7 min')
+    expect(nowLine(nowSnapshot(s, NOW))).toContain("5 Claude sessions open, 1 working; waiting on the owner: hub 12 min (tool call, maybe an approval), 'Migrate the ledger' in ledger 9 min (an approval), puzzlebox-studio 7 min")
   });
 
   it('does not announce a focus span too short to mean anything', () => {

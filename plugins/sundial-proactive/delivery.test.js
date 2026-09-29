@@ -39,6 +39,14 @@ describe('createDelivery', () => {
     expect(agent.followup).toHaveBeenCalledTimes(1)
   })
 
+  it('a plain phasic notice is its own sentence: the banner and push, no model turn (UC4 §10)', async () => {
+    const native = vi.fn()
+    const { delivery, agent } = harness(fakeAgent(), { notifyNative: native })
+    await delivery.deliver(notice('phasic-notice', { plain: true }))
+    expect(agent.followup).not.toHaveBeenCalled()
+    expect(native).toHaveBeenCalledTimes(1)
+  })
+
   it('injects a tonic notice WITHOUT waking anyone — the ambient channel never interrupts', async () => {
     const { delivery, agent } = harness()
     const result = await delivery.deliver(notice('tonic-notice'))
@@ -156,6 +164,33 @@ describe('createDelivery', () => {
     expect(result).toEqual({ delivered: true, channel: 'phasic' })
     expect(agent.followup).toHaveBeenCalledTimes(1)
     expect(warnings.join(' ')).toContain('native notify failed')
+  })
+
+  // lane D — #6 the right channel
+  it('pushes every phasic notice to ntfy, and the banner on every route but phone', async () => {
+    const sent = async (route, options = {}) => {
+      const notifyNative = vi.fn()
+      const notifyPhone = vi.fn()
+      const { delivery, agent } = harness(fakeAgent(), { notifyNative, notifyPhone, ...options })
+      await delivery.deliver(notice('phasic-notice', route ? { route } : {}))
+      expect(agent.followup).toHaveBeenCalledTimes(1)
+      return [notifyNative.mock.calls.length, notifyPhone.mock.calls.length]
+    }
+    expect(await sent('mac')).toEqual([1, 1])
+    expect(await sent('phone')).toEqual([0, 1])
+    expect(await sent(undefined)).toEqual([1, 1])
+    // Banner-only at the Mac, when the owner chose it.
+    expect(await sent('mac', { pushAtMac: false })).toEqual([1, 0])
+  })
+
+  it('pushes to the phone even when the banner throws', async () => {
+    const notifyPhone = vi.fn()
+    const notifyNative = vi.fn(() => {
+      throw new Error('no bundle identity')
+    })
+    const { delivery } = harness(fakeAgent(), { notifyNative, notifyPhone })
+    await delivery.deliver(notice('phasic-notice'))
+    expect(notifyPhone).toHaveBeenCalledTimes(1)
   })
 
   it('never rejects into the effect executor when delivery throws', async () => {

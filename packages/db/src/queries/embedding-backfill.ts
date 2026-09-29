@@ -6,7 +6,8 @@ import { getKnowledgeEntriesByIds } from './knowledge-entries.js';
 import { getMomentsByIds } from './moments.js';
 
 /**
- * Fixes the third leg of `almanac/issues/embedding-scheme-and-vector-lifecycle.md`:
+ * Fixes the third leg of the embedding-scheme and vector-lifecycle issue (now
+ * `almanac/architecture/memory/embeddings-and-search.md`):
  * a corpus embedded partly under an old scheme (e.g. the hashing-trick fallback
  * used while the MiniLM model was still downloading on a first offline run) had
  * no path back to the current scheme — those rows just scored 0 forever (now:

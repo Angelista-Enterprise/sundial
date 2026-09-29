@@ -6,21 +6,16 @@
 // (`@sundial/db`'s getDb() singleton, initialised by the sundial-db plugin, and
 // `loadLatestSnapshot()` over the snapshots the sundial-kernel plugin keeps
 // writing). What ask.ts DID add around `executeGnomonTool` was an execute
-// wrapper with two capture points — figures onto the answer, show-view onto
-// the push bus — and that wrapper is what `deps` reproduces here:
+// wrapper with a capture point for figures, and that wrapper is what `deps`
+// reproduces here:
 //
 //   - `deps.onFigure(figure)`   — called when gnomon_compose_figure returns a
 //     real figure (not its `{ unavailable }` refusal).
-//   - `deps.onShowView(shown)`  — called when gnomon_show_view returns a
-//     navigation request.
 //
-// Both are optional. In dsh there is no SSE bus and no macOS app yet, so the
-// canonical JSON simply flows back to the model (figures/views render as
-// JSON for now).
-// PHASE5: a UI projection hooks in here — the gnomon-proactive/web surface
-// passes `onFigure`/`onShowView` in `deps` (or an `output.presentResult`
-// presenter) to draw the figure with real components / move a client view,
-// exactly where ask.ts's execute wrapper did it.
+// Optional. Without it the canonical JSON simply flows back to the model.
+// PHASE5: a UI projection hooks in here — a surface passes `onFigure` in
+// `deps` (or an `output.presentResult` presenter) to draw the figure with real
+// components, exactly where ask.ts's execute wrapper did it.
 //
 // Validation is deliberately doubled: dsh validates the model's args against
 // the converted ParameterSchemaSpec (whose numeric/string bounds are prose,
@@ -37,8 +32,6 @@ import { renderResultText } from './render.js';
 
 /** The one tool whose result is also rendered, not just read (ask.ts's FIGURE_TOOL_NAME). */
 export const FIGURE_TOOL_NAME = 'gnomon_compose_figure';
-/** And the one that moves the owner's view (ask.ts's VIEW_TOOL_NAME). */
-export const VIEW_TOOL_NAME = 'gnomon_show_view'
 
 /**
  * How long one Gnomon tool may run before dsh gives the model a timeout result.
@@ -84,7 +77,7 @@ function toLosslessJson(value) {
  * - render: the same text projection gnomon's tool loop showed the model.
  *
  * @param gnomonTool one entry of TOOL_REGISTRY / ASK_TOOL_REGISTRY
- * @param deps optional capture points: `{ onFigure?, onShowView?, handles?, today? }`
+ * @param deps optional capture points: `{ onFigure?, handles?, today? }`
  *   — `handles` is the per-session repeat-call cache (handles.js) and `today`
  *   the owner-local date it decides staleness against; both absent means every
  *   call executes, which is the behaviour this had before they existed.
@@ -104,8 +97,8 @@ export function toDshTool(gnomonTool, deps = {}) {
     },
     // `readOnly` was declared on every gnomon tool exactly so a loop can tell
     // a query from an action mechanically; dsh's parallel-dispatch gate is
-    // that consumer here. gnomon_show_view (readOnly: false) never joins a
-    // parallel group.
+    // that consumer here. A tool that is not read-only never joins a parallel
+    // group.
     isConcurrencySafe: () => gnomonTool.readOnly,
     async execute(args, exec) {
       // A read asked twice for a FINISHED day gets a handle instead of a second
@@ -117,11 +110,9 @@ export function toDshTool(gnomonTool, deps = {}) {
 
       const value = await executeTool([gnomonTool], gnomonTool.name, args ?? {});
 
-      // ask.ts's two sanctioned "the assistant did something visible" paths,
-      // reproduced at the same seam. No-ops until a surface passes hooks.
+      // ask.ts's sanctioned "the assistant drew something" path, reproduced
+      // at the same seam. A no-op until a surface passes the hook.
       if (gnomonTool.name === FIGURE_TOOL_NAME && isFigure(value)) deps.onFigure?.(value);
-      if (gnomonTool.name === VIEW_TOOL_NAME && value?.shown) deps.onShowView?.(value.shown);
-      // PHASE5: push the figure/view into the companion surface here.
 
       if (sessionId) deps.handles?.remember(sessionId, gnomonTool.name, args ?? {}, value, deps.today?.());
 

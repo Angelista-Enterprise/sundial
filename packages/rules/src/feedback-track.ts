@@ -17,7 +17,8 @@ const MAX_RECENT_FEEDBACK = 50;
 const OWNER_CONFIRMATION_DELTA = 1;
 const VALID_VERDICTS = new Set<FeedbackVerdict>(['useful', 'wrong', 'not-now']);
 /**
- * Exported so the `gnomon feedback` CLI can pin its own accepted list against the
+ * Exported so a writer of verdicts (once the `gnomon feedback` CLI; today
+ * `/gnomon/api/feedback` keeps its own list) can pin its accepted list against the
  * reducer's, which is the authority. The two drifted once — the rule gained
  * `ask_thread` and `notice` and the CLI kept refusing them — and the drift was
  * invisible because each side was self-consistent.
@@ -50,10 +51,10 @@ interface FeedbackVerdictPayload {
 }
 
 /**
- * enhancements/outcome-feedback-signal — folds the owner's verdict on one
+ * The feedback loop (decisions/assistant-as-an-event-source) — folds the owner's verdict on one
  * artifact into `state.feedback`. Reacts to `feedback:verdict`, an ordinary
- * event like any sensor's; the daemon's `POST /feedback` route ingests it
- * (`gnomon feedback` is the CLI surface), so the return path needs no new
+ * event like any sensor's; the web client's `/gnomon/api/feedback` route
+ * ingests it, so the return path needs no new
  * transport, table, or package — which is the whole argument for this being
  * the smallest change that closes the gap.
  *
@@ -180,12 +181,16 @@ export const feedbackTrack: Rule = (state, event) => {
   // path needs no lookup: it is the delivery, not a row about one. The tonic
   // path still resolves through the knowledge entry the `ScheduleLLM` wrote,
   // because that is the artifact the owner actually saw and rated.
-  const notNowKey =
-    verdict === 'not-now'
-      ? artifactKind === 'notice'
-        ? artifactId
-        : state.memory.recentInsights.find((i) => i.id === artifactId)?.noticeKey
-      : undefined;
+  //
+  // `useful` is the other half, added 2026-09-28 (UC4 finding 2): the owner
+  // saying "worth hearing" RESTORES the key — its habituation entry is dropped,
+  // so the next one is weighed as if it were the first. Before, a watch rule
+  // the owner kept marking useful still wore down to silence after two
+  // deliveries, which is the gate being punished for being right in reverse.
+  const ratedKey =
+    verdict === 'wrong' ? undefined : artifactKind === 'notice' ? artifactId : state.memory.recentInsights.find((i) => i.id === artifactId)?.noticeKey;
+  const notNowKey = verdict === 'not-now' ? ratedKey : undefined;
+  const restoredKey = verdict === 'useful' && ratedKey !== undefined && state.notices.habituation[ratedKey] !== undefined ? ratedKey : undefined;
   // The same mechanic for an ASK, and the two differences from the branch above
   // are both forced by what an ask is.
   //
@@ -235,7 +240,9 @@ export const feedbackTrack: Rule = (state, event) => {
           })(),
         },
       }
-    : state.notices;
+    : restoredKey
+      ? { ...state.notices, habituation: Object.fromEntries(Object.entries(state.notices.habituation).filter(([key]) => key !== restoredKey)) }
+      : state.notices;
 
   // The Jev answers behind what the owner just graded (docs/jarvis/02, J0.7).
   // A `moment` verdict grades every answer in that moment's fan-out; any other
@@ -265,14 +272,14 @@ export const feedbackTrack: Rule = (state, event) => {
   // The asymmetry it left behind was the problem: `wrong` retracted a belief, but
   // `useful` — the owner confirming, from outside the sensor stream, that a fact is
   // true — was recorded in the tally and discarded. So belief could only ever fall
-  // on owner input, never rise, and the loop `enhancements/outcome-feedback-signal`
-  // describes was open at exactly the point where the owner is most reliable.
+  // on owner input, never rise, and the feedback loop
+  // (`decisions/assistant-as-an-event-source`) describes was open at exactly the point where the owner is most reliable.
   //
   // Reinforcement, not promotion: this bumps the Beta posterior of a fact that has
   // ALREADY been promoted, which is the same `ReinforceFact` effect
   // `contradictionCheck` emits when it re-observes a confirmed value. It cannot
   // create a fact, cannot supersede one, and cannot resurrect a retracted one — an
-  // owner wanting to state something new still uses `gnomon assert`, which has its
+  // owner wanting to state something new still uses `gnomon_assert`, which has its
   // own provenance and its own heavier posterior.
   if (verdict === 'useful' && artifactKind === 'entity_fact') {
     return {

@@ -51,6 +51,7 @@ export async function insertPrediction(input: InsertPredictionInput): Promise<vo
       features: input.features == null ? null : JSON.stringify(input.features),
       outcome: input.outcome,
       surprise: input.surprise,
+      baseProb: input.baseProb ?? null,
     })
     .onConflictDoNothing();
 }

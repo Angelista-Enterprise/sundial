@@ -294,6 +294,24 @@ export function replayFrames(events) {
 }
 
 /**
+ * The last `keep` turns of a replay, and how many turns came before them.
+ *
+ * The conversation is one long session, and opening it replayed all of it:
+ * measured on the record, 211 turns and 24 compactions in a 17 MB log, redrawn
+ * on every open. The page draws the recent turns and an "Earlier" fold that
+ * asks for the rest. The cut is on a turn's first frame, so a tool call and its
+ * result are never split.
+ */
+export function recentTurns(frames, keep) {
+  const starts = []
+  frames.forEach((frame, i) => {
+    if (frame.type === 'turn') starts.push(i)
+  })
+  if (starts.length <= keep) return { frames, earlier: 0 }
+  return { frames: frames.slice(starts[starts.length - keep]), earlier: starts.length - keep }
+}
+
+/**
  * A session's title for the list, in the order the truth is knowable.
  *
  * A title the caller already holds wins. Failing that, dsh's own title is read

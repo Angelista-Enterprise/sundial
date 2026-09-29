@@ -88,3 +88,15 @@ describe('conversationExtractionInstructions', () => {
     expect(text).toContain('Respond with [] when nothing qualifies');
   });
 });
+
+describe('promises told to Gnomon in passing (UC1 U1-F11)', () => {
+  it('opens only a promise stated outright to a named person, never a request to the assistant', async () => {
+    const { promisesInTurns } = await import('./conversation-extract.js');
+    const turn = (text: string) => ({ sessionId: 's1', at: '2026-10-01T10:00:00.000Z', text });
+    const found = promisesInTurns([turn("Remind me: I owe Mira the draft by Tuesday. Also I'll look at the logs."), turn('ik heb Bob beloofd dat ik morgen de notulen stuur'), turn("I'll send the deck later"), turn('I promised to be careful')], 'Europe/Amsterdam');
+    expect(found.map((f) => [f.counterparty, f.deliverable, f.dueText])).toEqual([
+      ['Mira', 'the draft', 'by Tuesday'],
+      ['Bob', 'de notulen', 'morgen'],
+    ]);
+  });
+});

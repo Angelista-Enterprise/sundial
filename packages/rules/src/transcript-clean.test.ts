@@ -4,7 +4,7 @@ import type { KernelState, MomentRollup, SanitizedEvent } from '@sundial/kernel/
 import { transcriptAccept, transcriptClean } from './transcript-clean.js';
 
 const SPEECH =
-  "dictate right now what I'm saying and it'll just pick it up and keep that into its memory so if you've seen the puppy meeting it'll know that I said this you said that";
+  "so if I just say it out loud it goes into the memory and after the puzzlebox standup it will know that I said this and you said that";
 
 const rollup = (over: Partial<MomentRollup> = {}): MomentRollup =>
   ({

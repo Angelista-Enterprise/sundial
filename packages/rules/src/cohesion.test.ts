@@ -45,9 +45,11 @@ describe('an ad-hoc work call gets a follow-up question', () => {
     state = { ...state, av: { call: null, lastCall: { app: 'Google Chrome', kind: 'work-call', since: '2026-09-05T09:00:00.000Z', until: '2026-09-05T09:15:00.000Z', cameraEver: true } } };
     const { state: seen } = meetingFollowup(state, tick('2026-09-05T09:15:30.000Z'));
     expect(Object.keys(seen.meetings.seen)).toEqual(['call|2026-09-05T09:00:00.000Z']);
-    const { effects } = meetingFollowup(seen, tick('2026-09-05T09:18:00.000Z'));
+    // UC1-X3: the call's promise pass was asked for on the first tick; the question waits for it, eight minutes at most.
+    expect(meetingFollowup(seen, tick('2026-09-05T09:18:00.000Z')).effects).toEqual([]);
+    const { effects } = meetingFollowup(seen, tick('2026-09-05T09:24:00.000Z'));
     expect(effects).toHaveLength(1);
-    expect(effects[0]).toMatchObject({ type: 'EmitEvent', event: { type: 'ask:owner-opened', payload: { question: expect.stringContaining('How did the call in Google Chrome go?') } } });
+    expect(effects[0]).toMatchObject({ type: 'EmitEvent', event: { type: 'ask:owner-opened', payload: { question: 'How did the call in Google Chrome go? Who was it with — and did you promise anything?' } } });
 
     const personal = { ...createInitialState('d'), av: { call: null, lastCall: { app: 'WhatsApp', kind: 'personal-call' as const, since: '2026-09-05T09:00:00.000Z', until: '2026-09-05T09:30:00.000Z', cameraEver: false } } };
     expect(Object.keys(meetingFollowup(personal, tick('2026-09-05T09:31:00.000Z')).state.meetings.seen)).toEqual([]);

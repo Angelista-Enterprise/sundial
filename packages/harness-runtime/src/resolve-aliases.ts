@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import { personAliasFor } from '@sundial/helpers/sanitize-at-ingest.js';
 import { displayNameFromAddress, looksLikePersonName } from '@sundial/helpers/person-name.js';
 import { getAllEntities, getCurrentEntityFacts, getAllProjects } from '@sundial/db/index.js';
+import { findEnvelopeIndex, runSqlite, type SqliteRunner } from '@sundial/sensors/mail/envelope-index.js';
 
 const run = promisify(execFile);
 
@@ -26,7 +27,7 @@ const run = promisify(execFile);
  * What this deliberately does NOT do:
  *
  *   - Ask a model. There is nothing to infer; a model asked "who is
- *     person-c7e3af19c4" can only invent a colleague, and the answer would be
+ *     person-9f8e7d6c5b" can only invent a colleague, and the answer would be
  *     written into core memory as a durable fact about a real person.
  *   - Put an address in the log. Only the derived NAME leaves this module. The
  *     whole reason the alias exists is that the address should not be stored,
@@ -120,6 +121,32 @@ function bestName(names: Map<string, number>): string | null {
   return best;
 }
 
+/**
+ * M4 — every sender address Mail.app holds, with the display name it holds
+ * beside it (`addresses.comment`). The same pattern as git: a plain-text
+ * address on this machine, hashed forwards and compared. A calendar attendee
+ * who only ever arrived as a bare address is very often someone who has also
+ * mailed the owner, under a name. An unreadable index (no Full Disk Access, no
+ * Mail) contributes nothing.
+ */
+export async function addressesFromMail(file: string | null = findEnvelopeIndex(), run: SqliteRunner = runSqlite): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>();
+  if (file === null) return out;
+  try {
+    const stdout = await run(file, "select address, comment as name from addresses where address like '%@%';");
+    const rows = stdout.trim() === '' ? [] : (JSON.parse(stdout) as { address?: unknown; name?: unknown }[]);
+    for (const row of rows) {
+      if (typeof row.address !== 'string') continue;
+      const name = typeof row.name === 'string' ? row.name.trim() : '';
+      const named = name !== '' && !name.includes('@') && looksLikePersonName(name) ? name : null;
+      if (!out.has(row.address) || (out.get(row.address) === null && named !== null)) out.set(row.address, named);
+    }
+  } catch {
+    // No access, or no index. A resolver degrades to "no match".
+  }
+  return out;
+}
+
 export interface ResolvedAlias {
   alias: string;
   name: string;
@@ -186,5 +213,7 @@ async function unnamedAliases(): Promise<string[]> {
 export async function resolveAliases(): Promise<ResolvedAlias[]> {
   const aliases = await unnamedAliases();
   if (aliases.length === 0) return [];
-  return matchAliases(aliases, await addressesFromGit());
+  // Git first: a name a commit recorded wins over a mail display name.
+  const [git, mail] = await Promise.all([addressesFromGit(), addressesFromMail()]);
+  return matchAliases(aliases, [...git, ...mail]);
 }

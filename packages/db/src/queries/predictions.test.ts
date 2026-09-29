@@ -90,4 +90,15 @@ describe('predictions', () => {
     expect(llm).toMatchObject({ kind: 'day-ending', n: 1, hits: 0 });
     expect(llm?.brier).toBeCloseTo(0.81, 5);
   });
+
+  /** F2 — the opponent's figure must reach the column, or the fair contest always has n=0. */
+  it('writes baseProb so the fair Brier has a population', async () => {
+    await insertPrediction({ ...base, id: 'f1', outcome: 1, priorProb: 0.8, baseProb: 0.5 });
+    await insertPrediction({ ...base, id: 'f2', outcome: 1, priorProb: 0.8 });
+
+    const [row] = await tallyPredictions();
+    expect(row).toMatchObject({ n: 2, fairN: 1 });
+    expect(row?.fairBrier).toBeCloseTo(0.04, 5);
+    expect(row?.baselineBrier).toBeCloseTo(0.25, 5);
+  });
 });

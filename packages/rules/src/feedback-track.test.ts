@@ -326,9 +326,19 @@ describe('feedbackTrack', () => {
       expect(next.feedback.countsByVerdict).toEqual({ 'not-now': 1 });
     });
 
-    it('leaves the gate alone on `useful` — quieting a key the owner called useful would punish the gate for being right', () => {
+    it('never quiets on `useful` — quieting a key the owner called useful would punish the gate for being right', () => {
       const { state: next } = feedbackTrack(createInitialState('d1'), verdictEvent({ ...NOTICE, verdict: 'useful' }));
       expect(next.notices.habituation['absent:break']).toBeUndefined();
+    });
+
+    it('`useful` restores a worn key to full response, for the notice key and for a tonic insight alike', () => {
+      const worn = createInitialState('d1');
+      worn.notices.habituation = { 'watch:ci:ab12': { gain: 0.16, at: '2026-01-01T09:00:00.000Z', fires: 2 }, other: { gain: 0.4, at: '2026-01-01T09:00:00.000Z', fires: 1 } };
+      const direct = feedbackTrack(worn, verdictEvent({ artifactKind: 'notice', artifactId: 'watch:ci:ab12', verdict: 'useful' })).state;
+      expect(direct.notices.habituation).toEqual({ other: worn.notices.habituation.other });
+      worn.memory.recentInsights = [{ id: 'k1', noticeKey: 'other' } as (typeof worn.memory.recentInsights)[number]];
+      const viaInsight = feedbackTrack(worn, verdictEvent({ artifactKind: 'knowledge_entry', artifactId: 'k1', verdict: 'useful' })).state;
+      expect(viaInsight.notices.habituation.other).toBeUndefined();
     });
   });
 
@@ -381,7 +391,7 @@ describe('feedbackTrack', () => {
 });
 
 describe('a verdict on an ASK quiets its class', () => {
-  const ask = (verdict: string, askId = 'owner-ask:who-person-35941f3bc4') => verdictEvent({ verdict, artifactKind: 'owner_ask', artifactId: askId });
+  const ask = (verdict: string, askId = 'owner-ask:who-person-4b3c2d1e0f') => verdictEvent({ verdict, artifactKind: 'owner_ask', artifactId: askId });
 
   // The one verdict the live record actually holds, on 2026-09-21. Before this
   // it was recorded and dropped: the gate key was the ask's own id, an ask is

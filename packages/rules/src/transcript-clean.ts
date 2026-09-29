@@ -12,8 +12,8 @@ const CLEAN_DELAY_MS = 10_000;
  *
  * `spokenExcerpt` is a local speech model's best guess at a room, and it reads
  * like one: no punctuation, run-on, the odd word plainly wrong. The audit found
- * the owner's most valuable evidence sitting inside it — "dictate right now what
- * I'm saying and it'll just pick it up and keep that into its memory" — and
+ * the owner's most valuable evidence sitting inside it — a run-on like "so if
+ * I just say it out loud it goes into the memory right" — and
  * asked for a cleaned copy shown by default, with the raw one a toggle away.
  *
  * The rule the owner set, and the reason this is a separate field rather than a

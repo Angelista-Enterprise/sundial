@@ -88,6 +88,11 @@ describe('factEvidence', () => {
     expect(got.at(-1)).not.toContain('since')
   })
 
+  it('carries the belief\'s record against what happened next, beside its certainty (use case 7)', () => {
+    const got = factEvidence({ provenance: 'inference', alpha: 18, confidence: 89, validFrom: '2026-08-16T00:00:00.000Z', record: { right: 3, wrong: 1, line: 'right 3 of 4, gathering' } })
+    expect(got.slice(0, 3)).toEqual(['seen 17 times', '89% sure', 'right 3 of 4, gathering'])
+  })
+
   it('says "inferred" rather than "seen 0 times", which would read as evidence against', () => {
     expect(factEvidence({ provenance: 'inference', alpha: 1 })).toEqual(['inferred'])
   })

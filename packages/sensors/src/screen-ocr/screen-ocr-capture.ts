@@ -9,6 +9,13 @@ export interface ScreenOcrSnapshot {
   text: string;
   topics: string[];
   captureTimestamp: string;
+  /**
+   * The helper's `IsSecureEventInputEnabled()` at capture time: some app holds
+   * a password field. The DECISION is the sensor's, not the helper's, because
+   * Terminal's Secure Keyboard Entry can hold it on for hours and a helper that
+   * blanked itself would look exactly like a quiet screen.
+   */
+  secureInput: boolean;
 }
 
 /**
@@ -33,6 +40,7 @@ export function readScreenOcrSnapshot(): ScreenOcrSnapshot | null {
       text: parsed.text,
       topics: Array.isArray(parsed.topics) ? parsed.topics.filter((t): t is string => typeof t === 'string') : [],
       captureTimestamp: typeof parsed.captureTimestamp === 'string' ? parsed.captureTimestamp : new Date().toISOString(),
+      secureInput: parsed.secureInput === true,
     };
   } catch {
     return null;

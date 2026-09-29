@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isOwnerMessage, liveFrames, parseLoose, replayFrames, streamFrames, textOf, titleFrom } from './frames.js';
+import { isOwnerMessage, liveFrames, parseLoose, recentTurns, replayFrames, streamFrames, textOf, titleFrom } from './frames.js';
 
 // One `agent/assistant-stream` chunk publication, the shape dsh 0.1.5 emits.
 const chunk = (c) => ({ type: 'chunk', attemptId: 'attempt-1', revision: 1, index: 0, time: 0, chunk: c });
@@ -223,5 +223,22 @@ describe('parseLoose', () => {
     expect(parseLoose('{"a":1}')).toEqual({ a: 1 });
     expect(parseLoose('not json')).toBeNull();
     expect(parseLoose(undefined)).toBeNull();
+  });
+});
+
+describe('recentTurns (L8)', () => {
+  const turn = (n) => [{ type: 'turn', turn: n }, { type: 'user', text: `q${n}` }, { type: 'tool', callId: `c${n}`, name: 'x', args: {} }, { type: 'tool-done', callId: `c${n}`, failed: false, text: '' }, { type: 'done', reason: 'complete' }];
+  it('keeps the last turns whole and says how many came before', () => {
+    const frames = [1, 2, 3, 4, 5].flatMap(turn);
+    const { frames: kept, earlier } = recentTurns(frames, 2);
+    expect(earlier).toBe(3);
+    expect(kept[0]).toEqual({ type: 'turn', turn: 4 });
+    expect(kept.filter((f) => f.type === 'tool').map((f) => f.callId)).toEqual(['c4', 'c5']);
+    expect(kept.filter((f) => f.type === 'tool-done').map((f) => f.callId)).toEqual(['c4', 'c5']);
+  });
+  it('leaves a short thread whole', () => {
+    const frames = [1, 2].flatMap(turn);
+    expect(recentTurns(frames, 30)).toEqual({ frames, earlier: 0 });
+    expect(recentTurns([], 30)).toEqual({ frames: [], earlier: 0 });
   });
 });

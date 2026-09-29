@@ -1,5 +1,5 @@
 import { describe as group, expect, it } from 'vitest'
-import { SERVICES, allowed, describe, setPath, valueOf } from './services.js'
+import { SERVICES, allowed, describe, setPath, textValue, valueOf } from './services.js'
 
 const svc = (id) => SERVICES.find((s) => s.id === id)
 
@@ -35,7 +35,40 @@ group('services', () => {
     ])
     const by = Object.fromEntries(rows.filter((r) => !r.sep).map((r) => [r.id, r]))
     expect(by.ocr).toMatchObject({ value: true, changed: true })
-    expect(by.mail).toMatchObject({ value: true, changed: false, lastSignal: '2026-09-26T10:00:00Z' })
+    expect(by.mail).toMatchObject({ value: true, changed: false, lastSignal: '2026-09-20T10:00:00Z' })
+    // Messages is its own switch, off unless asked for, whatever Mail says.
+    expect(by.messages).toMatchObject({ value: false, lastSignal: '2026-09-26T10:00:00Z' })
     expect(by.phone.choices).toBeNull()
+  })
+
+  it('draws a refinement only while the service it refines is on', () => {
+    const ids = (config) => describe(config, config, []).filter((r) => !r.sep).map((r) => r.id)
+    expect(ids({})).not.toContain('jobsPerNight')
+    expect(ids({ jobs: { enabled: true } })).toEqual(expect.arrayContaining(['jobsPerNight', 'usdPerNight']))
+    expect(ids({})).not.toContain('pushAtMac')
+    expect(ids({ notifications: { ntfy: 'https://ntfy.sh/x' } })).toContain('pushAtMac')
+  })
+
+  it('reads a Claude hook from what is installed, applies it live, and gives the night-shift caps their code defaults', () => {
+    const rows = describe({ jobs: { enabled: true } }, {}, [], { hooks: true, context: false })
+    const by = Object.fromEntries(rows.filter((r) => !r.sep).map((r) => [r.id, r]))
+    expect(by.claudeHooks).toMatchObject({ value: true, live: true, changed: false })
+    expect(by.claudeContext).toMatchObject({ value: false, live: true })
+    expect(allowed(svc('claudeContext'), true)).toBe(true)
+    expect(by.jobsPerNight.value).toBe(2)
+    expect(by.usdPerNight.value).toBe(5)
+    expect(by.nightShift.changed).toBe(true)
+    expect(valueOf(svc('pushAtMac'), {})).toBe(true)
+  })
+})
+
+group('typed values', () => {
+  it('takes an http(s) push address and a full folder path, clears on empty, refuses the rest', () => {
+    expect(textValue(svc('push'), ' https://ntfy.sh/long-topic ')).toBe('https://ntfy.sh/long-topic')
+    expect(textValue(svc('push'), 'ntfy.sh/x')).toBeNull()
+    expect(textValue(svc('vault'), '~/Documents/Notes/')).toBe('~/Documents/Notes')
+    expect(textValue(svc('vault'), 'Notes')).toBeNull()
+    expect(textValue(svc('vault'), '')).toBe('')
+    expect(textValue(svc('ocr'), 'x')).toBeNull()
   })
 })

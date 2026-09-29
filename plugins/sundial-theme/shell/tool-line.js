@@ -30,6 +30,8 @@ const PHRASES = {
   gnomon_anomalies: () => ['Looking for anything unusual', null],
   gnomon_goals: () => ['Reading goals', null],
   gnomon_project_status: (a) => ['Reading project status', a.project ?? null],
+  // lane D
+  gnomon_project_handoff: (a) => ['Writing the handoff', a.project ?? null],
   gnomon_tools: () => ['Finding the right tool', null],
   gnomon_look: (a) => ['Reading a card', a.id ?? null],
   gnomon_board: (a) => [BOARD_VERBS[a.action] ?? 'Arranging the board', a.because ?? a.text ?? a.kind ?? null],
@@ -43,6 +45,8 @@ const PHRASES = {
   gnomon_start_job: (a) => [a.repeat ? `Keeping a job, ${a.repeat}` : 'Starting a job', a.subject ?? null],
   gnomon_stop_repeat: (a) => ['Stopping a repeating job', a.subject ?? null],
   gnomon_schedule_wakeup: () => ['Setting a reminder for myself', null],
+  gnomon_track_promise: () => ['Keeping track of a promise', null],
+  gnomon_reminder_create: () => ['Adding it to Reminders', null],
   gnomon_calendar_create: (a) => ['Adding to your calendar', a.title ?? null],
   gnomon_conversation_search: (a) => ['Searching past chats', a.query ? quoted(a.query) : null],
   web_search: (a) => ['Searching the web', a.query ? quoted(a.query) : null],

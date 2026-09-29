@@ -1,5 +1,8 @@
 // fallow-ignore-next-line unresolved-import
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { getSundialRuntimeDir } from '@sundial/helpers/sundial-paths.js';
 import { TOOL_REGISTRY } from '@sundial/kernel/tools/index.js';
 
 function textResult(value: unknown) {
@@ -28,6 +31,37 @@ function textResult(value: unknown) {
  */
 export function registerTools(server: McpServer): void {
   for (const tool of TOOL_REGISTRY) {
-    server.tool(tool.name, tool.description, tool.schema, async (args: unknown) => textResult(await tool.handler(args as never)));
+    server.tool(tool.name, tool.description, tool.schema, async (args: unknown) => {
+      const started = Date.now();
+      try {
+        const result = textResult(await tool.handler(args as never));
+        recordMcpCall(tool.name, 'ok', started);
+        return result;
+      } catch (error) {
+        recordMcpCall(tool.name, 'failed', started);
+        throw error;
+      }
+    });
+  }
+}
+
+/**
+ * One line per call in `$SUNDIAL_HOME/.daemon/mcp-calls.jsonl`: which tool,
+ * when, how it ended, how long it took — never its arguments, the same rule
+ * the chat's `action:performed` rows keep.
+ *
+ * A file, not a signal. This server is a separate process, and a row it put
+ * in `signals` would not be folded until the daemon's next boot replay, out of
+ * order with everything the daemon folded meanwhile: the log has one writer.
+ * Never throws — an audit that fails must not fail the read it records.
+ */
+export function recordMcpCall(tool: string, outcome: 'ok' | 'failed', startedMs: number, now = Date.now()): void {
+  try {
+    const dir = getSundialRuntimeDir();
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const line = JSON.stringify({ at: new Date(now).toISOString(), tool, outcome, ms: now - startedMs });
+    fs.appendFileSync(path.join(dir, 'mcp-calls.jsonl'), `${line}\n`, { mode: 0o600 });
+  } catch (error) {
+    console.error(`[sundial mcp] call audit not written: ${error instanceof Error ? error.message : String(error)}`);
   }
 }

@@ -1,7 +1,8 @@
 import { deriveId } from '@sundial/helpers/derive-id.js';
+import { localDate as localDay, localHour } from '@sundial/helpers/local-day.js';
 import { conditionerById, type DayView } from '@sundial/kernel/conditioners.js';
 import type { Effect, KernelState, OpenPrediction, ResolvedPrediction, Rule } from '@sundial/kernel/types.js';
-import { bumpCalibration, clampProb, pastRate } from './forward-model.js';
+import { bumpCalibration, clampProb, hasSkill, pastRate } from './forward-model.js';
 import { MAX_ACCUMULATED } from './surprise-drive.js';
 
 const MAX_RECENT_RESOLVED = 50;
@@ -29,26 +30,16 @@ const HOUR_RATE_SMOOTHING = 6;
 /** No evidence yet for any hour: treat all 24 as equally likely to be the day's one last active hour, rather than guessing 0.5 (that's the right uninformed prior for a binary match, not for a pick-one-of-24 question). */
 const UNINFORMED_DAY_ENDING_RATE = 1 / 24;
 
-/**
+/*
  * LOCAL calendar day and LOCAL hour, deliberately both — "the last hour you
  * were active today" is a claim about the user's own day, and
  * `measure-forecast-skill.ts` bucketed the +46.1% measurement the same local
  * way, so a live forecaster using UTC would not be learning the thing that was
- * measured. This does mean replaying the log on a machine in a different `TZ`
- * re-buckets these hours — the same accepted trade-off `mindTrack`'s circadian
- * phase and `anomalyZscore`'s hourly baselines already make (both call
- * `.getHours()` on an event ts). Kept internally consistent here: `localDay`
- * and `localHour` never mix zones with each other, which is the mistake worth
+ * measured. Both read `state.config.timezone` (M3, 2026-09-28 — they read the
+ * host zone before, so a replay on a machine in another `TZ` re-bucketed them),
+ * and they never mix zones with each other, which is the mistake worth
  * avoiding — an earlier version paired a UTC day with a local hour.
  */
-function localDay(ts: string): string {
-  const d = new Date(ts);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-function localHour(ts: string): number {
-  return new Date(ts).getHours();
-}
 
 /** The local day before a `YYYY-MM-DD`, via UTC date math so no zone can shift it. */
 function prevDayOf(date: string): string {
@@ -176,7 +167,7 @@ function resolveOpenDayEnding(state: KernelState, ts: string): { state: KernelSt
   const pred = state.predictions.open.find((p): p is Extract<OpenPrediction, { kind: 'day-ending' }> => p.kind === 'day-ending');
   if (!pred) return { state, effects: [] };
 
-  const hit = localDay(pred.createdAt) !== localDay(ts);
+  const hit = localDay(pred.createdAt, state.config.timezone) !== localDay(ts, state.config.timezone);
   const outcome = hit ? 1 : 0;
   const pActual = clampProb(hit ? pred.priorProb : 1 - pred.priorProb);
   const surprise = -Math.log(pActual);
@@ -208,7 +199,7 @@ function resolveOpenDayEnding(state: KernelState, ts: string): { state: KernelSt
       // Shares the one master surprise scalar with `anomalyZscore` (D6) — a day-ending
       // prediction is scored the same log-loss way as any other, and mood/reflection read this accumulator,
       // not any one forecaster's own record.
-      memory: { ...state.memory, accumulatedImportance: Math.min(MAX_ACCUMULATED, state.memory.accumulatedImportance + surprise) },
+      memory: hasSkill(state.predictions.calibration, 'day-ending') ? { ...state.memory, accumulatedImportance: Math.min(MAX_ACCUMULATED, state.memory.accumulatedImportance + surprise) } : state.memory,
       predictions: {
         ...state.predictions,
         open: state.predictions.open.filter((p) => p.kind !== 'day-ending'),
@@ -217,7 +208,7 @@ function resolveOpenDayEnding(state: KernelState, ts: string): { state: KernelSt
         conditioned,
         // On a hit, the bet hour WAS the previous day's last active hour — the
         // one fact `prev-day-ran-late` needs at the next conditioned open.
-        lastDayEnd: hit ? { day: localDay(pred.createdAt), hour: pred.hour } : state.predictions.lastDayEnd,
+        lastDayEnd: hit ? { day: localDay(pred.createdAt, state.config.timezone), hour: pred.hour } : state.predictions.lastDayEnd,
         recentResolved: [...state.predictions.recentResolved, resolved].slice(-MAX_RECENT_RESOLVED),
       },
     },
@@ -268,7 +259,7 @@ function conditionedPrior(state: KernelState, hour: number, arm: 'when' | 'other
 
 /** What the conditioner may look at about the day a bet opens on — assembled from state, never from IO. */
 function dayViewFor(state: KernelState, ts: string): DayView {
-  const date = localDay(ts);
+  const date = localDay(ts, state.config.timezone);
   const lastEnd = state.predictions.lastDayEnd;
   return { date, prevDayEndHour: lastEnd !== null && lastEnd.day === prevDayOf(date) ? lastEnd.hour : null };
 }
@@ -355,15 +346,15 @@ export const dayShapeForecast: Rule = (state, event) => {
   if (event.type === 'day:boundary') {
     const { state: resolved, effects } = resolveOpenDayEnding(state, event.ts);
     return {
-      state: { ...resolved, predictions: { ...resolved.predictions, dayShape: { day: localDay(event.ts), candidateHour: null, emitsThisHour: 0 } } },
+      state: { ...resolved, predictions: { ...resolved.predictions, dayShape: { day: localDay(event.ts, state.config.timezone), candidateHour: null, emitsThisHour: 0 } } },
       effects,
     };
   }
 
   if (event.type !== 'input:activity') return { state, effects: [] };
 
-  const day = localDay(event.ts);
-  const hour = localHour(event.ts);
+  const day = localDay(event.ts, state.config.timezone);
+  const hour = localHour(event.ts, state.config.timezone);
   const shape = state.predictions.dayShape;
   const isSameCandidateHour = shape.day === day && shape.candidateHour === hour;
   const emitsThisHour = isSameCandidateHour ? shape.emitsThisHour + 1 : 1;

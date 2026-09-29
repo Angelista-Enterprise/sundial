@@ -42,4 +42,17 @@ describe('accumulateInputActivity', () => {
 
     expect(secondWindow?.payload.keyDownCount).toBe(0);
   });
+
+  // lane H (H1)
+  it('carries the helper grant flags, and marks a window with no fresh snapshot stale', () => {
+    const acc = createInputActivityAccumulator(0);
+    accumulateInputActivity(snapshot('t1', { mouseClickCount: 2, listenAccessGranted: false, tapActive: false }), acc, 1000);
+    const denied = accumulateInputActivity(null, acc, 10_000);
+    expect(denied?.payload).toMatchObject({ listenAccessGranted: false, tapActive: false });
+    expect(denied?.payload.stale).toBeUndefined();
+
+    const stale = accumulateInputActivity(null, acc, 20_000);
+    expect(stale?.payload.stale).toBe(true);
+    expect(stale?.payload.listenAccessGranted).toBeUndefined();
+  });
 });

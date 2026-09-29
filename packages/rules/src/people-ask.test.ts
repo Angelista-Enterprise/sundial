@@ -7,9 +7,14 @@ const END = '2026-09-07T09:30:00.000Z';
 const tick = (ts: string): SanitizedEvent => ({ id: `t-${ts}`, type: 'clock:tick', ts, payload: {}, sanitized: true });
 const emitted = (effects: Effect[]) => effects.filter((e): e is Extract<Effect, { type: 'EmitEvent' }> => e.type === 'EmitEvent').map((e) => e.event);
 
-function withMeeting(attendees: string[]): KernelState {
+/** The attendee belief confirmed (a second distinct meeting) — the shared context `sharesContext` asks for. */
+const confirmed = (aliases: string[]): KernelState['memory']['factCursor'] =>
+  Object.fromEntries(aliases.map((a) => [`person:${a}:attendedMeetingWith:owner`, { object: 'owner', factId: `f-${a}`, confidence: 70, pendingObject: null, pendingCount: 0, projectId: null }]));
+
+function withMeeting(attendees: string[], shared = true): KernelState {
   const base = createInitialState('d1');
-  return { ...base, meetings: { seen: { 'RRA|x': { title: 'RRA: Kruiswoorden testen', start: '2026-09-07T09:00:00.000Z', end: END, attendees, askedAt: END } } } };
+  const factCursor = shared ? confirmed(attendees.filter((a) => a.startsWith('person-'))) : {};
+  return { ...base, memory: { ...base.memory, factCursor }, meetings: { seen: { 'RRA|x': { title: 'RRA: Kruiswoorden testen', start: '2026-09-07T09:00:00.000Z', end: END, attendees, askedAt: END } } } };
 }
 
 describe('peopleAsk', () => {
@@ -83,6 +88,13 @@ describe('peopleAsk', () => {
     const partly: KernelState = { ...base, memory: { ...base.memory, aliasNames: { 'person-d1feb17d9f': 'Jordan' } } };
     const [ask] = emitted(peopleAsk(partly, tick('2026-09-07T10:05:00.000Z')).effects);
     expect(ask?.payload.askId).toBe(`${WHO_ASK_PREFIX}person-c205ca11f2`);
+  });
+
+  it('M4: never asks about an alias it shares no context with; two meetings are context', () => {
+    const once = withMeeting(['person-c205ca11f2', 'Alex'], false);
+    expect(peopleAsk(once, tick('2026-09-07T10:05:00.000Z')).effects).toEqual([]);
+    const twice: KernelState = { ...once, meetings: { seen: { ...once.meetings.seen, earlier: { title: 'Kickoff', start: '2026-09-06T09:00:00.000Z', end: '2026-09-06T09:30:00.000Z', attendees: ['person-c205ca11f2'], askedAt: null } } } };
+    expect(emitted(peopleAsk(twice, tick('2026-09-07T10:05:00.000Z')).effects)).toHaveLength(1);
   });
 
   it('never asks about an alias the graph already names', () => {

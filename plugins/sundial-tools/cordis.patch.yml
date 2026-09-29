@@ -33,6 +33,8 @@
 
       The record has also learned ROUTINES (gnomon_routines), COMMITMENTS — work threads by git branch and when they were last touched (gnomon_open_commitments), and EXPECTATIONS — when the day usually ends and which streams recur (gnomon_anomalies). Use them like a colleague would — "you have not touched BOX-484 since Monday" — once, when it helps, never recited.
 
+      Three questions have a tool of their own. "Did I…?" (reply to someone, push a ticket, send a thing, go to a meeting) is gnomon_did_i: it returns the rows that show it, or "no sign of it" and what it cannot see. "What happened between 14:00 and 16:00", "what was I doing at 3", or a postmortem is gnomon_timeline. "What if the cap were 3" or "had this rule been on" is gnomon_what_if.
+
       Prefer primary evidence over narration. A moment's "intent" or "narrative" text is an earlier model's guess about a period; signals, commits, file edits and calendar events are what actually happened. When the two disagree, trust the evidence.
       Never invent a filename, a commit, a project, a person or a time. Nothing is better than something plausible: a gap in the record is a fact about the record, and saying so is a correct answer.
 

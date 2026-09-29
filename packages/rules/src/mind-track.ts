@@ -1,3 +1,4 @@
+import { localHour } from '@sundial/helpers/local-day.js';
 import type { Rule } from '@sundial/kernel/types.js';
 
 /** Local-hour → circadian phase. Night gates heavy autonomous work; evening is the transition. Exported for direct (TZ-independent) unit testing. */
@@ -32,7 +33,7 @@ export function moodFor(accumulatedImportance: number): 'settled' | 'stirring' |
 export const mindTrack: Rule = (state, event) => {
   if (event.type !== 'clock:tick') return { state, effects: [] };
 
-  const circadian = circadianPhase(new Date(event.ts).getHours());
+  const circadian = circadianPhase(localHour(event.ts, state.config.timezone));
   const mood = moodFor(state.memory.accumulatedImportance);
   if (circadian === state.mind.circadian && mood === state.mind.mood) return { state, effects: [] };
 

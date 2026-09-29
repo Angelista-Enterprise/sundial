@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createInitialState } from '@sundial/kernel/initial-state.js';
 import type { KernelState, SanitizedEvent } from '@sundial/kernel/types.js';
-import { entityExtract, slugifyEntityName } from './entity-extract.js';
+import { entityExtract, normaliseProcessName, slugifyEntityName } from './entity-extract.js';
 
 describe('slugifyEntityName', () => {
   it('lowercases and dashes non-alphanumeric runs', () => {
@@ -60,12 +60,12 @@ describe('entityExtract', () => {
     effects.map((e) => (e as any).event.payload).find((p) => p.entityKind === 'task');
 
   it('C13: mints a task/relatesToProject candidate from a non-base branch, alongside usesTool', () => {
-    const { effects } = entityExtract(withBranch(createInitialState('d1'), 'feat/redesign-and-ios'), closeEvent);
+    const { effects } = entityExtract(withBranch(createInitialState('d1'), 'feat/redesign-and-tablet'), closeEvent);
     expect(effects).toHaveLength(2);
     expect(taskCandidate(effects)).toEqual({
-      entityId: 'task:redesign-and-ios',
+      entityId: 'task:redesign-and-tablet',
       entityKind: 'task',
-      canonicalName: 'redesign-and-ios', // conventional prefix stripped, slashes collapsed
+      canonicalName: 'redesign-and-tablet', // conventional prefix stripped, slashes collapsed
       predicate: 'relatesToProject',
       object: 'gnomon',
       confidence: 75,
@@ -142,6 +142,16 @@ describe('entityExtract', () => {
     const state: KernelState = { ...base, moment: { ...base.moment!, processName: '[hidden]' } };
     const event: SanitizedEvent = { id: 'e1', type: 'window:changed', ts: '2026-01-01T10:05:00.000Z', payload: {}, sanitized: true };
     expect(entityExtract(state, event).effects).toEqual([]);
+  });
+
+  it('M1: skips OS plumbing and normalises invisible marks out of the tool name', () => {
+    const base = withMomentAndProject(createInitialState('d1'));
+    const event: SanitizedEvent = { id: 'e1', type: 'window:changed', ts: '2026-01-01T10:05:00.000Z', payload: {}, sanitized: true };
+    const finder: KernelState = { ...base, moment: { ...base.moment!, processName: 'Finder' } };
+    expect(entityExtract(finder, event).effects).toEqual([]);
+    const marked: KernelState = { ...base, moment: { ...base.moment!, processName: '\u200EWhatsApp ' } };
+    expect((entityExtract(marked, event).effects[0] as any).event.payload.object).toBe('WhatsApp');
+    expect(normaliseProcessName('\uFEFFCafe\u0301\u200F')).toBe('Caf\u00E9');
   });
 
   // `calendar:active` person extraction returned 2026-08-14, but ONLY in the shape

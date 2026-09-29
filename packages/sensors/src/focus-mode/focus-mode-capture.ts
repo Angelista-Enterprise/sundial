@@ -15,8 +15,8 @@ const STALE_MS = 5000;
 /**
  * Reads the sidecar the launcher itself writes (FocusModeCapture.swift,
  * embedded — not a separate helper binary). `assertionsReadable: false`
- * means Full Disk Access isn't granted to the terminal that ran
- * `gnomon start` — see .claude/CLAUDE.md's TCC section.
+ * means Full Disk Access isn't granted to Sundial (or, for a --no-app install,
+ * to what started the launcher) — see .claude/CLAUDE.md's TCC section.
  */
 export function readFocusModeSidecar(): FocusModeSnapshot | null {
   const sidecarPath = getFocusInfoJsonPath();

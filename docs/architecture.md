@@ -267,5 +267,6 @@ The main tables:
 
 Other tables hold projects, organizations, reflections (`knowledge_entries`),
 commitments, ask threads, the notice gate's decisions, and forecasts. The
-`retentionPrune` rule deletes signals older than `retentionDays` (default 180)
-and screen text older than `ocr.retentionDays` (default 14).
+`retentionPrune` rule deletes signals older than `retentionDays` (default 180),
+screen text older than `ocr.retentionDays` (default 14), and heard speech older
+than `audio.retentionDays` (default 14).

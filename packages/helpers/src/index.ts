@@ -11,5 +11,4 @@ export * from './redact/redact.js';
 export * from './redact/redact-url.js';
 export * from './redact/redact-policy.js';
 export * from './redact/redaction-tier.js';
-export * from './redact/redaction-telemetry.js';
 export * from './window-classification.js';

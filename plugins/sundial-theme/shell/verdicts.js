@@ -9,6 +9,7 @@
 // notice card and the shelf offered it; every other surface had two taps and
 // so could not say the one thing the gate can act on.
 import { el } from './surfaces.js'
+import { whenVisible } from './read.js'
 
 export const VERDICT_LABELS = { useful: 'Useful', 'not-now': 'Not now', wrong: 'Wrong' }
 /** The word a settled line shows. */
@@ -51,4 +52,24 @@ export function verdictActs(artifactKind, artifactId, { onSettled = null, words 
     )
   }
   return wrap
+}
+
+/** Notice keys already reported seen from this page. */
+const seenKeys = new Set()
+
+/**
+ * Report a notice line seen: the first time `node` is in view while the tab is
+ * visible, once per key per page. Returns `node`, so a row can be wrapped where
+ * it is built. What counts as seen is deliberately plain: on screen, not read.
+ */
+export function markSeen(node, noticeKey, surface) {
+  if (!noticeKey || seenKeys.has(noticeKey)) return node
+  const send = () => {
+    if (seenKeys.has(noticeKey)) return
+    if (document.visibilityState === 'hidden') return void document.addEventListener('visibilitychange', send, { once: true })
+    seenKeys.add(noticeKey)
+    fetch('/gnomon/api/feedback', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ artifactKind: 'notice', artifactId: noticeKey, seen: true, surface }) }).catch(() => seenKeys.delete(noticeKey))
+  }
+  whenVisible(node, send)
+  return node
 }

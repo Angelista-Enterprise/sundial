@@ -54,6 +54,8 @@
         <!-- The foot: the gnomon, Find, the day ruler, and the page's few tools. The only chrome. -->
         <div class="board-foot" id="foot">
           <button type="button" class="mascot" id="mascot" data-mood="idle" title="Gnomon — back to the conversation" aria-label="Gnomon: back to the conversation"></button>
+          <!-- The session cookie ran out (30 days): nothing on the page can read until the owner signs in again. -->
+          <span class="foot-out" id="signed-out" role="alert" hidden>Signed out — run <code>sundial open</code></span>
           <button type="button" class="board-act" id="summon-find" title="Find anything by name (/ or ⌘K)">Find <span class="summon-key">/</span></button>
           <!-- WHEN the whole board is looking at. The presets set a span; the
                ruler beside them sets a single day. Both write the same record,

@@ -3,14 +3,12 @@ import type { Effect, Rule } from '@sundial/kernel/types.js';
 
 interface ProjectSwitchedPayload {
   kind?: string;
+  fromProjectRoot?: string;
+  toProjectRoot?: string;
   fromProjectName?: string;
   toProjectName?: string;
   fromBranch?: string;
   toBranch?: string;
-}
-
-interface WindowChangedPayload {
-  processName?: string;
 }
 
 /**
@@ -29,6 +27,14 @@ interface WindowChangedPayload {
  * `momentClose` itself when that moment was opened) to detect a
  * project change across the moment boundary. Once `momentClose` has run for
  * this same event, `state.moment` is already the newly reopened one.
+ *
+ * The switch is the closing moment's project against the last project a
+ * moment closed on (`lastMomentProject`, which a project-less moment such as
+ * a browser tab leaves alone) — never against the sticky
+ * `state.project.current`. Against the pointer, every switch on 2026-09-23
+ * went "to" the one project it held, which was never a "from", so a return
+ * could not be seen. Both paths key a project by its id (its root), so a
+ * branch flip reads as a switch within one project, not a third project.
  */
 export const contextSwitch: Rule = (state, event) => {
   if (event.type === 'project:switched') {
@@ -46,8 +52,10 @@ export const contextSwitch: Rule = (state, event) => {
             ts: event.ts,
             payload: {
               timestamp: event.ts,
-              fromProject: `${payload.fromProjectName ?? 'unknown'}@${payload.fromBranch ?? 'unknown'}`,
-              toProject: `${payload.toProjectName ?? 'unknown'}@${payload.toBranch ?? 'unknown'}`,
+              fromProject: payload.fromProjectRoot ?? payload.fromProjectName ?? 'unknown',
+              toProject: payload.toProjectRoot ?? payload.toProjectName ?? 'unknown',
+              fromBranch: payload.fromBranch ?? 'unknown',
+              toBranch: payload.toBranch ?? 'unknown',
               fromProcess: state.lifeEvent.lastMomentProcess ?? 'unknown',
               toProcess: state.lifeEvent.lastMomentProcess ?? 'unknown',
             },
@@ -60,11 +68,10 @@ export const contextSwitch: Rule = (state, event) => {
   if (event.type !== 'window:changed') return { state, effects: [] };
 
   const closingMoment = state.moment;
-  const currentProjectId = state.project.current?.id ?? null;
-  const newProcessName = typeof (event.payload as WindowChangedPayload).processName === 'string' ? (event.payload as WindowChangedPayload).processName! : 'unknown';
+  const previousProjectId = state.lifeEvent.lastMomentProject;
 
   const effects: Effect[] = [];
-  if (closingMoment && closingMoment.projectId && currentProjectId && closingMoment.projectId !== currentProjectId) {
+  if (closingMoment && closingMoment.projectId && previousProjectId && closingMoment.projectId !== previousProjectId) {
     effects.push({
       type: 'EmitEvent',
       event: {
@@ -73,10 +80,10 @@ export const contextSwitch: Rule = (state, event) => {
         ts: event.ts,
         payload: {
           timestamp: event.ts,
-          fromProject: closingMoment.projectId,
-          toProject: currentProjectId,
-          fromProcess: closingMoment.processName,
-          toProcess: newProcessName,
+          fromProject: previousProjectId,
+          toProject: closingMoment.projectId,
+          fromProcess: state.lifeEvent.lastMomentProcess ?? 'unknown',
+          toProcess: closingMoment.processName,
         },
       },
     });
@@ -84,7 +91,7 @@ export const contextSwitch: Rule = (state, event) => {
 
   return {
     state: closingMoment
-      ? { ...state, lifeEvent: { ...state.lifeEvent, lastMomentProject: closingMoment.projectId, lastMomentProcess: closingMoment.processName } }
+      ? { ...state, lifeEvent: { ...state.lifeEvent, lastMomentProject: closingMoment.projectId ?? previousProjectId, lastMomentProcess: closingMoment.processName } }
       : state,
     effects,
   };

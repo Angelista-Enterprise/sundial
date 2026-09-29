@@ -36,6 +36,8 @@ check 403 -H 'Host: evil.example' $B/gnomon/today
 TOK=$(grep -o "$B/?token=[A-Za-z0-9_-]*" $SUNDIAL_HOME/logs/sundial.log | tail -1)
 check 303 -c $C "$TOK"
 check 200 -b $C $B/
+# A 200 alone passes when dsh's own SPA answers `/` (a dsh upgrade reclaiming the fallback seat); Sundial's page carries its title.
+if curl -s -b $C $B/ | grep -q '<title>Sundial</title>'; then echo "  ok   / is Sundial's page"; else echo "  FAIL / is not Sundial's page"; fail=1; fi
 check 200 -b $C $B/setup
 check 200 -b $C $B/gnomon/setup
 check 200 -b $C $B/gnomon/today

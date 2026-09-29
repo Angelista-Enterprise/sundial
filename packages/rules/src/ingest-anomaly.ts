@@ -1,3 +1,4 @@
+import { textKey } from '@sundial/helpers/derive-id.js';
 import { isRedactedPlaceholder } from '@sundial/helpers/redact/redact-policy.js';
 import type { JudgementResultPayload, KernelState, Rule } from '@sundial/kernel/types.js';
 import { THRESHOLD_MIN_N } from './judgement-track.js';
@@ -16,15 +17,17 @@ const MAX_MARKED = 200;
  */
 export const INGEST_ANOMALY_DEFAULT_THRESHOLD = 0.7;
 
-/** The texts the judge marked, as a set the builders can filter with. */
-export const isMarked = (state: KernelState, text: string): boolean => Boolean(state.ingestAnomaly?.marked?.[text]);
+/** The texts the judge marked, as a set the builders can filter with. Both rings hold `textKey`s, never the text (Q9). */
+export const isMarked = (state: KernelState, text: string): boolean => Boolean(state.ingestAnomaly?.marked?.[textKey(text)]);
 
 function ask(state: KernelState, text: string, source: IngestAnomalySource): ReturnType<Rule> {
   const slice = state.ingestAnomaly ?? { seen: [], marked: {} };
-  if (text.trim() === '' || isRedactedPlaceholder(text) || slice.seen.includes(text)) return { state, effects: [] };
+  if (text.trim() === '' || isRedactedPlaceholder(text)) return { state, effects: [] };
+  const key = textKey(text);
+  if (slice.seen.includes(key)) return { state, effects: [] };
   const built = ingestAnomaly.build({ text, source });
   return {
-    state: { ...state, ingestAnomaly: { ...slice, seen: [...slice.seen, text].slice(-MAX_SEEN) } },
+    state: { ...state, ingestAnomaly: { ...slice, seen: [...slice.seen, key].slice(-MAX_SEEN) } },
     effects: [{ type: 'Judge', purpose: 'classify', questionSetId: ingestAnomaly.id, momentId: null, delayMs: 0, state: built.state, questions: built.questions, metadata: { text, source } }],
   };
 }
@@ -55,7 +58,8 @@ export const ingestAnomalyCheck: Rule = (state, event) => {
   const threshold = record && record.n >= THRESHOLD_MIN_N ? record.threshold : INGEST_ANOMALY_DEFAULT_THRESHOLD;
   if (p < threshold) return { state, effects: [] };
   const slice = state.ingestAnomaly ?? { seen: [], marked: {} };
-  const entries = Object.entries(slice.marked).filter(([k]) => k !== text);
-  entries.push([text, { p, ts: event.ts }]);
+  const key = textKey(text);
+  const entries = Object.entries(slice.marked).filter(([k]) => k !== key);
+  entries.push([key, { p, ts: event.ts }]);
   return { state: { ...state, ingestAnomaly: { ...slice, marked: Object.fromEntries(entries.slice(-MAX_MARKED)) } }, effects: [] };
 };

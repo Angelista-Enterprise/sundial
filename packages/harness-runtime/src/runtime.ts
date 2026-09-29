@@ -25,11 +25,12 @@
  */
 import { momentEmbedText, momentModelTag } from '@sundial/helpers/moment-embed-text.js';
 import { getSundialHome } from '@sundial/helpers/config.js';
+import { localDate } from '@sundial/helpers/local-day.js'; // lane Q
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { createEventId, sanitizeAtIngestWithAudit, type Event } from '@sundial/helpers/index.js';
-import { performAttachTranscript } from './attach-transcript.js';
+import { captionsFor, performAttachTranscript, transcriptFor } from './attach-transcript.js';
 import { loadSundialConfig, canonicalProjectName, type ResolvedSundialConfig } from '@sundial/helpers/sundial-config.js';
 import { applyPrivacyConfig } from '@sundial/helpers/privacy-config.js';
 import {
@@ -45,6 +46,9 @@ import {
   getSignalsInRange,
   updateGateDecisionFeatures,
   loadAliasNames,
+  getCurrentFactsOfKind, // lane Q
+  getAllSignalsInRange, // lane Q
+  trimAuditBodies, // lane Q
   insertEmbedding,
   replaceEmbedding,
   insertEntityFact,
@@ -54,6 +58,7 @@ import {
   getFactsForRefutation,
   getFactsForBeliefAudit,
   getWorldForHygiene,
+  getCurrentFactIdsLastMarkedWrong,
   getMomentCountsByProjectAndProcess,
   getAllEntities,
   insertPrediction,
@@ -66,7 +71,10 @@ import {
   getOldestUnharvestedOwnerAsk,
   insertMoment,
   insertSignal,
-  getEffectJournalStatus,
+  signalExists,
+  getEffectJournalEntry,
+  effectCompletedElsewhere,
+  restartShiftedEffect,
   type EffectJournalStatus,
   markEffectStarted,
   markEffectCompleted,
@@ -88,6 +96,11 @@ import {
 } from '@sundial/db/index.js';
 import { NO_DIAGNOSIS, withPersona } from '@sundial/kernel/persona.js';
 import { auditIdOf, BudgetExhaustedError, isLlmConfigured, LlmHttpError, runAuditedJudgement, runAuditedLlmCall, runToolLoop, systemOneBackend } from '@sundial/llm/index.js';
+// lane H
+import { setLlmOutcomeListener, type LlmOutcome } from '@sundial/llm/index.js';
+import { classifyLlmError } from '@sundial/helpers/llm-error-class.js';
+import { localDate as localDateOf } from '@sundial/helpers/local-day.js';
+import { backupDaily } from './backup.js';
 import { assembleJournalMarkdown } from '@sundial/kernel/daily-journal-prompt.js';
 import { expandHomePath } from './sensor-runtime.js';
 import { benchPacking, PACK_SIZE, rejudgeMoments, type PackBench, type RejudgeProgress } from './rejudge.js';
@@ -96,16 +109,22 @@ import { hygieneContext, planHygiene } from '@sundial/rules/world-hygiene.js';
 import { questionId } from '@sundial/rules/questions/index.js';
 import { QUESTION_SETS } from '@sundial/rules/questions/registry.js';
 import { THRESHOLD_MIN_N } from '@sundial/rules/judgement-track.js';
+import { DRIFT_TYPES, foldDriftRows } from '@sundial/rules/drift-track.js';
+import { adoptHeardThreads } from '@sundial/rules/promise-track.js'; // lane Q
+import { oneValueRepair } from '@sundial/rules/contradiction-check.js'; // lane Q
+import { EMPTY_DRIFT, MAX_DRIFT_DAYS } from '@sundial/kernel/drift.js';
 import { actionLevelOf, carriedOutOf, CLASSIFY_ACTION_QUESTIONS, classifyAction, VERIFY_ACTION_QUESTIONS, verifyAction, type ActionLevel } from '@sundial/rules/questions/classify-action.js';
 import { MAX_GOAL_SLOTS, MAX_PROMISE_SLOTS } from '@sundial/rules/questions/moment-fanout.js';
 import { repeatsRecent } from '@sundial/kernel/reflection-novelty.js';
 import { computeEmbedding } from '@sundial/memory/index.js';
 import { parseCompanionInsight } from '@sundial/rules/apply-llm-result.js';
 import { MAX_EXTRACTED_FACTS_PER_PASS, parseExtractedFactCandidates } from '@sundial/rules/nightly-fact-extract.js';
+import { deriveId } from '@sundial/helpers/derive-id.js';
+import { meetingPromiseMessages, parseMeetingPromises } from '@sundial/rules/promise-extract.js';
 import { ASK_HARVEST_DRAINED, ASK_HARVEST_DUE } from '@sundial/rules/ask-harvest.js';
 import { auditFact } from '@sundial/rules/questions/audit-fact.js';
 import { alignAlias, type AlignAliasInput } from '@sundial/rules/questions/align-alias.js';
-import { projectEntityId } from '@sundial/rules/entity-extract.js';
+import { normaliseProcessName, projectEntityId } from '@sundial/rules/entity-extract.js';
 import { rebuildAskClassGain } from '@sundial/rules/owner-ask.js';
 import { TICKET_HORIZON_DAYS, TICKET_SOURCE_TYPES, ticketTrack } from '@sundial/rules/ticket-track.js';
 import { slugifyEntityName } from '@sundial/rules/entity-extract.js';
@@ -114,6 +133,7 @@ import {
   conversationExtractionInstructions,
   formatTranscript,
   type ConversationSource,
+  promisesInTurns,
 } from '@sundial/rules/conversation-extract.js';
 import { redactWithPolicy } from '@sundial/helpers/redact/redact-policy.js';
 import {
@@ -125,6 +145,7 @@ import {
   gnomonToolDefinitions,
   createInitialState,
   hydrateSnapshot,
+  unknownSnapshotKeys,
   loadLatestSnapshot,
   parseJournalResult,
   persistDailyJournal,
@@ -141,6 +162,7 @@ import {
   type ResolveAliasesEffect,
   type RunFactExtractionEffect,
   type RunConversationExtractionEffect,
+  type RunMeetingPromisesEffect,
   type RunRefutationEffect,
   type RunBeliefAuditEffect,
   type RunWorldHygieneEffect,
@@ -171,6 +193,51 @@ const ACTION_ESCALATE_DEFAULT_THRESHOLD = 0.7;
 const ACTION_VERIFY_DEFAULT_THRESHOLD = 0.5;
 /** J2.3: judgements in flight during a belief-audit pass. */
 const BELIEF_AUDIT_POOL = 8;
+
+/**
+ * lane Q (Q9): the snapshot is rewritten every minute, so its size is a write
+ * cost paid all day. At 1.9 MB, 68% of it was one ring of whole window titles.
+ * Past 1 MB boot says so, with the three largest slices (after Q9 it is ~620 KB).
+ */
+export const SNAPSHOT_WARN_BYTES = 1024 * 1024;
+export function snapshotSizeWarning(state: object): string | null {
+  const total = Buffer.byteLength(JSON.stringify(state));
+  if (total <= SNAPSHOT_WARN_BYTES) return null;
+  const kb = (n: number) => Math.round(n / 1024);
+  const top = Object.entries(state)
+    .map(([k, v]) => [k, Buffer.byteLength(JSON.stringify(v) ?? '')] as const)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3);
+  return `[sundial-kernel] WARNING: the kernel snapshot is ${kb(total)} KB, over ${kb(SNAPSHOT_WARN_BYTES)} KB, and it is rewritten every minute. Largest: ${top.map(([k, n]) => `${k} ${kb(n)} KB`).join(', ')}.`;
+}
+
+/**
+ * lane Q (Q7): the nightly audits judge what changed, not everything again.
+ * Before this, audit-fact judged 257–259 facts a night and retracted none;
+ * align-alias judged the same 142 pairs every night. A fact is re-judged when
+ * it was never judged, when its last judgement is a month old, or when its
+ * confidence has moved 10 points since; a pair when its names or known-as
+ * changed (the pair key), or a month has passed.
+ */
+export const REJUDGE_AFTER_DAYS = 30;
+const REJUDGE_CONFIDENCE_MOVE = 10;
+export function needsAudit(confidence: number, last: { at: string; confidence?: unknown } | undefined, nowMs: number): boolean {
+  if (!last) return true;
+  if (nowMs - Date.parse(last.at) >= REJUDGE_AFTER_DAYS * 86_400_000) return true;
+  return typeof last.confidence === 'number' && Math.abs(confidence - last.confidence) >= REJUDGE_CONFIDENCE_MOVE;
+}
+export const aliasPairKey = (p: AlignAliasInput): string => [p.kind, p.nameA, p.nameB, p.alsoKnownAsA ?? '', p.alsoKnownAsB ?? ''].join('\u0000');
+/** The newest judgement of one question set in the window, by a key its metadata carries. */
+async function lastJudged(questionSetId: string, keyOf: (metadata: Record<string, unknown>) => unknown, nowMs: number): Promise<Map<string, { at: string } & Record<string, unknown>>> {
+  const rows = await getAllSignalsInRange(new Date(nowMs - REJUDGE_AFTER_DAYS * 86_400_000).toISOString(), new Date(nowMs + 60_000).toISOString(), ['judgement:result'], `"questionSetId":"${questionSetId}"`);
+  const out = new Map<string, { at: string } & Record<string, unknown>>();
+  for (const row of rows) {
+    const metadata = (row.data as { metadata?: Record<string, unknown> }).metadata ?? {};
+    const key = keyOf(metadata);
+    if (typeof key === 'string') out.set(key, { ...metadata, at: row.capturedAt });
+  }
+  return out;
+}
 const RETRY_BASE_MS = 1000;
 const RETRY_MAX_MS = 30_000;
 
@@ -244,8 +311,8 @@ const SPOKEN_EVIDENCE_CHARS = 240;
  * Why this exists at all: ambient hearing reached `moments` and stopped there.
  * Nothing read `spokenExcerpt`, so the single richest source of owner facts —
  * the owner's own words, and their colleagues' — fed neither the knowledge
- * graph nor retrieval, exactly the crossing `almanac/enhancements/conversation-memory`
- * describes as missing. Speech enters here rather than through a new rule
+ * graph nor retrieval, exactly the crossing the retired enhancement page
+ * conversation-memory described as missing (now almanac/concepts/memory-tiers). Speech enters here rather than through a new rule
  * because this pass ALREADY reads the day's rollups and already funnels its
  * output through the ordinary `entity:fact-candidate` gate.
  *
@@ -343,6 +410,8 @@ export function describeEffect(effect: Effect): string {
       return `Judge ${effect.questionSetId} purpose=${effect.purpose}${effect.momentId ? ` moment=${effect.momentId}` : ''}`;
     case 'AttachTranscript':
       return `AttachTranscript ${effect.askId} "${effect.title}"`;
+    case 'RunMeetingPromises':
+      return `RunMeetingPromises "${effect.title}"`;
     case 'RecordGateFeatures':
       return `RecordGateFeatures ${effect.noticeKey}`;
     case 'UpdateMomentData':
@@ -378,13 +447,13 @@ export function describeEffect(effect: Effect): string {
     case 'DecayScores':
       return `DecayScores factor=${effect.factor}`;
     case 'ReinforceFact':
-      return `ReinforceFact ${effect.factId} +${effect.delta}`;
+      return `ReinforceFact ${effect.factId} +${effect.delta}${effect.side === 'beta' ? ' against' : ''}`;
     case 'DecayFactConfidence':
       return `DecayFactConfidence factor=${effect.factor}`;
     case 'Notify':
       return `Notify ${effect.channel}`;
     case 'DeleteRows':
-      return `DeleteRows olderThan=${effect.olderThan}${effect.signalTypes ? ` types=${effect.signalTypes.join(',')}` : ''}`;
+      return `DeleteRows olderThan=${effect.olderThan}${effect.signalTypes ? ` types=${effect.signalTypes.join(',')}` : ''}${effect.trim ? ` trim=${effect.trim}` : ''}`;
     case 'RecordPrediction':
       return `RecordPrediction ${effect.kind}/${effect.forecaster} p=${effect.priorProb.toFixed(2)} outcome=${effect.outcome}`;
     case 'RecordGateDecision':
@@ -402,7 +471,17 @@ export function describeEffect(effect: Effect): string {
   }
 }
 
-/** Journal-vs-guarantee replay policy. Ported verbatim (see the daemon's two-phase journal rationale). */
+/** A journal row written for another rule's effect at the same (event, index): hardening S6. */
+export function journalShifted(entry: { ruleName: string | null } | null, ruleName: string): boolean {
+  return entry !== null && entry.ruleName !== null && entry.ruleName !== ruleName;
+}
+
+/**
+ * Journal-vs-guarantee replay policy. Ported verbatim (see the daemon's two-phase journal rationale).
+ * The journal names an effect by its position in the fold's output, so new rules shift it for a
+ * replayed tail: deploy only through a clean restart (docs/deploy.md). `journalShifted` catches the
+ * shift when the row names another rule.
+ */
 export function replayDecision(status: EffectJournalStatus | null, guarantee: DeliveryGuarantee): 'run' | 'skip' | 'abandon' {
   if (status === null) return 'run';
   if (status === 'completed') return 'skip';
@@ -559,6 +638,44 @@ export interface BootResult {
   tailLength: number;
 }
 
+/**
+ * The entity→path map and the evidence behind every `project usesTool X`: a
+ * project entity is keyed by the slug of the row's name, so every `projects`
+ * row whose name slugs to the entity is one of its paths, and the written
+ * moments under those paths are the sessions the belief can point to. Read
+ * once per pass; two GROUP BYs, not one query per fact. Tool names compare
+ * normalised, so a name carrying a U+200E counts as the same app.
+ */
+async function readToolSessions(): Promise<(entityId: string, tool: string) => { sessionsInProject: number; sessionsWithThisToolInProject: number; sessionsWithThisToolAnywhere: number }> {
+  const [projects, counts] = await Promise.all([getAllProjects(), getMomentCountsByProjectAndProcess()]);
+  const pathsOf = new Map<string, Set<string>>();
+  for (const project of projects) {
+    const key = projectEntityId(project.name);
+    pathsOf.set(key, (pathsOf.get(key) ?? new Set()).add(project.id));
+  }
+  return (entityId, tool) => {
+    const paths = pathsOf.get(entityId) ?? new Set<string>();
+    const wanted = normaliseProcessName(tool);
+    let sessionsInProject = 0;
+    let sessionsWithThisToolInProject = 0;
+    let sessionsWithThisToolAnywhere = 0;
+    for (const row of counts) {
+      const inProject = paths.has(row.projectId);
+      const thisTool = normaliseProcessName(row.processName) === wanted;
+      if (inProject) sessionsInProject += row.count;
+      if (inProject && thisTool) sessionsWithThisToolInProject += row.count;
+      if (thisTool) sessionsWithThisToolAnywhere += row.count;
+    }
+    return { sessionsInProject, sessionsWithThisToolInProject, sessionsWithThisToolAnywhere };
+  };
+}
+
+/** M1 — the hygiene pass needs only the in-project count. */
+async function readToolSessionsInProject(): Promise<(entityId: string, tool: string) => number> {
+  const sessions = await readToolSessions();
+  return (entityId, tool) => sessions(entityId, tool).sessionsWithThisToolInProject;
+}
+
 export class KernelRuntime {
   private state: KernelState | null = null;
   private lastSignalId: string | null = null;
@@ -586,6 +703,46 @@ export class KernelRuntime {
     this.injectedConfig = options.config;
     this.conversationSource = options.conversationSource;
     this.judge = options.judge ?? runAuditedJudgement;
+    // lane H (H3): an auth refusal is a fact the fold counts; network trouble never is.
+    setLlmOutcomeListener((outcome) => this.noteLlmOutcome(outcome));
+  }
+
+  // lane H (H3)
+  /**
+   * Every 401/403 becomes `llm:auth-failed`, and the first success after one
+   * `llm:auth-ok`, so `sensorHealth` can count refusals in a row per provider.
+   * Fire-and-forget through the lane: a call can finish inside an effect, and
+   * awaiting the lane from there would wait on itself.
+   */
+  private noteLlmOutcome(outcome: LlmOutcome): void {
+    if (!this.state || this.stopped) return;
+    const auth = outcome.statusCode === 401 || outcome.statusCode === 403;
+    if (!outcome.ok && auth) void this.retryIngestEvent(toDaemonEvent('llm:auth-failed', { provider: outcome.provider, label: outcome.label, statusCode: outcome.statusCode }));
+    else if (outcome.ok && this.state.sensorHealth?.llmAuth?.[outcome.provider]) void this.retryIngestEvent(toDaemonEvent('llm:auth-ok', { provider: outcome.provider }));
+  }
+
+  /** lane H (H6): `VACUUM INTO` the day's copy in a child process; a failure is a log line, never a failed effect. */
+  private async runDailyBackup(): Promise<void> {
+    if (this.stopped) return;
+    try {
+      const result = await backupDaily({ date: localDateOf(new Date().toISOString(), this.state?.config.timezone ?? 'UTC') });
+      if (result.skipped === null) console.log(`[sundial-kernel] daily backup ${result.file} in ${result.ms} ms${result.removed.length ? `, removed ${result.removed.length} older` : ''}`);
+    } catch (error) {
+      console.warn(`[sundial-kernel] daily backup failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /** Purposes whose exhausted budget was already recorded today (`purpose:day`), so a busy day logs it once. */
+  private readonly budgetNoted = new Set<string>();
+
+  /** lane H (H3): a budget that ran out, once per purpose per local day, for Settings. Never said. */
+  private noteBudgetExhausted(purpose: string): void {
+    if (!this.state) return;
+    const day = localDateOf(new Date().toISOString(), this.state.config.timezone);
+    const key = `${purpose}:${day}`;
+    if (this.budgetNoted.has(key) || this.state.sensorHealth?.budgetExhausted?.[purpose] === day) return;
+    this.budgetNoted.add(key);
+    void this.retryIngestEvent(toDaemonEvent('llm:budget-exhausted', { purpose }));
   }
 
   // -------------------------------------------------------------------------
@@ -607,6 +764,10 @@ export class KernelRuntime {
       this.state = hydrateSnapshot(this.deviceId, snapshot.state);
       this.lastSignalId = snapshot.logOffset || null;
       console.log(`[sundial-kernel] loaded snapshot (offset ${this.lastSignalId ?? '<none>'})`);
+      const unknown = unknownSnapshotKeys(snapshot.state);
+      if (unknown.length) console.warn(`[sundial-kernel] snapshot has top-level key(s) no default knows (removed or renamed?): ${unknown.join(', ')}`);
+      const oversize = snapshotSizeWarning(this.state); // lane Q
+      if (oversize) console.warn(oversize);
     } else {
       this.state = createInitialState(this.deviceId);
       this.lastSignalId = null;
@@ -618,6 +779,8 @@ export class KernelRuntime {
       config: {
         retentionDays: gnomonConfig.retentionDays,
         screenTextRetentionDays: gnomonConfig.ocr.retentionDays,
+        transcriptRetentionDays: gnomonConfig.audio.retentionDays,
+        autoHearMeetings: gnomonConfig.audio.autoMeetings,
         decayFactor: gnomonConfig.decayFactor,
         projectRules: gnomonConfig.projectRules,
         sharedPlaces: gnomonConfig.sharedPlaces,
@@ -631,6 +794,8 @@ export class KernelRuntime {
         experiments: gnomonConfig.experiments,
 
         vault: gnomonConfig.vault,
+        // lane E (#12)
+        jobs: gnomonConfig.jobs,
       },
     };
 
@@ -673,6 +838,9 @@ export class KernelRuntime {
     if (quietedClasses.length > 0) console.log(`[sundial-kernel] rehydrated the owner's verdict on ${quietedClasses.length} question kind(s): ${quietedClasses.join(', ')}`);
 
     const snapshotOffset = this.lastSignalId;
+    // lane C: a snapshot from before `driftTrack` holds no weeks, and a trend needs seven of them.
+    // No days, not no slice: `createInitialState` gives `drift` a default now (F1).
+    const needsDrift = Object.keys(this.state.drift?.days ?? {}).length === 0;
     const tail = await replayTail(this.lastSignalId);
     if (tail.length > 0) {
       console.log(`[sundial-kernel] replaying ${tail.length} signal(s) since last snapshot...`);
@@ -684,6 +852,9 @@ export class KernelRuntime {
     // measured 2026-09-28): a snapshot from before `ticketTrack`, or from an older
     // version of it, would otherwise keep a stale index for up to 30 days.
     await this.rebuildTickets();
+    if (needsDrift) await this.rebuildDriftFromLog();
+    await this.adoptHeardThreads(); // lane Q
+    await this.oneProjectPerTask(); // lane Q
 
     console.log(`[sundial-kernel] kernel booted (device ${this.deviceId})`);
     return { snapshotOffset, tailLength: tail.length };
@@ -707,6 +878,59 @@ export class KernelRuntime {
     }
     this.state = { ...this.state, tickets: folded.tickets ?? {} };
     console.log(`[sundial-kernel] rebuilt ${Object.keys(this.state.tickets ?? {}).length} ticket thread(s) from the last ${TICKET_HORIZON_DAYS} days`);
+  }
+
+  /**
+   * lane Q (Q2): a promise heard before `promiseTrack` sat in `commitments.open`
+   * with no terms, where it could never become a promise. Moved once; the pure
+   * repair finds nothing on every later boot. Its row writes go through the
+   * executor like any effect, under a boot id of their own.
+   */
+  private async adoptHeardThreads(): Promise<void> {
+    if (!this.state) return;
+    const out = adoptHeardThreads(this.state);
+    if (out.moved === 0) return;
+    this.state = out.state;
+    await this.executeEffects(`boot:adopt-heard:${new Date().toISOString()}`, 'boot:repair', out.effects.map((effect) => ({ effect, ruleName: 'promiseTrack' })));
+    console.log(`[sundial-kernel] moved ${out.moved} heard promise(s) from the branch threads into the promise ledger (${out.state.commitments.promises.length} open promise(s) now)`);
+  }
+
+  /**
+   * lane Q (Q6): a task's `relatesToProject` became one-value. The facts filed
+   * while it was a set stay, but only the best-evidenced one per task stays
+   * current; the rest are superseded by it through the executor. Finds nothing
+   * to supersede on every later boot.
+   */
+  private async oneProjectPerTask(): Promise<void> {
+    if (!this.state) return;
+    const out = oneValueRepair(this.state, 'relatesToProject', await getCurrentFactsOfKind('task', 'relatesToProject'), new Date().toISOString());
+    this.state = out.state;
+    if (out.superseded === 0) return;
+    await this.executeEffects(`boot:one-project-per-task:${new Date().toISOString()}`, 'boot:repair', out.effects.map((effect) => ({ effect, ruleName: 'contradictionCheck' })));
+    console.log(`[sundial-kernel] superseded ${out.superseded} extra project fact(s) on ${out.entities} task(s): one project per task`);
+  }
+
+  /**
+   * lane C: `state.drift` folded from the log's last `MAX_DRIFT_DAYS`, once, for a
+   * snapshot that predates it. After this the snapshot carries it.
+   */
+  private async rebuildDriftFromLog(): Promise<void> {
+    if (!this.state) return;
+    const started = Date.now();
+    const to = new Date(Date.now() + 60_000).toISOString();
+    const from = new Date(Date.now() - (MAX_DRIFT_DAYS + 1) * 86_400_000).toISOString();
+    const types = DRIFT_TYPES.filter((t) => t !== 'clock:tick') as string[];
+    const PAGE = 5000;
+    let folded: KernelState = { ...this.state, drift: EMPTY_DRIFT };
+    let n = 0;
+    for (let offset = 0; ; offset += PAGE) {
+      const page = await getSignalsInRange(from, to, PAGE, types, offset);
+      folded = foldDriftRows(folded, page.map((row) => ({ id: row.id, type: `${row.signalType}:${row.eventType}`, ts: row.capturedAt, payload: row.data, sanitized: true }) as SanitizedEvent));
+      n += page.length;
+      if (page.length < PAGE) break;
+    }
+    this.state = { ...this.state, drift: folded.drift };
+    console.log(`[sundial-kernel] rebuilt ${Object.keys(this.state.drift?.days ?? {}).length} drift day(s) from ${n} signal(s) in ${Date.now() - started} ms`);
   }
 
   /** Append one signal through the full pipeline: sanitize → log → fold → effects. Serialized against every other event. */
@@ -864,7 +1088,24 @@ export class KernelRuntime {
     for (const [effectIndex, attributed] of effects.entries()) {
       const { effect, ruleName } = attributed;
 
-      const decision = replayDecision(await getEffectJournalStatus(eventId, effectIndex), effectDeliveryGuarantee(effect));
+      const guarantee = effectDeliveryGuarantee(effect);
+      const entry = await getEffectJournalEntry(eventId, effectIndex);
+      // The journal is keyed by (event, index). A deploy that changed which
+      // effects this event yields puts another rule's effect at this index, so
+      // the row's verdict is about a different effect. An at-least-once effect
+      // treats it as absent and runs; an at-most-once one keeps the old verdict,
+      // because skipping it is the safe error. Rows from before attribution
+      // (no rule name) cannot shift.
+      const shifted = journalShifted(entry, ruleName);
+      // Shifted, but this very effect already completed at another index of the same event: it moved, it did not go missing.
+      if (shifted && (await effectCompletedElsewhere(eventId, ruleName, describeEffect(effect)))) continue;
+      if (shifted) {
+        console.warn(
+          `[sundial-kernel] journal shift at ${eventId}#${effectIndex}: the row is ${entry?.ruleName}'s, the effect now is ${ruleName}'s (${describeEffect(effect)}). ` +
+            (guarantee === 'at-least-once' ? 'Running it as never attempted.' : `Keeping the row's verdict (${entry?.status}) for this at-most-once effect.`),
+        );
+      }
+      const decision = replayDecision(shifted && guarantee === 'at-least-once' ? null : (entry?.status ?? null), guarantee);
       if (decision === 'skip') continue;
       if (decision === 'abandon') {
         await markEffectIndeterminate(eventId, effectIndex);
@@ -875,7 +1116,9 @@ export class KernelRuntime {
         continue;
       }
 
-      await markEffectStarted(eventId, effectIndex, { ruleName, eventType, effectDetail: describeEffect(effect) });
+      const trigger = { ruleName, eventType, effectDetail: describeEffect(effect) };
+      if (shifted) await restartShiftedEffect(eventId, effectIndex, trigger);
+      else await markEffectStarted(eventId, effectIndex, trigger);
 
       // K0.5 — the journal learns to record a failure, and NOTHING ELSE
       // changes. The catch re-throws.
@@ -935,7 +1178,11 @@ export class KernelRuntime {
         // still records it, and the join simply finds no rows, which is the
         // truth about that hop.
         await markEffectEmitted(eventId, effectIndex, effect.event.id);
-        await this.ingestAndApply(effect.event);
+        // A crash after the child reached the log but before this effect was
+        // marked completed makes boot replay run it again. The child's row is
+        // already in the tail, and replay folds it in its own turn; logging it
+        // a second time would be a primary-key conflict that stops the boot.
+        if (!(await signalExists(effect.event.id))) await this.ingestAndApply(effect.event);
       } else if (effect.type === 'ScheduleLLM') {
         await this.dispatchScheduleLLM(effect);
       } else if (effect.type === 'Judge') {
@@ -965,14 +1212,20 @@ export class KernelRuntime {
         // proactive plugin subscribes) AND keeps the log line.
         console.log(`[sundial-kernel] notify(${effect.channel}):`, effect.payload);
         this.onNotify?.({ channel: effect.channel, payload: effect.payload });
+      } else if (effect.type === 'DeleteRows' && effect.trim === 'audit-bodies') {
+        // lane Q (Q10)
+        const trimmed = await trimAuditBodies(effect.olderThan);
+        console.log(`[sundial-kernel] retention prune: cleared the text of ${trimmed.llmBodiesCleared} llm_audit rows and deleted ${trimmed.effectsDeleted} completed applied_effects rows older than ${effect.olderThan}`);
       } else if (effect.type === 'DeleteRows' && Array.isArray(effect.signalTypes)) {
-        const deleted = await deleteSignalsOlderThan(effect.olderThan, effect.signalTypes);
-        console.log(`[sundial-kernel] retention prune (${effect.signalTypes.join(',')}): deleted ${deleted} signals older than ${effect.olderThan}`);
+        const deleted = await deleteSignalsOlderThan(effect.olderThan, effect.signalTypes, { apps: effect.apps, eventTypes: effect.eventTypes });
+        console.log(`[sundial-kernel] retention prune (${[...effect.signalTypes, ...(effect.eventTypes ?? [])].join(',')}${effect.apps ? ', sensitive apps' : ''}): deleted ${deleted} signals older than ${effect.olderThan}`);
       } else if (effect.type === 'DeleteRows') {
         const result = await deleteRowsOlderThan(effect.olderThan);
         console.log(
           `[sundial-kernel] retention prune: deleted ${result.signalsDeleted} signals, ${result.momentsDeleted} moments, ${result.embeddingsDeleted} orphaned embeddings, ${result.llmAuditDeleted} llm_audit rows older than ${effect.olderThan}`,
         );
+        // lane H (H6): the daily copy rides the daily prune, off the lane.
+        this.defer(() => void this.runDailyBackup(), 0);
         const backfill = await reembedStaleEmbeddings();
         if (backfill.reembedded > 0 || backfill.orphaned > 0) {
           console.log(
@@ -1019,6 +1272,8 @@ export class KernelRuntime {
         await this.dispatchResolveAliases(effect);
       } else if (effect.type === 'RunConversationExtraction') {
         await this.dispatchRunConversationExtraction(effect);
+      } else if (effect.type === 'RunMeetingPromises') {
+        await this.dispatchRunMeetingPromises(effect);
       } else if (effect.type === 'RunRefutation') {
         await this.dispatchRunRefutation(effect);
       } else if (effect.type === 'RunBeliefAudit') {
@@ -1038,11 +1293,11 @@ export class KernelRuntime {
       } else if (effect.type === 'DecayScores') {
         await Promise.all([decayMomentScores(effect.factor), decayKnowledgeScores(effect.factor)]);
       } else if (effect.type === 'ReinforceFact') {
-        await reinforceEntityFact(effect.factId, effect.delta);
+        await reinforceEntityFact(effect.factId, effect.delta, effect.side);
       } else if (effect.type === 'DecayFactConfidence') {
         await decayCurrentFactConfidence(effect.factor);
       } else if (effect.type === 'RecordGateDecision') {
-        // unsaid-room-gate-decision-persistence: the gate's verdict + arithmetic,
+        // The gate's verdict + arithmetic (almanac/architecture/rules/noticing-and-expectations),
         // written HERE (the executor) and never by the rule; the derived id +
         // onConflictDoNothing make boot replay offer the identical row.
         await insertGateDecision({
@@ -1079,6 +1334,11 @@ export class KernelRuntime {
           // K0.3 — the fair opponent, carried from the rule that knew it.
           baseProb: effect.baseProb,
         });
+      } else {
+        // Exhaustive: a new Effect variant with no branch here is a compile
+        // error, never a silent no-op the journal then stamps `completed`.
+        const unhandled: never = effect;
+        throw new Error(`performEffect: no branch for effect ${(unhandled as Effect).type}`);
       }
   }
 
@@ -1123,6 +1383,7 @@ export class KernelRuntime {
     const budget = this.state.budgets.byPurpose[effect.purpose];
     if (budget.callsToday >= this.effectiveDailyCaps[effect.purpose]) {
       console.warn(`[sundial-kernel] LLM budget exhausted for purpose=${effect.purpose} (${budget.callsToday}/${this.effectiveDailyCaps[effect.purpose]})`);
+      this.noteBudgetExhausted(effect.purpose); // lane H (H3)
       return;
     }
 
@@ -1150,6 +1411,7 @@ export class KernelRuntime {
     const cap = this.effectiveDailyCaps[effect.purpose];
     if (budget.callsToday >= cap) {
       console.warn(`[sundial-kernel] judgement budget exhausted for purpose=${effect.purpose} (${budget.callsToday}/${cap})`);
+      this.noteBudgetExhausted(effect.purpose); // lane H (H3)
       return;
     }
 
@@ -1265,8 +1527,8 @@ export class KernelRuntime {
         if (!opts.all) rows = rows.filter((r) => r.data.judgement === undefined);
         // J2.7: the goals open NOW, in the slot order the live close uses.
         const open = openGoals(this.state?.memory.factCursor ?? {}).slice(0, MAX_GOAL_SLOTS);
-        const promises = (this.state?.commitments.open ?? []).filter((c) => c.source === 'speech').slice(0, MAX_PROMISE_SLOTS);
-        const goals = { labels: open.map(goalLabel), ids: open.map((g) => g.entityId), promiseLabels: promises.map((c) => c.name), promiseIds: promises.map((c) => c.id) };
+        const promises = (this.state?.commitments.promises ?? []).slice(0, MAX_PROMISE_SLOTS);
+        const goals = { labels: open.map(goalLabel), ids: open.map((g) => g.entityId), promiseLabels: promises.map((c) => c.promise?.quote ?? c.name), promiseIds: promises.map((c) => c.id) };
         if (opts.bench) {
           // Spread across history, not the newest n: a bench on one afternoon is a bench on one kind of day.
           const step = Math.max(1, Math.floor(rows.length / opts.bench));
@@ -1307,20 +1569,20 @@ export class KernelRuntime {
       return { answers: result.answers, model: result.model };
     } catch (error) {
       console.warn(`[sundial-kernel] judgeNow failed (set=${options.questionSetId}):`, error instanceof Error ? error.message : error);
-      await this.retryIngestEvent(toDaemonEvent('llm:refunded', { purpose: options.purpose }));
+      await this.retryIngestEvent(toDaemonEvent('llm:refunded', { purpose: options.purpose, errorClass: classifyLlmError(error) }));
       return null;
     }
   }
 
   /**
-   * Jev first, `RETRY_MAX_ATTEMPTS` times, status-aware. Then the local
+   * Jev first, `RETRY_MAX_ATTEMPTS` times, status-aware. Then the text-model
    * fallback ONCE, and the board learns Jev is down (`degraded:
    * local-fallback`). If that fails too, the slot is refunded and the mark
    * says `off`: rules fall back to their pre-Jev paths. A Jev success clears
-   * the mark. `SUNDIAL_SYSTEMONE_BACKEND=local` starts on the fallback.
+   * the mark. `SUNDIAL_SYSTEMONE_BACKEND=text-model` (or the old `local`) starts on the fallback.
    */
   private async performJudgement(effect: JudgeEffect, attempt = 0, parentCallId: string | null = null): Promise<void> {
-    const backend = systemOneBackend() === 'local' || attempt >= RETRY_MAX_ATTEMPTS ? 'local' : 'jev';
+    const backend = systemOneBackend() === 'text-model' || attempt >= RETRY_MAX_ATTEMPTS ? 'text-model' : 'jev';
     let result: Awaited<ReturnType<typeof runAuditedJudgement>>;
     try {
       result = await this.judge({
@@ -1334,18 +1596,18 @@ export class KernelRuntime {
       });
     } catch (error) {
       const permanent = error instanceof LlmHttpError && error.status < 500 && error.status !== 429;
-      if (backend === 'local') {
-        console.error(`[sundial-kernel] judgement failed on the local fallback too (set=${effect.questionSetId}, momentId=${effect.momentId}):`, error);
+      if (backend === 'text-model') {
+        console.error(`[sundial-kernel] judgement failed on the text-model fallback too (set=${effect.questionSetId}, momentId=${effect.momentId}):`, error);
         await this.markDegraded('off', false);
         // The slot was spent on a call that answered nothing; give it back, as the text path does.
-        await this.retryIngestEvent(toDaemonEvent('llm:refunded', { purpose: effect.purpose }));
+        await this.retryIngestEvent(toDaemonEvent('llm:refunded', { purpose: effect.purpose, errorClass: classifyLlmError(error) }));
         // The consuming rule learns the question went unanswered, with the
         // context it sent, so what waited on the judge can fall back rather than hang.
-        await this.retryIngestEvent(toDaemonEvent('judgement:failed', { purpose: effect.purpose, questionSetId: effect.questionSetId, momentId: effect.momentId, ...(effect.metadata ? { metadata: effect.metadata } : {}) }));
+        await this.retryIngestEvent(toDaemonEvent('judgement:failed', { purpose: effect.purpose, questionSetId: effect.questionSetId, momentId: effect.momentId, errorClass: classifyLlmError(error), ...(effect.metadata ? { metadata: effect.metadata } : {}) }));
         return;
       }
       if (permanent || attempt + 1 >= RETRY_MAX_ATTEMPTS) {
-        console.warn(`[sundial-kernel] Jev failed ${permanent ? '(client error)' : `${attempt + 1} times`} (set=${effect.questionSetId}); switching this call to the local fallback:`, error instanceof Error ? error.message : error);
+        console.warn(`[sundial-kernel] Jev failed ${permanent ? '(client error)' : `${attempt + 1} times`} (set=${effect.questionSetId}); switching this call to the text-model fallback:`, error instanceof Error ? error.message : error);
         await this.markDegraded('local-fallback', false);
         this.defer(() => void this.performJudgement(effect, RETRY_MAX_ATTEMPTS, auditIdOf(error)), 0);
         return;
@@ -1355,7 +1617,7 @@ export class KernelRuntime {
       return;
     }
     if (backend === 'jev') await this.markDegraded('none', false);
-    else if (systemOneBackend() === 'local') await this.markDegraded('local-fallback', false);
+    else if (systemOneBackend() === 'text-model') await this.markDegraded('local-fallback', false);
 
     const payload: JudgementResultPayload = {
       purpose: effect.purpose,
@@ -1391,8 +1653,8 @@ export class KernelRuntime {
    */
   private async performWorldHygiene(effect: RunWorldHygieneEffect): Promise<void> {
     if (!this.state) return;
-    const { entities, facts } = await getWorldForHygiene();
-    const actions = planHygiene(entities, facts, hygieneContext(this.state));
+    const [{ entities, facts }, toolSessionsInProject, wrong] = await Promise.all([getWorldForHygiene(), readToolSessionsInProject(), getCurrentFactIdsLastMarkedWrong()]);
+    const actions = planHygiene(entities, facts, hygieneContext(this.state), { toolSessionsInProject, wrongFactIds: new Set(wrong), now: effect.ts });
     const retracts = actions.filter((a) => a.op === 'retract').length;
     console.log(`[sundial-kernel] world hygiene: ${retracts} retraction(s), ${actions.length - retracts} merge(s) over ${facts.length} fact(s)`);
     if (actions.length === 0) return;
@@ -1400,35 +1662,23 @@ export class KernelRuntime {
   }
 
   private async performBeliefAudit(effect: RunBeliefAuditEffect): Promise<void> {
-    const facts = await getFactsForBeliefAudit();
-    if (facts.length === 0) return;
+    const live = await getFactsForBeliefAudit();
+    if (live.length === 0) return;
     const now = Date.parse(effect.ts);
+    const judged = await lastJudged(auditFact.id, (m) => m.factId, now);
+    const facts = live.filter((f) => needsAudit(f.confidence, judged.get(f.id), now));
+    if (facts.length === 0) {
+      console.log(`[sundial-kernel] belief audit: 0 of ${live.length} live facts changed since last judged`);
+      return;
+    }
     // The entity→path map and the evidence behind every `project usesTool X`:
     // a project entity is keyed by the slug of the row's name, so every
     // `projects` row whose name slugs to the entity is one of its paths, and
     // the written moments under those paths are the sessions the belief can
     // point to. Read once per pass; two GROUP BYs, not one query per fact.
-    const [projects, counts] = await Promise.all([getAllProjects(), getMomentCountsByProjectAndProcess()]);
-    const pathsOf = new Map<string, Set<string>>();
-    for (const project of projects) {
-      const key = projectEntityId(project.name);
-      pathsOf.set(key, (pathsOf.get(key) ?? new Set()).add(project.id));
-    }
-    const evidenceFor = (fact: (typeof facts)[number]) => {
-      if (fact.entityKind !== 'project' || fact.predicate !== 'usesTool') return undefined;
-      const paths = pathsOf.get(fact.entityId) ?? new Set<string>();
-      let sessionsInProject = 0;
-      let sessionsWithThisToolInProject = 0;
-      let sessionsWithThisToolAnywhere = 0;
-      for (const row of counts) {
-        const inProject = paths.has(row.projectId);
-        const thisTool = row.processName === fact.object;
-        if (inProject) sessionsInProject += row.count;
-        if (inProject && thisTool) sessionsWithThisToolInProject += row.count;
-        if (thisTool) sessionsWithThisToolAnywhere += row.count;
-      }
-      return { sessionsInProject, sessionsWithThisToolInProject, sessionsWithThisToolAnywhere };
-    };
+    const toolSessions = await readToolSessions();
+    const evidenceFor = (fact: (typeof facts)[number]) =>
+      fact.entityKind !== 'project' || fact.predicate !== 'usesTool' ? undefined : toolSessions(fact.entityId, fact.object);
     let next = 0;
     let sent = 0;
     const worker = async (): Promise<void> => {
@@ -1464,12 +1714,12 @@ export class KernelRuntime {
           state: built.state,
           questions: built.questions,
           // `artifactId` = the fact id: an `entity_fact` verdict grades these answers (J5.4).
-          metadata: { factId: fact.id, artifactId: fact.id, provenance: fact.provenance, belief: `${fact.canonicalName} ${fact.predicate} ${fact.object}`.slice(0, 200) },
+          metadata: { factId: fact.id, artifactId: fact.id, provenance: fact.provenance, confidence: fact.confidence, belief: `${fact.canonicalName} ${fact.predicate} ${fact.object}`.slice(0, 200) },
         });
       }
     };
     await Promise.all(Array.from({ length: Math.min(BELIEF_AUDIT_POOL, facts.length) }, worker));
-    console.log(`[sundial-kernel] belief audit: ${sent} of ${facts.length} live facts judged`);
+    console.log(`[sundial-kernel] belief audit: ${sent} of ${facts.length} changed facts judged (${live.length - facts.length} of ${live.length} unchanged since last judged)`);
   }
 
   /**
@@ -1482,7 +1732,6 @@ export class KernelRuntime {
    * `audit` cap; `applyAliasAlignment` files the answer as a suggestion.
    */
   private async performAliasAlignment(effect: RunAliasAlignmentEffect): Promise<void> {
-    void effect;
     // The exact leg's row half, for rows the fold no longer knows. The rule
     // merges a synthetic `named:` root beside its real twin through
     // `project:merged` — but only for roots in `state.project.known`, and the
@@ -1532,7 +1781,10 @@ export class KernelRuntime {
       return close(a, b);
     };
     const pairs: AlignAliasInput[] = [];
-    const meta: { kind: 'project' | 'person'; aId: string; a: string; bId: string; b: string }[] = [];
+    const meta: { kind: 'project' | 'person'; aId: string; a: string; bId: string; b: string; pair: string }[] = [];
+    const nowMs = Date.parse(effect.ts);
+    const judgedPairs = await lastJudged(alignAlias.id, (m) => m.pair, nowMs);
+    let unchanged = 0;
     for (const kind of ['project', 'person'] as const) {
       const list = entities.filter((e) => e.kind === kind);
       for (let i = 0; i < list.length; i += 1)
@@ -1540,8 +1792,15 @@ export class KernelRuntime {
           const a = list[i]!;
           const b = list[j]!;
           if (kind === 'person' && !linked(a.canonicalName, b.canonicalName)) continue;
-          pairs.push({ kind, nameA: a.canonicalName, nameB: b.canonicalName, alsoKnownAsA: knownAs[a.canonicalName] ?? null, alsoKnownAsB: knownAs[b.canonicalName] ?? null });
-          meta.push({ kind, aId: a.id, a: a.canonicalName, bId: b.id, b: b.canonicalName });
+          const pair: AlignAliasInput = { kind, nameA: a.canonicalName, nameB: b.canonicalName, alsoKnownAsA: knownAs[a.canonicalName] ?? null, alsoKnownAsB: knownAs[b.canonicalName] ?? null };
+          const key = aliasPairKey(pair);
+          // lane Q (Q7): a pair judged within the month, on the same names, is not asked again.
+          if (!needsAudit(0, judgedPairs.get(key), nowMs)) {
+            unchanged += 1;
+            continue;
+          }
+          pairs.push(pair);
+          meta.push({ kind, aId: a.id, a: a.canonicalName, bId: b.id, b: b.canonicalName, pair: key });
         }
     }
     let next = 0;
@@ -1563,7 +1822,7 @@ export class KernelRuntime {
       }
     };
     await Promise.all(Array.from({ length: Math.min(BELIEF_AUDIT_POOL, pairs.length) }, worker));
-    console.log(`[sundial-kernel] alias alignment: ${sent} of ${pairs.length} pairs judged`);
+    console.log(`[sundial-kernel] alias alignment: ${sent} of ${pairs.length} changed pairs judged (${unchanged} unchanged since last judged)`);
   }
 
   private async performReflectionCall(effect: RunReflectionEffect): Promise<void> {
@@ -1615,7 +1874,7 @@ export class KernelRuntime {
         .map((k) => k.title);
       const repeated = repeatsRecent(insight.title, recentReflections);
       if (repeated !== null) {
-        console.log(`[sundial-kernel] reflection not kept — repeats "${repeated}": "${insight.title}"`);
+        console.log('[sundial-kernel] reflection not kept: it repeats a recent one');
         return;
       }
 
@@ -1669,12 +1928,11 @@ export class KernelRuntime {
       const rows = await listResolvedPredictions({ kind: effect.predictionKind });
       const series = rows.filter((row) => row.forecaster === effect.forecaster && row.features !== null && String(row.features.hour) === effect.cell);
 
-      // Host-local day, matching day-shape-forecast's own bucketing — the
-      // comparability constants note in that file applies here too.
-      const dayOf = (ts: string): string => {
-        const d = new Date(ts);
-        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      };
+      // The owner's local day, matching day-shape-forecast's own bucketing
+      // (`config.timezone`, never the host's) — the comparability constants
+      // note in that file applies here too.
+      const timeZone = this.state?.config.timezone ?? 'UTC';
+      const dayOf = (ts: string): string => localDate(ts, timeZone);
       const prevDayOf = (date: string): string => {
         const [y, m, d] = date.split('-').map(Number);
         const prev = new Date(Date.UTC(y, m - 1, d - 1));
@@ -1732,6 +1990,7 @@ export class KernelRuntime {
     const budget = this.state.budgets.byPurpose.reflect;
     if (budget.callsToday >= this.effectiveDailyCaps.reflect) {
       console.warn(`[sundial-kernel] LLM budget exhausted for purpose=reflect (${budget.callsToday}/${this.effectiveDailyCaps.reflect})`);
+      this.noteBudgetExhausted('reflect'); // lane H (H3)
       return;
     }
 
@@ -1805,6 +2064,7 @@ export class KernelRuntime {
     const budget = this.state.budgets.byPurpose.goal;
     if (budget.callsToday >= this.effectiveDailyCaps.goal) {
       console.warn(`[sundial-kernel] LLM budget exhausted for purpose=goal (${budget.callsToday}/${this.effectiveDailyCaps.goal})`);
+      this.noteBudgetExhausted('goal'); // lane H (H3)
       return;
     }
     await this.ingestAndApply(toDaemonEvent('llm:dispatched', { purpose: 'goal' }));
@@ -1836,7 +2096,7 @@ export class KernelRuntime {
       console.log(`[sundial-kernel] goal plan for ${effect.goalId}: ${parsed.steps.length} step(s)`);
     } catch (error) {
       console.error('[sundial-kernel] goal plan failed:', error instanceof Error ? error.message : error);
-      await this.retryIngestEvent(toDaemonEvent('llm:refunded', { purpose: 'goal' }));
+      await this.retryIngestEvent(toDaemonEvent('llm:refunded', { purpose: 'goal', errorClass: classifyLlmError(error) }));
     }
   }
 
@@ -1847,6 +2107,7 @@ export class KernelRuntime {
     const budget = this.state.budgets.byPurpose.journal;
     if (budget.callsToday >= this.effectiveDailyCaps.journal) {
       console.warn(`[sundial-kernel] LLM budget exhausted for purpose=journal (${budget.callsToday}/${this.effectiveDailyCaps.journal})`);
+      this.noteBudgetExhausted('journal'); // lane H (H3)
       return;
     }
 
@@ -1857,7 +2118,7 @@ export class KernelRuntime {
 
   private async performProjectStatusCall(projectId: string, ts: string): Promise<void> {
     const aliases = this.state?.config.projectAliases ?? {};
-    const ctx = await buildProjectStatusContext(projectId, { projectAliases: aliases });
+    const ctx = await buildProjectStatusContext(projectId, { projectAliases: aliases, timeZone: this.state?.config.timezone });
     if (!ctx) {
       await this.retryIngestEvent(toDaemonEvent('llm:refunded', { purpose: 'journal' }));
       return;
@@ -1895,6 +2156,7 @@ export class KernelRuntime {
     const budget = this.state.budgets.byPurpose.journal;
     if (budget.callsToday >= this.effectiveDailyCaps.journal) {
       console.warn(`[sundial-kernel] LLM budget exhausted for purpose=journal (${budget.callsToday}/${this.effectiveDailyCaps.journal})`);
+      this.noteBudgetExhausted('journal'); // lane H (H3)
       return;
     }
 
@@ -2035,6 +2297,7 @@ export class KernelRuntime {
     const budget = this.state.budgets.byPurpose.extract;
     if (budget.callsToday >= this.effectiveDailyCaps.extract) {
       console.warn(`[sundial-kernel] LLM budget exhausted for purpose=extract (${budget.callsToday}/${this.effectiveDailyCaps.extract})`);
+      this.noteBudgetExhausted('extract'); // lane H (H3)
       return;
     }
 
@@ -2061,7 +2324,7 @@ export class KernelRuntime {
       return;
     }
 
-    const turns = (await this.conversationSource.readOwnerTurnsSince(effect.since)).map((turn) => ({ ...turn, text: redactWithPolicy(turn.text, 'egress') }));
+    const turns = (await this.conversationSource.readOwnerTurnsSince(effect.since)).map((turn) => ({ ...turn, text: redactWithPolicy(turn.text) }));
     if (turns.length === 0) return;
     const transcript = formatTranscript(turns);
     if (transcript.trim() === '') return;
@@ -2105,21 +2368,76 @@ export class KernelRuntime {
     }
   }
 
+  /**
+   * UC1 (U1-F2): the meeting pass. The same `extract` purpose and cap as the
+   * nightly passes — one call per meeting with others, about seventy a month.
+   * Without a model it does nothing at all, and the meeting question asks
+   * "did you promise anything?" as it would have.
+   */
+  private async dispatchRunMeetingPromises(effect: RunMeetingPromisesEffect): Promise<void> {
+    if (!this.state || !isLlmConfigured()) return;
+    const budget = this.state.budgets.byPurpose.extract;
+    if (budget.callsToday >= this.effectiveDailyCaps.extract) {
+      console.warn(`[sundial-kernel] LLM budget exhausted for purpose=extract (${budget.callsToday}/${this.effectiveDailyCaps.extract}); meeting promise pass skipped`);
+      this.noteBudgetExhausted('extract'); // lane H (H3)
+      return;
+    }
+    this.defer(() => void this.performMeetingPromises(effect), 0);
+  }
+
+  private async performMeetingPromises(effect: RunMeetingPromisesEffect): Promise<void> {
+    const done = (promises: unknown[], note: string | null) =>
+      this.retryIngestEvent(toDaemonEvent('meeting:promises', { meetingKey: effect.meetingKey, title: effect.title, start: effect.start, end: effect.end, attendees: effect.attendees, promises, ...(note ? { note } : {}) }));
+    const ownerName = this.state?.config.ownerAliases[0] ?? 'Me';
+    const heard = await transcriptFor({ getSignalsInRange, getMomentsSince, insertKnowledgeEntry, computeEmbedding, insertEmbedding, ownerAliases: this.state?.config.ownerAliases ?? [] }, effect.start, effect.end, effect.attendees);
+    const captions = await captionsFor({ getSignalsInRange }, effect.start, effect.end);
+    const transcript = [heard?.text ?? '', captions ? `Captions:\n${captions}` : ''].filter(Boolean).join('\n\n');
+    if (transcript.trim() === '') {
+      await done([], 'nothing heard');
+      return;
+    }
+    // Counted only now: a meeting with nothing heard never spends an `extract` call.
+    if (!this.state || this.state.budgets.byPurpose.extract.callsToday >= this.effectiveDailyCaps.extract) return;
+    await this.ingestAndApply(toDaemonEvent('llm:dispatched', { purpose: 'extract', source: 'meeting' }));
+    try {
+      const result = await runAuditedLlmCall({ purpose: 'extract', momentId: null, maxTokens: 2048, messages: meetingPromiseMessages({ title: effect.title, attendees: effect.attendees, ownerName, transcript }) });
+      const promises = parseMeetingPromises(result.content, transcript, effect.attendees);
+      console.log(`[sundial-kernel] meeting promise pass: ${promises.length} grounded promise(s)`);
+      await done(promises, null);
+    } catch (error) {
+      console.error('[sundial-kernel] meeting promise pass failed:', error);
+      await done([], 'the model call failed');
+    }
+  }
+
   private async dispatchRunConversationExtraction(effect: RunConversationExtractionEffect): Promise<void> {
     if (!this.state) return;
-    if (!isLlmConfigured()) return;
     if (!this.conversationSource) return;
 
+    const turns = await this.conversationSource.readOwnerTurnsSince(effect.since);
+    if (turns.length === 0) return;
+
+    // UC1 (U1-F11): a promise the owner stated outright opens without a model,
+    // so it needs neither the model nor its budget. Keyed by the turn, so a
+    // second pass over the same turns opens nothing twice.
+    for (const found of promisesInTurns(turns.map((turn) => ({ ...turn, text: redactWithPolicy(turn.text) })), this.state.config.timezone)) {
+      await this.ingestAndApply({
+        id: createEventId(),
+        type: 'commitment:heard',
+        ts: found.turn.at,
+        payload: { source: 'chat', id: `commitment:promise:${deriveId(found.turn.at, found.turn.sessionId, 'chat-promise', found.sentence)}`, direction: 'owner', counterparty: found.counterparty, deliverable: found.deliverable, dueText: found.dueText, quote: found.sentence },
+      });
+    }
+
+    if (!isLlmConfigured()) return;
     // Shares the `extract` purpose and its cap with the nightly moment pass:
     // one more call a night, same family of work, no five-place purpose plumbing.
     const budget = this.state.budgets.byPurpose.extract;
     if (budget.callsToday >= this.effectiveDailyCaps.extract) {
       console.warn(`[sundial-kernel] LLM budget exhausted for purpose=extract (${budget.callsToday}/${this.effectiveDailyCaps.extract}); conversation pass skipped`);
+      this.noteBudgetExhausted('extract'); // lane H (H3)
       return;
     }
-
-    const turns = await this.conversationSource.readOwnerTurnsSince(effect.since);
-    if (turns.length === 0) return;
 
     await this.ingestAndApply(toDaemonEvent('llm:dispatched', { purpose: 'extract', source: 'conversation' }));
     this.defer(() => void this.performConversationExtractionCall(effect), 0);
@@ -2209,6 +2527,7 @@ export class KernelRuntime {
     const budget = this.state.budgets.byPurpose.extract;
     if (budget.callsToday >= this.effectiveDailyCaps.extract) {
       console.warn(`[sundial-kernel] LLM budget exhausted for purpose=extract (${budget.callsToday}/${this.effectiveDailyCaps.extract}); ask harvest backfill skipped`);
+      this.noteBudgetExhausted('extract'); // lane H (H3)
       return;
     }
 
@@ -2229,6 +2548,7 @@ export class KernelRuntime {
     const budget = this.state.budgets.byPurpose.refute;
     if (budget.callsToday >= this.effectiveDailyCaps.refute) {
       console.warn(`[sundial-kernel] LLM budget exhausted for purpose=refute (${budget.callsToday}/${this.effectiveDailyCaps.refute})`);
+      this.noteBudgetExhausted('refute'); // lane H (H3)
       return;
     }
 

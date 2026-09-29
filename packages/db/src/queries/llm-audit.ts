@@ -258,6 +258,11 @@ export type LlmProvider = 'local' | 'remote';
  * `gemma4:26b-mlx`, `qwen3.8-gnomon:latest`). This matters for cost: before it,
  * a free local `qwen3.8:27b-mlx` call substring-matched a paid `qwen` price
  * entry and was billed as if TensorX had served it.
+ *
+ * A hosted API that names its models bare (`gpt-5`, `deepseek-chat`) would
+ * break the shape, so the writers namespace such an id by its route before it
+ * is recorded (`ledgerModel` in @sundial/helpers/llm-providers): `openai/gpt-5`.
+ * Rows written before that stay as they were.
  */
 export function llmProvider(model: string | null): LlmProvider {
   return model?.includes('/') ? 'remote' : 'local';

@@ -55,6 +55,19 @@ describe('serializePrompt', () => {
     expect(prompt).toBe('[assistant] gnomon_summary({"day":"today"})\n\n[user] → 3 moments');
   });
 
+  it('a tool schema that cannot be stringified is sized by its name, not a thrown row', () => {
+    const cyclic = { name: 'gnomon_loop', parameters: {} };
+    cyclic.parameters.self = cyclic;
+    expect(serializePrompt({ ...OPTIONS, tools: [cyclic] })).toContain('[tools] 1 · 11 chars: gnomon_loop');
+  });
+
+  it('names, counts and sizes the tools the call carried', () => {
+    const tools = [{ name: 'gnomon_today_summary', description: 'd', parameters: {} }, { name: 'gnomon_people', description: 'p', parameters: {} }];
+    const prompt = serializePrompt({ ...OPTIONS, tools });
+    const chars = tools.reduce((sum, t) => sum + JSON.stringify(t).length, 0);
+    expect(prompt).toBe(`[system] You are Gnomon.\n\n[tools] 2 · ${chars} chars: gnomon_today_summary, gnomon_people\n\n[user] what did I do today?`);
+  });
+
   it('bounds the body — a chat prompt replays the whole history every turn', () => {
     const huge = { messages: [{ role: 'user', content: [{ type: 'text', text: 'x'.repeat(MAX_BODY_CHARS + 500) }] }] };
     const prompt = serializePrompt(huge);
@@ -231,6 +244,14 @@ describe('createLlmAuditRecorder', () => {
     await expect(audit.settle()).resolves.toBeUndefined();
     expect(errorSpy).toHaveBeenCalled();
     errorSpy.mockRestore();
+  });
+
+  it('records a bare model id from a hosted route under that route, and leaves a local one alone', async () => {
+    const queries = fakeQueries();
+    const routeBaseUrl = (id) => ({ groq: 'https://api.groq.com/openai/v1', local: 'http://127.0.0.1:11434/v1' })[id];
+    await recorderWith(queries, { routeBaseUrl })({ provider: 'groq', model: 'llama-3.3-70b', messages: [] });
+    await recorderWith(queries, { routeBaseUrl })({ provider: 'local', model: 'qwen3.8:27b-mlx', messages: [] });
+    expect(queries.recordLlmAudit.mock.calls.map((c) => c[0].model)).toEqual(['groq/llama-3.3-70b', 'qwen3.8:27b-mlx']);
   });
 
   it("falls back to 'unknown' rather than violating the NOT NULL model column", async () => {

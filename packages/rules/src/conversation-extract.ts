@@ -4,7 +4,7 @@
 // stressful, that Thursday is a partner's birthday, that they prefer to be
 // asked before anything is scheduled. Until this pass existed, Gnomon's
 // retention policy for all of it was zero unless the owner typed a
-// `gnomon_assert` by hand (`enhancements/conversation-memory`).
+// `gnomon_assert` by hand (`architecture/rules/memory-and-knowledge-rules`).
 //
 // The invariant this keeps: the transcript never enters the signal log. dsh's
 // session store is read by the executor, the OWNER's turns (never the model's)
@@ -19,6 +19,7 @@ import type { EntityKind } from '@sundial/kernel/types.js';
 import { canonicalOwnerName } from './entity-name-validation.js';
 import type { ExtractedFactCandidate } from './nightly-fact-extract.js';
 import { MAX_EXTRACTED_FACTS_PER_PASS } from './nightly-fact-extract.js';
+import { parseStatedPromise } from './promise-terms.js';
 
 /** One owner-typed turn, as the executor hands it to the pass. Text is already redacted. */
 export interface ConversationTurn {
@@ -138,4 +139,28 @@ export function canonicalizeConversationCandidate(candidate: ExtractedFactCandid
     return { ...candidate, canonicalName: ownerName, entityKind: 'owner', confidence };
   }
   return { ...candidate, confidence };
+}
+
+/**
+ * UC1 (U1-F11) — promises the owner told Gnomon about in passing, read from
+ * the same turns the nightly pass reads, without a model: only a sentence that
+ * says it outright ("I owe Mira the draft", "I promised Bob I'd…", "I told
+ * Mira I'd…", "ik heb Mira beloofd…") and names the person. "I'll look at it",
+ * said to Gnomon, is a request to an assistant, not a promise to a person, and
+ * is left alone. `gnomon_track_promise` is the live path; this catches what
+ * the model did not track.
+ */
+const OWED = /\b(i owe|i promised|i told \p{Lu}[\p{L}'-]+ (?:i'?d|i would|that i)|ik heb \p{Lu}[\p{L}'-]+ beloofd|beloofd aan)\b/iu;
+
+export function promisesInTurns(turns: readonly ConversationTurn[], timeZone: string): { turn: ConversationTurn; sentence: string; counterparty: string; deliverable: string; dueText: string | null }[] {
+  const out: { turn: ConversationTurn; sentence: string; counterparty: string; deliverable: string; dueText: string | null }[] = [];
+  for (const turn of turns) {
+    for (const sentence of turn.text.split(/(?<=[.!?])\s+|\n+/)) {
+      if (!OWED.test(sentence)) continue;
+      const stated = parseStatedPromise(sentence, { ts: turn.at, tz: timeZone });
+      if (!stated?.counterparty || stated.deliverable === '') continue;
+      out.push({ turn, sentence: sentence.trim().slice(0, 160), counterparty: stated.counterparty, deliverable: stated.deliverable, dueText: stated.dueText });
+    }
+  }
+  return out;
 }

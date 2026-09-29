@@ -12,7 +12,16 @@
  * object through every redaction call site.
  */
 
+/**
+ * Matched as a case-insensitive substring of the process name AND, where a
+ * sensor has one, the bundle id: display names follow the system language
+ * (Passwords is "Wachtwoorden" in Dutch), the bundle id does not. So the
+ * macOS entries are written as the part both share: `com.apple.Passwords`,
+ * `com.apple.keychainaccess`, `com.apple.SecurityAgent` (the system password
+ * dialog), `com.apple.loginwindow` (the lock screen).
+ */
 export const STRICT_SENSITIVE_APPS = [
+  'passwords', 'keychain', 'securityagent', 'loginwindow',
   '1password', 'bitwarden', 'keepassxc', 'lastpass', 'dashlane',
   'banking', 'venmo', 'paypal',
   'health', 'myfitnesspal',

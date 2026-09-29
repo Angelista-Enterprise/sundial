@@ -96,9 +96,9 @@ export async function pool<T>(tasks: (() => Promise<T>)[], limit: number): Promi
 }
 
 export interface RejudgeDeps {
-  judge: (o: { purpose: 'classify'; momentId: string | null; state: unknown; questions: Record<string, JudgeQuestion>; backend: 'jev' | 'local' }) => Promise<{ answers: JudgementResultPayload['answers']; model: string; latencyMs: number }>;
+  judge: (o: { purpose: 'classify'; momentId: string | null; state: unknown; questions: Record<string, JudgeQuestion>; backend: 'jev' | 'text-model' }) => Promise<{ answers: JudgementResultPayload['answers']; model: string; latencyMs: number }>;
   ingest: (payload: JudgementResultPayload) => Promise<void>;
-  backend: 'jev' | 'local';
+  backend: 'jev' | 'text-model';
 }
 
 export interface RejudgeProgress {

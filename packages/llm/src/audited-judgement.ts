@@ -3,8 +3,10 @@ import { classifyLlmError } from '@sundial/helpers/llm-error-class.js';
 import { estimateBilledPromptTokens } from '@sundial/helpers/llm-billed-tokens.js';
 import { recordLlmAudit, updateLlmAudit } from '@sundial/db/index.js';
 import { SYSTEMONE_DEFAULT_MODEL, callSystemOne, type SystemOneAnswer, type SystemOneQuestion } from './systemone.js';
-import { callSystemOneLocal } from './systemone-local.js';
+import { callSystemOneTextModel } from './systemone-text-model.js';
 import { getLlmConfig } from './config.js';
+import { DEFAULT_PROVIDER, providerLabel } from '@sundial/helpers/llm-providers.js';
+import { reportLlmOutcome, statusOf } from './outcome.js';
 import type { JudgementPurpose } from './types.js';
 
 /** The provider prefix `llmProvider` reads as remote, so the Ledger prices the call. */
@@ -18,12 +20,12 @@ export interface AuditedJudgementOptions {
   model?: string;
   timeoutMs?: number;
   /**
-   * `jev` (default) or `local` — the text model prompted for probabilities
-   * (`systemone-local.ts`). A local row records the TEXT model's id, so the
+   * `jev` (default) or `text-model` — the configured text model prompted for
+   * probabilities (`systemone-text-model.ts`). Such a row records the text model's id, so the
    * Ledger prices it at that rate and a judgement purpose served by
    * `qwen/…` is the fallback mark.
    */
-  backend?: 'jev' | 'local';
+  backend?: 'jev' | 'text-model';
   /** Retry lineage, as `AuditedLlmCallOptions` carries it. */
   attempt?: number;
   parentCallId?: string | null;
@@ -47,10 +49,17 @@ export interface AuditedJudgementResult {
  * because `llmProvider` classifies by the `/` and a bare `jev-latest` would be
  * priced as a free local tag (`LLM_PRICING` has the `typesafe/` row).
  */
+/** lane H: who answered a judgement, for `reportLlmOutcome`. */
+const judgeProvider = (backend: 'jev' | 'text-model', purpose: JudgementPurpose) => {
+  if (backend === 'jev') return { provider: 'jev', label: 'Jev' };
+  const config = getLlmConfig(purpose);
+  return { provider: config?.route ?? DEFAULT_PROVIDER, label: providerLabel(config?.baseUrl ?? '') };
+};
+
 export async function runAuditedJudgement(options: AuditedJudgementOptions): Promise<AuditedJudgementResult> {
   const backend = options.backend ?? 'jev';
   const bareModel = options.model ?? SYSTEMONE_DEFAULT_MODEL;
-  const model = backend === 'local' ? (getLlmConfig()?.model ?? 'unconfigured') : `${SYSTEMONE_PROVIDER}/${bareModel}`;
+  const model = backend === 'text-model' ? (getLlmConfig(options.purpose)?.model ?? 'unconfigured') : `${SYSTEMONE_PROVIDER}/${bareModel}`;
   const auditId = createEventId();
   const prompt = JSON.stringify({ state: options.state, questions: options.questions });
 
@@ -68,8 +77,8 @@ export async function runAuditedJudgement(options: AuditedJudgementOptions): Pro
   const start = Date.now();
   try {
     const result =
-      backend === 'local'
-        ? await callSystemOneLocal(options.state, options.questions, { timeoutMs: options.timeoutMs })
+      backend === 'text-model'
+        ? await callSystemOneTextModel(options.state, options.questions, { purpose: options.purpose, timeoutMs: options.timeoutMs })
         : await callSystemOne(options.state, options.questions, { model: bareModel, timeoutMs: options.timeoutMs });
     const answered = Object.keys(result.answers).length;
     await updateLlmAudit(auditId, {
@@ -84,11 +93,16 @@ export async function runAuditedJudgement(options: AuditedJudgementOptions): Pro
       completionTokens: result.outputTokens ?? undefined,
       totalTokens: result.inputTokens === null ? undefined : result.inputTokens + (result.outputTokens ?? 0),
     });
+    reportLlmOutcome({ ...judgeProvider(backend, options.purpose), ok: true, statusCode: result.statusCode ?? null });
     return { auditId, answers: result.answers, model, latencyMs: result.latencyMs };
   } catch (error) {
+    // lane H (H3)
+    const statusCode = statusOf(error);
+    reportLlmOutcome({ ...judgeProvider(backend, options.purpose), ok: false, statusCode });
     await updateLlmAudit(auditId, {
       respondedAt: new Date().toISOString(),
       latencyMs: Date.now() - start,
+      ...(statusCode !== null ? { statusCode } : {}),
       success: false,
       error: error instanceof Error ? error.message : String(error),
       errorClass: classifyLlmError(error),

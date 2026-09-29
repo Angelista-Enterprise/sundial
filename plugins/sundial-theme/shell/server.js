@@ -28,25 +28,30 @@
 // tree.
 import { guard, guardPage } from './guard.js'
 import { readdirSync } from 'node:fs'
-import { getSundialHome } from '@sundial/helpers/config.js'
-import { isHttpUrl, isLocalUrl, parseProviders, providerKeyEnv, providerLabel, setEnvValues } from '@sundial/helpers/llm-providers.js'
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { getSundialHome, withConfigLock, writeConfigAtomic } from '@sundial/helpers/config.js'
+import { blankSignInLinks, ownToken } from './signin-log.js'
+import { isHttpUrl, isLocalUrl, parseProviders, parseUse, providerKeyEnv, providerLabel, setEnvValues } from '@sundial/helpers/llm-providers.js'
+import { readFile, rm, stat } from 'node:fs/promises'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { randomUUID } from 'node:crypto'
 const execFileP = promisify(execFile)
 import { basename, dirname, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { homedir } from 'node:os'
+import { NOTICE_GROUPS } from '@sundial/kernel/notice-groups.js'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import { threadModelOf } from './thread-model.js'
 import { boundContextSummary, createSystemMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import { TOOL_REGISTRY, executeGnomonTool } from '@sundial/kernel/tools/index.js'
-import { liveFrames, replayFrames, streamFrames, titleFrom } from './frames.js'
+import { liveFrames, recentTurns, replayFrames, streamFrames, titleFrom } from './frames.js'
 import { nowLine, nowSnapshot } from './now.js'
 import { loadSundialConfig } from '@sundial/helpers/sundial-config.js'
-import { getSignalFreshness } from '@sundial/db/index.js'
-import { SERVICES, allowed, describe, setPath } from './services.js'
+import { getGateDecisionsBetween, getSignalFreshness, getSignalsInRange } from '@sundial/db/index.js'
+import { isRuleIntent, validateWatchRule } from '@sundial/kernel/watch.js'
+import { rulesView } from './rules-view.js'
+import { SERVICES, allowed, describe, setPath, textValue } from './services.js'
 import { forget, readArchive, setArchived } from './archive.js'
 import { readTitles, writeTitles } from './session-titles.js'
 import { entityId as makeEntityId } from './entity-id.js'
@@ -84,6 +89,8 @@ const OWN_SESSIONS = new Set([COMPANION_SESSION_ID])
  * than one per event. Short enough that the board still reads as live.
  */
 const STALE_WINDOW_MS = 1_000
+/** How many turns opening a session replays; the rest wait behind "Earlier". */
+const REPLAY_TURNS = 30
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PLUGIN = 'sundial-shell'
@@ -1184,6 +1191,7 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
    *   check   `{baseUrl, apiKey?, target?}` → the models the endpoint lists
    *   save    `{target: 'default' | 'new' | <id>, label?, baseUrl, model, apiKey?}` (empty apiKey keeps the saved one)
    *   remove  `{target}`
+   *   use     `{purpose: 'default' | <purpose>, target: 'openai' | <id> | ''}` — which model does that work ('' = the default)
    *   restart → the LaunchAgent restarts Sundial; without one, the command to run
    */
   const envPath = join(home, '.env')
@@ -1211,14 +1219,18 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
     return {
       default: base !== '' ? row('openai', base.replace(/\/+$/, ''), env.SUNDIAL_LLM_MODEL ?? '') : null,
       providers: parseProviders(config?.llm?.providers).map((p) => row(p.id, p.baseUrl, p.model, p.label)),
+      use: parseUse(config?.llm?.use),
     }
   }
   const fingerprint = (saved) => JSON.stringify(saved)
+  // The background work /setup can send to one provider or another (the chat is chosen in its own picker).
+  const USE_PURPOSES = ['default', 'intent', 'companion', 'extract', 'journal', 'reflect', 'refute', 'goal', 'transcript']
   // What this process booted with; a saved change differs from it until a restart.
   const booted = savedProviders().then(fingerprint)
   const LABEL = process.env.SUNDIAL_LABEL || 'dev.sundial.agent'
 
-  api('/gnomon/api/providers', async (req, res) => {
+  api('/gnomon/api/providers', (req, res) => withConfigLock(() => providersRoute(req, res)))
+  async function providersRoute(req, res) {
     if (req.method !== 'POST') {
       const saved = await savedProviders()
       sendJson(res, 200, { ...saved, restartNeeded: fingerprint(saved) !== (await booted) })
@@ -1266,7 +1278,7 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
           if (at < 0) return sendJson(res, 404, { unavailable: 'No provider by that name.' })
           list[at] = { id, label, baseUrl, model }
         }
-        await writeFile(configPath, `${JSON.stringify({ ...config, llm: { ...(config.llm ?? {}), providers: list } }, null, 2)}\n`, { mode: 0o600 })
+        await writeConfigAtomic(configPath, { ...config, llm: { ...(config.llm ?? {}), providers: list } })
         if (apiKey) setEnvValues(envPath, { [providerKeyEnv(id)]: apiKey })
       }
       const saved = await savedProviders()
@@ -1279,9 +1291,22 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
       } else {
         const config = await readConfigFile()
         const list = parseProviders(config?.llm?.providers).filter((p) => p.id !== target)
-        await writeFile(configPath, `${JSON.stringify({ ...config, llm: { ...(config.llm ?? {}), providers: list } }, null, 2)}\n`, { mode: 0o600 })
+        const use = Object.fromEntries(Object.entries(parseUse(config?.llm?.use)).filter(([, id]) => id !== target))
+        await writeConfigAtomic(configPath, { ...config, llm: { ...(config.llm ?? {}), providers: list, use } })
         setEnvValues(envPath, { [providerKeyEnv(target)]: '' })
       }
+      const saved = await savedProviders()
+      return sendJson(res, 200, { ...saved, restartNeeded: fingerprint(saved) !== (await booted) })
+    }
+
+    if (body.op === 'use') {
+      const purpose = text(body.purpose, 20)
+      const config = await readConfigFile()
+      const ids = ['openai', ...parseProviders(config?.llm?.providers).map((p) => p.id)]
+      if (!USE_PURPOSES.includes(purpose) || (target !== '' && !ids.includes(target))) return sendJson(res, 400, { unavailable: 'No such work or provider.' })
+      const use = { ...parseUse(config?.llm?.use), [purpose]: target }
+      if (target === '') delete use[purpose]
+      await writeConfigAtomic(configPath, { ...config, llm: { ...(config.llm ?? {}), use } })
       const saved = await savedProviders()
       return sendJson(res, 200, { ...saved, restartNeeded: fingerprint(saved) !== (await booted) })
     }
@@ -1303,7 +1328,7 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
     }
 
     sendJson(res, 400, { unavailable: 'Unknown operation.' })
-  })
+  }
 
   /**
    * Services (the Settings card): every switch in config.json, its value, and
@@ -1312,21 +1337,49 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
    * like a model change does.
    */
   const bootedConfig = readConfigFile()
-  api('/gnomon/api/services', async (req, res) => {
+  // When this process started: a tab that asked for a restart polls until it changes.
+  const bootedAt = new Date().toISOString()
+  // The Claude Code hooks live in Claude's own settings, written by `sundial claude-hooks` / `claude-context`.
+  const repo = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
+  const claudeSettings = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'settings.json')
+  const claudeInstalled = async () => {
+    const text = await readFile(claudeSettings, 'utf8').catch(() => '')
+    const ours = (script) => text.split('\n').some((line) => line.includes(script) && line.includes(home))
+    return { hooks: ours('claude-hook.mjs'), context: ours('claude-context.mjs') }
+  }
+  api('/gnomon/api/services', (req, res) => withConfigLock(() => servicesRoute(req, res)))
+  async function servicesRoute(req, res) {
     if (req.method === 'POST') {
       const body = (await readBody(req, 1024)) ?? {}
       const service = SERVICES.find((s) => s.id === body.id)
-      if (!allowed(service, body.value)) return sendJson(res, 400, { unavailable: 'That service has no such switch.' })
-      const next = setPath(await readConfigFile(), service.path, body.value)
-      const tmp = `${configPath}.tmp-${process.pid}`
-      await writeFile(tmp, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 })
-      await rename(tmp, configPath)
-      console.log(`[${PLUGIN}] services: ${service.path} = ${JSON.stringify(body.value)} (restart to apply)`)
+      const typed = textValue(service, body.text)
+      if (service?.text && body.text !== undefined) {
+        if (typed === null) return sendJson(res, 400, { unavailable: service.id === 'push' ? 'That is not an http(s) address.' : 'Give the folder as a full path, starting with / or ~/.' })
+        const folder = typed.startsWith('~/') ? join(homedir(), typed.slice(2)) : typed
+        if (service.id === 'vault' && typed !== '' && !(await stat(folder).then((st) => st.isDirectory(), () => false))) return sendJson(res, 400, { unavailable: 'There is no folder at that path.' })
+      } else if (!allowed(service, body.value)) return sendJson(res, 400, { unavailable: 'That service has no such switch.' })
+      if (service.text) {
+        const config = await readConfigFile()
+        const next = typed === '' ? setPath(config, service.path, undefined) : setPath(config, service.path, typed)
+        await writeConfigAtomic(configPath, next)
+        console.log(`[${PLUGIN}] services: ${service.path} ${typed === '' ? 'cleared' : 'set'} (restart to apply)`)
+      } else if (service.claude) {
+        // The CLI owns that file's shape (idempotent, keeps every other key), so the route never edits it itself.
+        const command = service.claude === 'hooks' ? 'claude-hooks' : 'claude-context'
+        const ran = await execFileP(process.execPath, [join(repo, 'bin', 'sundial'), command, ...(body.value ? [] : ['--remove'])], { env: { ...process.env, SUNDIAL_HOME: home }, timeout: 20_000 }).then(() => null, (e) => e)
+        if (ran) return sendJson(res, 500, { unavailable: `Could not change the Claude Code hook. Run: sundial ${command}${body.value ? '' : ' --remove'}` })
+        console.log(`[${PLUGIN}] services: Claude Code ${command} ${body.value ? 'on' : 'off'} (next Claude session)`)
+      } else {
+        const next = setPath(await readConfigFile(), service.path, body.value)
+        await writeConfigAtomic(configPath, next)
+        console.log(`[${PLUGIN}] services: ${service.path} = ${JSON.stringify(body.value)} (restart to apply)`)
+      }
     }
-    const [config, booted, freshness] = await Promise.all([readConfigFile(), bootedConfig, getSignalFreshness().catch(() => [])])
-    const services = describe(config, booted, freshness)
-    sendJson(res, 200, { services, restartNeeded: services.some((s) => s.changed) })
-  })
+    const [config, booted, freshness, claude] = await Promise.all([readConfigFile(), bootedConfig, getSignalFreshness().catch(() => []), claudeInstalled()])
+    const services = describe(config, booted, freshness, claude)
+    const waiting = services.filter((s) => s.changed).map((s) => s.label)
+    sendJson(res, 200, { services, restartNeeded: waiting.length > 0, waiting, bootedAt, noticeGroups: NOTICE_GROUPS.map(({ id, label, what }) => ({ id, label, what })) })
+   }
 
   let backfilling = false
   api('/gnomon/api/backfill', async (req, res) => {
@@ -1537,10 +1590,15 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
       }
       throw error
     }
+    // The recent turns only, unless the page asked for all of them (its
+    // "Earlier" fold); `earlier` says how many turns were left out.
+    const replay = replayFrames(snapshot.events)
+    const { frames, earlier } = url.searchParams.get('all') === '1' ? { frames: replay, earlier: 0 } : recentTurns(replay, REPLAY_TURNS)
     sendJson(res, 200, {
       id,
       title: titleFrom(snapshot.events, ''),
-      frames: replayFrames(snapshot.events),
+      frames,
+      earlier,
       model: selection().model ?? null,
     })
   })
@@ -1934,6 +1992,8 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
                 ? `The owner is ANSWERING a question Gnomon asked them: "${answering}". Their message is that answer. Keep what is worth keeping from it — decisions, who said what, follow-ups — with the tools you have (gnomon_assert with saidBy: 'owner' for facts — these are their own words), and reply briefly with what you kept. Do not ask the question again.`
                 : null,
               place !== '' ? `The owner is looking at: ${place}.` : null,
+              // UC4 F29: "tell me when…" is a standing rule, and the rule is tested on their past before it is kept.
+              isRuleIntent(text) ? 'The owner is asking to be told when something happens. That is a watch rule: write the spec, backtest it with gnomon_test_rule (through gnomon_call), say in two lines how often it would have spoken and show one example, and adopt it with gnomon_adopt_rule only on their yes. A one-off time is a wake-up instead.' : null,
               present,
               'A question like "what changed?", "why?" or "is that bad?" is about what is on that screen and what they are doing right now — resolve it there first, before reaching for anything broader. Do not recite this context back; use it.',
               // Last in the context the model reads before the owner's words,
@@ -2142,22 +2202,6 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
   // carry it is dead and, until now, only "not now" on a notice had a live path.
   const VERDICTS = new Set(['useful', 'wrong', 'not-now'])
   const ARTIFACT_KINDS = new Set(['knowledge_entry', 'moment', 'entity_fact', 'ask_thread', 'notice', 'owner_ask'])
-  // J5.3 — plan this week for an ACTIVE goal now, rather than on Monday.
-  // One `goal:pursue` through the kernel; `goalPursuit` emits the plan effect.
-  api('/gnomon/api/goal-pursue', async (req, res) => {
-    if (req.method !== 'POST') {
-      sendJson(res, 405, { unavailable: 'Pursuing a goal takes a POST.' })
-      return
-    }
-    const body = await readBody(req, 1024)
-    const goalId = typeof body?.goalId === 'string' ? body.goalId.trim() : ''
-    if (goalId === '') {
-      sendJson(res, 400, { unavailable: 'Say which goalId (goal:<slug>) to plan.' })
-      return
-    }
-    await ctx.gnomonKernel.appendSignal('goal:pursue', { goalId, by: 'owner' })
-    sendJson(res, 200, { planning: goalId, pursuit: ctx.gnomonKernel.getState()?.goals?.pursuit?.[goalId] ?? null })
-  })
 
   // J4.3 — the owner's tap on a draft: `sent` (they opened their mail client
   // from the card) or `dismissed`. Gnomon sends nothing; this records the tap.
@@ -2197,6 +2241,30 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
     sendJson(res, 200, { recorded: tap })
   })
 
+  // UC2 — the owner's next step, written before leaving (U2-F35): one
+  // `resume:note` through the kernel, shown first on the next return. An empty
+  // note clears it.
+  api('/gnomon/api/resume', async (req, res) => {
+    if (req.method !== 'POST') {
+      sendJson(res, 405, { unavailable: 'A note takes a POST.' })
+      return
+    }
+    const body = await readBody(req, 4096)
+    // A restore link opened (U2-F36): which piece the owner used.
+    if (typeof body?.opened === 'string' && /^[a-z]{2,12}$/.test(body.opened)) {
+      await ctx.gnomonKernel.appendSignal('resume:opened', { piece: body.opened, by: 'owner' })
+      sendJson(res, 200, { opened: body.opened })
+      return
+    }
+    if (typeof body?.note !== 'string') {
+      sendJson(res, 400, { unavailable: 'Say note: the next step, or empty to clear it; or opened: the piece.' })
+      return
+    }
+    const text = body.note.trim().slice(0, 200)
+    await ctx.gnomonKernel.appendSignal('resume:note', { text, by: 'owner' })
+    sendJson(res, 200, { noted: text })
+  })
+
   // J4.4 — the owner closing a promise heard aloud (or any open thread): one
   // `commitment:closed` through the kernel; `commitmentTrack` files the close.
   api('/gnomon/api/commitment', async (req, res) => {
@@ -2206,12 +2274,15 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
     }
     const body = await readBody(req, 4096)
     const id = typeof body?.id === 'string' ? body.id.trim() : ''
-    if (id === '' || body?.close !== true) {
-      sendJson(res, 400, { unavailable: 'Closing a thread needs its id and close: true.' })
+    // UC1 (U1-F29): a promise closes with the owner's reason, or moves to a new date.
+    const reason = ['kept', 'broken', 'dropped'].includes(body?.reason) ? body.reason : null
+    const due = typeof body?.due === 'string' && Number.isFinite(Date.parse(body.due)) ? new Date(body.due).toISOString() : null
+    if (id === '' || (body?.close !== true && due === null)) {
+      sendJson(res, 400, { unavailable: 'Closing a thread needs its id and close: true (or a new due date).' })
       return
     }
-    await ctx.gnomonKernel.appendSignal('commitment:closed', { id, by: 'owner' })
-    sendJson(res, 200, { closed: id })
+    await ctx.gnomonKernel.appendSignal('commitment:closed', { id, by: 'owner', ...(reason ? { reason } : {}), ...(due ? { due } : {}) })
+    sendJson(res, 200, due ? { moved: id, due } : { closed: id })
   })
 
   // A page in Gnomon's browser, live: every repaint as a frame on one stream,
@@ -2259,6 +2330,54 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
     sendJson(res, 200, { open: ctx.gnomonKernel.getState()?.wakeups?.open ?? [] })
   })
 
+  // UC4 F20 — the rules card. GET reads every adopted rule with its record;
+  // POST pauses, resumes or drops one, tests a spec, or adopts an edit — which
+  // is backtested again here before it is saved, whatever the card showed.
+  api('/gnomon/api/rules', async (req, res) => {
+    const watch = ctx.gnomonKernel.getState()?.watch
+    if (req.method !== 'POST') {
+      const now = new Date().toISOString()
+      const month = new Date(Date.now() - 30 * 86_400_000).toISOString()
+      const [decisions, adoptions] = await Promise.all([
+        getGateDecisionsBetween(month, now).then((rows) => rows.filter((d) => d.kind.startsWith('watch:'))),
+        getSignalsInRange(new Date(Date.now() - 365 * 86_400_000).toISOString(), now, 500, ['rule:adopted']).then((rows) => rows.map((r) => ({ ts: r.capturedAt, payload: r.data }))),
+      ])
+      sendJson(res, 200, { rules: rulesView(watch, decisions, adoptions, now) })
+      return
+    }
+    const body = (await readBody(req, 16_384)) ?? {}
+    const id = typeof body.id === 'string' ? body.id : ''
+    const known = (watch?.rules ?? []).some((r) => r.id === id)
+    if (['pause', 'resume', 'drop'].includes(body.op)) {
+      if (!known) {
+        sendJson(res, 404, { unavailable: 'No such rule.' })
+        return
+      }
+      await ctx.gnomonKernel.appendSignal(body.op === 'drop' ? 'rule:dropped' : body.op === 'pause' ? 'rule:paused' : 'rule:resumed', { id, by: 'owner' })
+      sendJson(res, 200, { ok: true })
+      return
+    }
+    if (body.op !== 'test' && body.op !== 'adopt') {
+      sendJson(res, 400, { unavailable: 'Say op: pause, resume, drop, test or adopt.' })
+      return
+    }
+    // An edit keeps its rule's id, so it becomes the next version instead of a second rule.
+    const spec = body.rule && typeof body.rule === 'object' ? { ...body.rule, ...(known ? { id } : {}) } : body.rule
+    const tested = await executeGnomonTool('gnomon_test_rule', { rule: spec, days: 30 })
+    if (body.op === 'test' || !tested?.valid) {
+      sendJson(res, 200, tested)
+      return
+    }
+    // What was tested (a person resolved to their aliases) is what is adopted.
+    const checked = validateWatchRule(tested.rule)
+    if ('error' in checked) {
+      sendJson(res, 200, { valid: false, error: checked.error })
+      return
+    }
+    await ctx.gnomonKernel.appendSignal('rule:adopted', { rule: checked.rule, predicted: { fired: tested.fired, days: tested.days, heard: tested.gate.phasic + tested.gate.tonic }, via: 'card' })
+    sendJson(res, 200, { adopted: checked.rule.id, fired: tested.fired, heard: tested.gate.phasic + tested.gate.tonic })
+  })
+
   // W2 — ask for a world-hygiene pass now rather than at the next midnight.
   // The pass itself is deterministic and logs its plan; this only rings it.
   api('/gnomon/api/hygiene', async (req, res) => {
@@ -2271,8 +2390,9 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
   })
 
   // J2.6 — the rejudge job: `POST { all?, limit?, bench? }` starts it, a GET
-  // reads its progress. Loopback-only like every route; `apps/harness/bin/
-  // gnomon-rejudge.js` is the hand that calls it.
+  // reads its progress. Loopback-only like every route. Nothing in the tree
+  // calls it since the hand-run script went with 9a6988c; it is reached by
+  // POST/GET directly.
   api('/gnomon/api/rejudge', async (req, res) => {
     if (req.method !== 'POST') {
       sendJson(res, 200, ctx.gnomonKernel.rejudgeStatus())
@@ -2293,6 +2413,15 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
     const artifactId = typeof body?.artifactId === 'string' ? body.artifactId.trim() : ''
     const verdict = typeof body?.verdict === 'string' ? body.verdict : ''
     const note = typeof body?.note === 'string' && body.note.trim() !== '' ? body.note.trim().slice(0, 500) : undefined
+    // Not a verdict: a notice line was on screen, in view, in a visible tab.
+    // Tonic lines were never known to be seen at all; this is the record that
+    // they were (`notice:seen`). The client sends each key once per page.
+    if (body?.seen === true && artifactKind === 'notice' && artifactId !== '') {
+      const surface = typeof body.surface === 'string' ? body.surface.slice(0, 40) : 'page'
+      await ctx.gnomonKernel.appendSignal('notice:seen', { noticeKey: artifactId.slice(0, 300), surface })
+      sendJson(res, 200, { seen: true })
+      return
+    }
     if (!ARTIFACT_KINDS.has(artifactKind) || artifactId === '' || !VERDICTS.has(verdict)) {
       sendJson(res, 400, { unavailable: 'A verdict needs artifactKind, artifactId and one of useful / wrong / not-now.' })
       return
@@ -2469,6 +2598,13 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
     settle(outcome)
     sendJson(res, 200, { answered: true, outcome })
   })
+
+  // The Mac app's window must never sign in with a previous run's link (see
+  // signin-log.js): the old ones go now, this run's own at shutdown.
+  const signInLog = join(home, 'logs', 'sundial.log')
+  const token = ownToken(ctx.connection)
+  if (token !== null) blankSignInLinks(signInLog, token)
+  ctx.effect(() => () => blankSignInLinks(signInLog), 'sundial-shell sign-in links')
 
   console.log(`[${PLUGIN}] Gnomon's own client is serving / (dsh's frontend is no longer reachable)`)
 }

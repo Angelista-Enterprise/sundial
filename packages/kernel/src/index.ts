@@ -5,7 +5,6 @@ export * from './reduce.js';
 export * from './snapshot.js';
 export * from './budgets.js';
 export * from './conditioners.js';
-export * from './context.js';
 export * from './daily-context.js';
 export * from './daily-journal-prompt.js';
 export * from './daily-journal-persist.js';

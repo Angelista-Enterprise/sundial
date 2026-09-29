@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { GitHubPrSensor, PR_HEARTBEAT_MS } from './index.js';
 import { deriveCheckState, deriveReviewState, deriveState, isDefaultBranch, type GhPr } from './github-pr-capture.js';
 
 function pr(overrides: Partial<GhPr> = {}): GhPr {
@@ -70,5 +71,22 @@ describe('deriveCheckState', () => {
 
   it('reports success when all checks passed', () => {
     expect(deriveCheckState(pr({ statusCheckRollup: [{ conclusion: 'SUCCESS', status: 'COMPLETED' }] }))).toBe('success');
+  });
+});
+
+describe('GitHubPrSensor heartbeat (UC4 F12)', () => {
+  it('re-reports an unchanged PR every six hours while its branch is out, and a change at once', async () => {
+    let current = pr({ number: 7 });
+    const sensor = new GitHubPrSensor(async () => ({ pr: current, ghMissing: false }));
+    sensor.notifyGitStatus('/r/puzzlebox-studio', 'fix-login');
+    const t0 = Date.parse('2026-10-05T09:00:00Z');
+    const at = (min: number) => t0 + min * 60_000;
+    const seen: number[] = [];
+    for (let min = 0; min <= 13 * 60; min += 5) if ((await sensor.poll(at(min))).length) seen.push(min);
+    expect(seen).toEqual([0, 360, 720]);
+    current = pr({ number: 7, reviews: [{ state: 'APPROVED' }] });
+    const changed = await sensor.poll(at(13 * 60 + 5));
+    expect(changed[0]?.payload).toMatchObject({ number: 7, reviewState: 'approved', timestamp: new Date(at(13 * 60 + 5)).toISOString() });
+    expect(PR_HEARTBEAT_MS).toBe(6 * 3_600_000);
   });
 });

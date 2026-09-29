@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { getDb, resetDb } from '../db-client.js';
-import { insertMoment, mergeMomentData, getMomentsForDate, getMomentsForProject, getMomentsByIds, touchMomentAccessBatch, getMomentCountsByProject, getLocationDayCounts, getMomentsMentioning } from './moments.js';
+import { insertMoment, mergeMomentData, getMomentsForDate, getMomentsForProject, getMomentsByIds, touchMomentAccessBatch, getMomentCountsByProject, getLocationDayCounts, getMomentsMentioning, getProjectIntents, getDayArcs } from './moments.js';
 
 async function setupTestDb() {
   resetDb();
@@ -180,5 +180,50 @@ describe('getMomentsMentioning (W4)', () => {
     await put('a', '2026-09-01T10:00:00.000Z', { screenExcerpt: 'Alexm wrote' });
     expect((await getMomentsMentioning(['Alex'])).total).toBe(0);
     expect((await getMomentsMentioning(['An'])).total).toBe(0);
+  });
+});
+
+describe('getProjectIntents (U2-F38)', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+  });
+
+  it('lists the last certain lines on one project before a time, newest first, repeats collapsed', async () => {
+    const m = (id: string, day: string, what: string, projectId = '/x/gnomon', projectConfidence = 'certain') =>
+      insertMoment({ id, startTime: `2026-01-0${day}T09:00:00.000Z`, endTime: `2026-01-0${day}T09:05:00.000Z`, durationMs: 300_000, processName: 'Code', data: { processName: 'Code', windowTitles: [], projectConfidence, intent: { status: 'done', text: what } }, importanceScore: 1, projectId });
+    await m('a', '1', 'Drafting the spec');
+    await m('b', '2', 'Fixing the export');
+    await m('c', '3', 'Fixing the export');
+    await m('d', '4', 'Watching a video', '/x/gnomon', 'weak');
+    await m('e', '5', 'Elsewhere', '/x/other');
+    await m('f', '8', 'After the return');
+    expect(await getProjectIntents('/x/gnomon', '2026-01-07T00:00:00.000Z')).toEqual([
+      { at: '2026-01-03T09:00:00.000Z', what: 'Fixing the export' },
+      { at: '2026-01-01T09:00:00.000Z', what: 'Drafting the spec' },
+    ]);
+  });
+});
+
+
+describe('getDayArcs across a daylight saving change (Q11)', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+  });
+
+  it('puts each moment in its own day in the owner zone: 09:00 to 23:30 local on both sides of 2026-10-25', async () => {
+    const add = (id: string, start: string, end: string) => insertMoment({ id, startTime: start, endTime: end, durationMs: Date.parse(end) - Date.parse(start), processName: 'Code', data: { processName: 'Code' }, importanceScore: 1, projectId: null });
+    // Amsterdam is UTC+2 until 03:00 on 25 October, UTC+1 after.
+    await add('a1', '2026-10-24T07:00:00.000Z', '2026-10-24T08:00:00.000Z'); // 09:00 CEST
+    await add('a2', '2026-10-24T21:00:00.000Z', '2026-10-24T21:30:00.000Z'); // to 23:30 CEST
+    await add('b1', '2026-10-26T08:00:00.000Z', '2026-10-26T09:00:00.000Z'); // 09:00 CET
+    await add('b2', '2026-10-26T22:00:00.000Z', '2026-10-26T22:30:00.000Z'); // to 23:30 CET
+    // Past midnight belongs to the day it started: 00:30 CET on the 27th.
+    await add('b3', '2026-10-26T23:10:00.000Z', '2026-10-26T23:30:00.000Z');
+    const arcs = await getDayArcs('2026-10-01T00:00:00.000Z', '2026-11-01T00:00:00.000Z', 'Europe/Amsterdam');
+    // 09:00 is minute 300 from 04:00; 23:30 is 1170; 00:30 is 1230.
+    expect(arcs).toEqual([
+      { date: '2026-10-24', firstMin: 300, lastMin: 1170, activeMin: 90, moments: 2 },
+      { date: '2026-10-26', firstMin: 300, lastMin: 1230, activeMin: 110, moments: 3 },
+    ]);
   });
 });

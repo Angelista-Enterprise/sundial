@@ -1,6 +1,8 @@
 import type { Event, SanitizedEvent } from '@sundial/helpers/sanitize-at-ingest.js';
 import type { ResolvedSundialConfig } from '@sundial/helpers/sundial-config.js';
 import type { AnsweredQuestion as AnsweredOwnerAsk } from '@sundial/helpers/asked.js';
+import type { DriftState } from './drift.js';
+import type { FactTestsState } from './fact-tests.js';
 
 export type { Event, SanitizedEvent };
 
@@ -311,7 +313,7 @@ export type AttributionConfidence = 'certain' | 'weak';
 /**
  * Where a `entity:fact-candidate` came from — `contradictionCheck` branches
  * on this rather than treating every candidate as a noisy sensor reading
- * needing corroboration (see almanac's assertions-versus-observations).
+ * needing corroboration (see almanac's concepts/entity-facts-and-belief).
  * `inference`: a heuristic or LLM-derived guess from observed activity —
  * today's 2-of-3 promotion/supersession thresholds apply unchanged.
  * `assertion`: the owner directly stating or correcting a fact — supersedes
@@ -329,7 +331,7 @@ export type AttributionConfidence = 'certain' | 'weak';
  * recurs as the same triple and would otherwise never clear the two-observation
  * bar; seeded with LESS evidence than an assertion (`CONVERSATION_EVIDENCE_WEIGHT`)
  * because an extraction is one model's reading of a sentence, not the owner's
- * own typed claim. See `enhancements/conversation-memory`.
+ * own typed claim. See `architecture/rules/memory-and-knowledge-rules`.
  */
 export type FactProvenance = 'inference' | 'assertion' | 'assistant' | 'conversation';
 
@@ -367,8 +369,9 @@ export type { ProjectRule } from '@sundial/helpers/sundial-config.js';
  * everywhere except the one file that reads it. `Pick` makes the list of what
  * rules may see the single thing to maintain.
  *
- * `screenTextRetentionDays` is the one field whose name differs from the file's
- * (`ocr.retentionDays`), so it is stated separately.
+ * `screenTextRetentionDays`, `transcriptRetentionDays` and `autoHearMeetings`
+ * are named differently from the file's (`ocr.retentionDays`,
+ * `audio.retentionDays`, `audio.autoMeetings`), so they are stated separately.
  */
 export type KernelConfig = Pick<
   ResolvedSundialConfig,
@@ -376,7 +379,63 @@ export type KernelConfig = Pick<
 > & {
   /** Days `screen:ocr` signals are kept — shorter than `retentionDays`; see `OcrConfig.retentionDays`. */
   screenTextRetentionDays: number;
+  /** Days `audio:transcript` signals are kept; `AudioConfig.retentionDays`. */
+  transcriptRetentionDays: number;
+  /** `audio.autoMeetings`: meetings and calls open the microphone by themselves. Off: only Listen does. */
+  autoHearMeetings: boolean;
+  // lane E (#12)
+  /** `config.jobs` (the night shift). Optional: absent means off, and so does every snapshot from before it. */
+  jobs?: NightJobsConfig;
 };
+
+// lane E (#12)
+/** The night shift's switch and caps, resolved from `config.jobs`. See `SundialConfigFile.jobs`. */
+export type NightJobsConfig = ResolvedSundialConfig['jobs'];
+
+/**
+ * `queued` → `starting` (the runner was asked) → `running` / `waiting` (the
+ * fleet shows the session working, or waiting on the owner: a permission, a
+ * question, a plan) → `finishing` / `stopping` (the runner was asked to collect
+ * or to stop) → `done` / `failed` / `stopped`.
+ */
+export type NightJobStatus = 'queued' | 'starting' | 'running' | 'waiting' | 'finishing' | 'stopping' | 'done' | 'failed' | 'stopped';
+
+export interface NightJob {
+  id: string;
+  /** The project root, as `state.project.known` keys it. The job never runs here: it runs in `worktree`. */
+  repo: string;
+  project: string;
+  subject: string;
+  brief: string;
+  requestedAt: string;
+  status: NightJobStatus;
+  /** When the runner was asked to start it, and when it said it had. */
+  openedAt?: string;
+  startedAt?: string;
+  /** Reported by the runner: the worktree Sundial made, its branch, and the commit it started from. */
+  worktree?: string;
+  branch?: string;
+  base?: string;
+  /** The fleet showed the session working at least once; a turn over before that is not the end. */
+  seenWorking?: boolean;
+  costUsd?: number;
+  /** Why it was asked to stop: `owner`, `budget`, `time`, `switched-off`. */
+  stopReason?: string;
+  closedAt?: string;
+  commits?: number;
+  note?: string;
+}
+
+export interface NightShiftState {
+  queue: NightJob[];
+  open: NightJob | null;
+  /** Closed jobs, newest last, bounded. */
+  recent: NightJob[];
+  /** The night the counters are for (the local date of the evening it began), and what it has used. */
+  night: string | null;
+  countTonight: number;
+  spentUsdTonight: number;
+}
 
 /** One entry in `state.project.known` — the in-memory registry attribution prefix-matches against (no DB read from a rule). Keyed by root path. */
 export interface KnownProject {
@@ -428,6 +487,8 @@ export interface UpcomingEvent {
   end: string;
   attendees: string[];
   isAllDay: boolean;
+  /** Lane B: the calendar marks it as one of a series. Absent when it does not, and on older snapshots. */
+  recurring?: boolean;
 }
 
 /**
@@ -710,10 +771,17 @@ export interface ScheduledWakeup {
 export interface Commitment {
   /** `commitment:<slug>` — derived from the name, so re-seeing a branch finds the same thread rather than opening a second one. */
   id: string;
-  /** `BOX-508`, or `redesign-and-ios` — whatever `taskIdentity` made of the branch. */
+  /** `BOX-508`, or `redesign-and-tablet` — whatever `taskIdentity` made of the branch. */
   name: string;
-  /** Where it came from: the git branch a moment carried, or (J4.4) a promise heard aloud — the fan-out's `contains_commitment` on a moment with speech. */
-  source: 'git-branch' | 'speech';
+  /**
+   * Where it came from: the git branch a moment carried; (J4.4) a promise heard
+   * aloud in one moment; (UC1) a promise found in a whole meeting (`meeting`),
+   * typed to Gnomon (`chat`), told in answer to a question (`owner`), a
+   * reminder the owner made (`reminder`), or a mail's subject (`mail`).
+   */
+  source: 'git-branch' | 'speech' | 'meeting' | 'chat' | 'owner' | 'reminder' | 'mail';
+  /** UC1: what a promise is, beyond its words. Absent on a branch thread. */
+  promise?: PromiseTerms;
   /** J4.4: the moment the promise was heard in, and the noul it cleared. Absent on a branch thread. */
   heardIn?: { momentId: string; p: number };
   /** The raw branch, kept because the name is lossy and a person recognises the branch. */
@@ -761,15 +829,70 @@ export interface Commitment {
   activeDays: string[];
 }
 
+/**
+ * UC1: one piece of evidence about a promise. `strong` evidence closes it as
+ * kept; weak evidence is cited and closes nothing (a mail to Mira about
+ * something else).
+ */
+export interface PromiseEvidence {
+  kind: 'mail' | 'mail-weak' | 'commit' | 'branch' | 'pr' | 'file' | 'tab' | 'caption' | 'reply' | 'reminder' | 'judge';
+  at: string;
+  strong: boolean;
+  /** What was seen, short, already sanitized: "mail to Mira Bakker: The draft". */
+  text: string;
+}
+
+/**
+ * UC1: the terms of a promise. Parsed once, when it opens; the deliverable's
+ * key nouns (`keys`) are what every later piece of evidence is matched on.
+ */
+export interface PromiseTerms {
+  /** `owner`: the owner promised. `request`: someone asked the owner, who agreed. `awaiting`: someone promised the owner, or the owner asked them. */
+  direction: 'owner' | 'request' | 'awaiting';
+  /** The other side, as the log holds people: a name or `person-<hash>`. Null: nobody in particular. */
+  counterparty: string | null;
+  /** The thing promised, a few words: "the draft". */
+  deliverable: string;
+  /** The deliverable's key nouns, normalized: `["draft"]`. Empty when it named nothing matchable. */
+  keys: string[];
+  /** The words it was made in, clipped; already sanitized at ingest. */
+  quote: string;
+  /** When it is due, or null until known. */
+  due: string | null;
+  /** `explicit`: it was said. `next-meeting` (UC1-X1): the next event the counterparty attends. `default`: three working days. */
+  dueKind: 'explicit' | 'next-meeting' | 'default';
+  /** The meeting it was made in. */
+  heardAt?: { title: string; start: string } | null;
+  /** UC1-X1: the next calendar event the counterparty attends, once the calendar shows one. */
+  nextMeeting?: { title: string; start: string } | null;
+  /** The three-working-day default, kept so a meeting deadline that leaves the calendar can fall back to it. */
+  defaultDue?: string;
+  /** Newest last, bounded. */
+  evidence: PromiseEvidence[];
+  /** The last mail the owner sent the counterparty, whatever it was about — the "no mail to Mira since" line. */
+  lastMailTo?: { at: string; subject: string } | null;
+  /** The owner said it stands (X3), or it was their own words. False: found by a model, not yet confirmed. */
+  confirmed: boolean;
+  /** When the fading notice was said, and for which deadline — once per deadline. */
+  spokeFor?: string;
+  /** When the owner was asked whether it was kept (U1-F32). */
+  askedAt?: string;
+  /** Earlier dues, oldest first, when it was moved (U1-F27). */
+  moved?: string[];
+  /** The Apple Reminders item mirroring it (U1-F38). */
+  reminderId?: string;
+}
+
 /** A thread that went quiet, with the reason it was closed. */
 export interface ClosedCommitment extends Commitment {
   closedAt: string;
   /**
    * `went-quiet`: the staleness sweep. `seen-done` (J4.4): a later moment's
    * fan-out said the promise was kept AND the moment carried non-text evidence
-   * (a commit, commands, a meeting). `owner`: the owner's tap.
+   * (a commit, commands, a meeting). `owner`: the owner's tap. UC1: `kept` on
+   * evidence or the owner's word, `broken` and `dropped` on the owner's word.
    */
-  closedBecause: 'went-quiet' | 'seen-done' | 'owner';
+  closedBecause: 'went-quiet' | 'seen-done' | 'owner' | 'kept' | 'broken' | 'dropped';
 }
 
 /**
@@ -790,6 +913,8 @@ export interface CommitmentRow {
   activeDays: number;
   closedAt: string | null;
   closedBecause: string | null;
+  /** UC1: `PromiseTerms` as JSON; null on a branch thread. */
+  promise?: PromiseTerms | null;
 }
 
 /**
@@ -965,7 +1090,7 @@ export interface ResolvedPrediction {
 }
 
 /**
- * enhancements/outcome-feedback-signal — the owner's verdict on one artifact
+ * The feedback loop (decisions/assistant-as-an-event-source) — the owner's verdict on one artifact
  * Gnomon produced. Deliberately three distinct verdicts rather than a graded
  * score: `wrong` (factually incorrect — should lower confidence) and
  * `not-now` (correct but unwelcome *timing* — should NOT touch confidence)
@@ -1133,6 +1258,60 @@ export interface HotFile {
   lastAt: string;
 }
 
+/** What brought a "where was I" line on (UC2). */
+export type ResumeTrigger = 'break' | 'morning' | 'meeting-end' | 'project-return' | 'switch-back';
+
+/**
+ * The pieces of a "where was I" line, each present only when the record has it
+ * fresh. Built by `returnFromBreak` from state alone; the Today card draws the
+ * line and offers each piece's restore link on demand.
+ */
+export interface ResumePieces {
+  /** The owner's own line, written when leaving (U2-F35). */
+  note?: { text: string; at: string } | null;
+  /**
+   * The coding-agent session the owner left (U2-F15), from the fleet: its state
+   * then, its title and the owner's last prompt to it (both redacted at ingest, U2-F16).
+   */
+  agent?: { id: string; sid?: string; cwd: string; state: AgentFleetState; title: string | null; lastPrompt: string | null; since: string } | null;
+  /** The owner left from the agent app: the agent leads the line (36% of breaks). */
+  leftFromAgent?: boolean;
+  /** The last moment's intent line before the break. */
+  intent?: { text: string; at: string } | null;
+  project?: { id: string; name: string } | null;
+  /** The branch the repository is on now (U2-F11), not the one a moment carried: 1,469 of 1,967 moments carried none. */
+  branch?: string | null;
+  /** A ticket the work got past `seen` on (U2-F12): OCR misreads never get a branch or a commit. */
+  ticket?: { id: string; stage: TicketThread['stage']; pr: { number: number | null; state: string | null; reviewState: string | null } | null } | null;
+  /** The last command that failed in this project and has not passed since (U2-F17). */
+  failure?: { command: string; exitCode: number; cwd: string; at: string } | null;
+  /** The last file open in a window before the break, from its `documentPath` (U2-F13, without a cursor). */
+  file?: { path: string; app: string } | null;
+  /** The browser tab in front before the break (U2-F18): origin and path only. */
+  tab?: { url: string; title: string | null } | null;
+  /** Arc's tabs in the space the owner was in, when they left from Arc (item 5). */
+  tabs?: { space: string | null; tabs: { url: string; title: string | null }[] } | null;
+  /** Dock badges that rose while the owner was away (U2-F25): details only, never the lead. */
+  badges?: { app: string; count: number }[] | null;
+  /** Commits not pushed, when recent and plausible (U2-F20). */
+  unpushed?: { branch: string | null; ahead: number } | null;
+  /** An open branch thread touched shortly before the break (never a speech one). */
+  thread?: { id: string; name: string } | null;
+}
+
+export interface ResumeLine {
+  at: string;
+  trigger: ResumeTrigger;
+  /** How long the owner was away, wall clock. */
+  awayMs: number;
+  /** The notice key the line was offered under, for the verdict buttons. */
+  key: string;
+  line: string;
+  pieces: ResumePieces;
+  /** The owner was back on its project within 10 minutes (U2-F37). */
+  followed?: boolean;
+}
+
 /** Consecutive failures of one command. See `KernelState.shell`. */
 /** One ticket, stitched from every sense that saw its key. Written by `ticketTrack`. */
 export interface TicketThread {
@@ -1149,14 +1328,53 @@ export interface TicketThread {
   pr: { number: number | null; state: string | null; reviewState: string | null } | null;
 }
 
-/** One coding-agent session, as `agent:fleet` reports it. */
+/**
+ * One coding-agent session, as `agent:fleet` reports it (the `agent-session`
+ * sensor's `AgentFleetSession`, redacted at ingest).
+ *
+ * `waiting`: turn over, waiting for a new prompt. `permission`: waiting on an
+ * approval. `question` / `plan`: it asked the owner, or wants a plan approved.
+ * `tool`: a tool call without a result yet. `failed`: the turn ended on an API
+ * error. `working`: mid-turn.
+ */
+export type AgentFleetState = 'working' | 'waiting' | 'tool' | 'question' | 'plan' | 'permission' | 'failed';
 export interface AgentFleetEntry {
   id: string;
+  /** The whole session id, for `claude --resume` (U2-F32). Absent on samples from before it was sent. */
+  sid?: string;
   cwd: string;
   branch: string | null;
-  /** `waiting`: turn over, waiting for the owner. `tool`: a tool call without a result yet. `working`: mid-turn. */
-  state: 'working' | 'waiting' | 'tool';
+  state: AgentFleetState;
   since: string;
+  /** Where the state came from: Claude's live registry, a background job, a transcript alone, or a hook. Absent on samples from before 2026-09-28. */
+  source?: 'registry' | 'job' | 'transcript' | 'hook';
+  /** Who started it: the desktop app, a terminal, a script (sdk), Claude's background supervisor. */
+  origin?: 'desktop' | 'cli' | 'sdk' | 'bg' | 'other';
+  title?: string;
+  lastPrompt?: string;
+  costUsd?: number;
+  lines?: { added: number; removed: number };
+  pr?: { number: number; url: string };
+  /** The API error a failed turn ended on. */
+  error?: string;
+  /** The same failing tool call this many times in a row (from 3). */
+  repeats?: number;
+}
+
+/** One Claude Code hook event, as the report-only hook wrote it: names and types, never content. */
+export interface AgentHook {
+  event: string;
+  /** `notification_type`, `error_type`, a SessionStart `source`, a SessionEnd `reason`. */
+  detail: string | null;
+  at: string;
+}
+
+export interface AgentEdit {
+  id: string;
+  cwd: string;
+  /** Relative to `cwd`. */
+  file: string;
+  at: string;
 }
 
 export interface ShellFailureStreak {
@@ -1425,6 +1643,8 @@ export interface OwnerSettings {
    * it was the board's hottest cost.
    */
   blur: 'off' | 'soft' | 'full';
+  /** Notice groups the owner turned off (`notice-groups.ts`). Missing on an older fold = none. */
+  quiet?: string[];
   /** When the settings last changed, or null if they never have. */
   updatedAt: string | null;
 }
@@ -1570,6 +1790,36 @@ export interface KernelState {
    * 141.8 min over two days). Written by `agentSessionTrack`, read by
    * `resolveAttribution`'s agent tier.
    */
+  /**
+   * "Where was I" (UC2): the last line built on a return, and what it is built
+   * from that no other slice keeps. Single writer: `returnFromBreak`. Optional:
+   * older snapshots predate it.
+   */
+  resume?: {
+    last: ResumeLine | null;
+    /** The last intent line per project (`''` for none), from `moment:intent`. Bounded at `MAX_RESUME_INTENTS`. */
+    intents: Record<string, { text: string; at: string }>;
+    /** The last local file a window had open (`documentPath`), tool caches excluded. */
+    lastFile?: { path: string; app: string; at: string } | null;
+    /**
+     * Which pieces get used (U2-F36 F37): per piece, how many lines carried it and
+     * how many times its restore link was opened; and how many lines were
+     * followed by the owner back on the named project within 10 minutes.
+     */
+    learn?: { pieces: Record<string, { shown: number; opened: number }>; lines: number; followed: number };
+    /** The owner's next step, written before leaving (U2-F35); shown first on the next return, then spent. */
+    note?: { text: string; at: string } | null;
+    /** When each project last had a certain moment end, for a return after days (U2-F5). Bounded at 40. */
+    seen?: Record<string, string>;
+    /** The last three runs of certain moments on one project, for A→B→A (U2-F6). */
+    runs?: { projectId: string; from: string; to: string }[];
+    /** The last closed moment already folded here, so a close is read once. */
+    closedAt?: string | null;
+    /** The meeting under way and what was left before it, for one line when it ends (U2-F4). */
+    meeting?: { key: string; title: string; end: string; pieces: ResumePieces; said: boolean } | null;
+    /** Arc's focused space and its tabs, from `browser:arc-space` (sent on change only). */
+    arc?: { space: string | null; tabs: { url: string; title: string | null }[]; at: string } | null;
+  };
   /** Ticket threads by key, bounded. Written by `ticketTrack`; optional because older snapshots predate it. */
   tickets?: Record<string, TicketThread>;
   /**
@@ -1580,6 +1830,12 @@ export interface KernelState {
   watch?: {
     rules: import('./watch.js').WatchRule[];
     runtime: Record<string, import('./watch.js').WatchRuntime>;
+    /** Active time and away, folded from `WATCH_FLAG_TYPES` by the same reducer the backtest runs. */
+    flags?: import('./watch.js').WatchFlags;
+    /** Each rule's version, backtest promise, fires and verdicts (the rules card and the review read them). */
+    stats?: Record<string, import('./watch.js').WatchStats>;
+    /** Rules kept but not stepped: their runtime is frozen and they emit nothing. */
+    paused?: string[];
     /** Rules Gnomon proposed on the shelf, by shelf entry id; the owner's Keep adopts one. At most 10. */
     proposed?: Record<string, import('./watch.js').WatchRule>;
   };
@@ -1593,6 +1849,20 @@ export interface KernelState {
     fleet?: AgentFleetEntry[];
     /** `id@since` of each wait already raised as a notice, so one wait is one candidate. Only keys of the current fleet are kept. */
     nudged?: string[];
+    /**
+     * The last Claude Code hook per session id (`agent:hook`, U3-F8), overlaid
+     * on each fleet sample when newer than the entry's state. Entries older than
+     * the fleet window are dropped. Optional: older snapshots predate it.
+     */
+    hooks?: Record<string, AgentHook>;
+    /** The session the owner last sent a prompt to (a `UserPromptSubmit` hook), U3-F13. */
+    attended?: { id: string; at: string } | null;
+    /** Files agents edited in the last `AGENT_EDIT_WINDOW_MS` (a `PostToolUse` hook), for file-level collisions, U3-F23. */
+    edits?: AgentEdit[];
+    /** When the owner went away (idle, night, a call) with agents open, for one digest on return (U3-F16). */
+    away?: string | null;
+    /** The owner's own waits by kind, in minutes, the last 200 each — when an answered session went back to work (U3-F21). */
+    waits?: Record<string, number[]>;
   };
   /** `name` is the custom/named mode's display name when `state` is `'custom'` (or a system mode's own name, if the sidecar reports one) — `null` otherwise. Written by `focusModeTrack` (C1); previously dead — no rule wrote this at all. */
   focusMode: { state: FocusModeState; name: string | null; since: string };
@@ -1617,6 +1887,13 @@ export interface KernelState {
     /** The current run of consecutive non-zero exits of the same command, or null. */
     streak: ShellFailureStreak | null;
     lastCommandAt: string | null;
+    /**
+     * The last failing command per working directory (U2-F17), for "where was I".
+     * Unlike the streak, a success elsewhere does not clear it: only the same
+     * command passing in the same folder does. Bounded at `MAX_LAST_FAILURES`.
+     * Optional: older snapshots predate it.
+     */
+    lastFailure?: Record<string, { command: string; exitCode: number; at: string }>;
   };
   /** Dock badge pressure, by `pressureTrack` from `event:notification`. */
   pressure: {
@@ -1634,7 +1911,8 @@ export interface KernelState {
    * `momentRollup`, which reads `kept` when `eventId` is the event in hand).
    * `prevLines` is the furniture reference: what the previous capture of the
    * same app showed. `audit` is the running count that makes the filter a
-   * measurement rather than an assertion (`enhancements/auditable-ocr-extraction`).
+   * measurement rather than an assertion (`enhancements/auditable-ocr-extraction`,
+   * retired from the almanac once built).
    */
   /** See {@link HearingWindow}. Ambient hearing sleeps unless something wakes it. */
   hearing: HearingWindow;
@@ -1768,7 +2046,25 @@ export interface KernelState {
      * `heard`: utterances transcribed inside it. Together they say the owner was
      * not in the room — see `meetingFollowup`.
      */
-    seen: Record<string, { title: string; start: string; end: string; attendees: string[]; askedAt: string | null; listened?: boolean; heard?: number }>;
+    seen: Record<
+      string,
+      {
+        title: string;
+        start: string;
+        end: string;
+        attendees: string[];
+        askedAt: string | null;
+        listened?: boolean;
+        /** Utterances the MICROPHONE heard inside it: the owner being in the room. */
+        heard?: number;
+        /** UC1: utterances heard on either stream — whether there is anything for the promise pass to read. */
+        voices?: number;
+        /** UC1: when the meeting's promise pass was asked for. */
+        extractAt?: string;
+        /** UC1: what the pass found — the promise ids and one line each, for the question at the end (X3). Absent until it answers. */
+        promised?: { ids: string[]; lines: string[] };
+      }
+    >;
   };
 
   /**
@@ -2011,6 +2307,16 @@ export interface KernelState {
      * its key nor spends the daily budget until it actually reaches the owner.
      */
     deferred: DeferredNotice[];
+    /**
+     * The owner away from the Mac (idle, or the machine asleep) since `since`,
+     * and what the gate admitted to the list meanwhile, kept for the return.
+     *
+     * After an hour away, a tonic notice is held here instead of being spent
+     * into an empty room: it is weighed again at the first real input, so it
+     * reaches the owner with its budget spent then, and its half-life counts
+     * from when they could hear it. Absent = present, nothing held.
+     */
+    away?: { since: string | null; held: DeferredNotice[] };
   };
 
   /**
@@ -2044,7 +2350,7 @@ export interface KernelState {
       extract: { callsToday: number };
       journal: { callsToday: number };
       /**
-       * `/ask` and `gnomon ask`, split off `knowledge` when the tool loop landed.
+       * The chat's answers (once `/ask` and `gnomon ask`), split off `knowledge` when the tool loop landed.
        *
        * Ask used to borrow the `knowledge` purpose because it was one call per
        * question and the sharing cost nothing. A tool loop is several round trips
@@ -2093,7 +2399,7 @@ export interface KernelState {
     lastAnomalyByKind: Record<string, string>;
   };
 
-  /** Set by `retentionPrune` each time it fires — `gnomon status` reads this off the latest snapshot to confirm the daily prune actually ran, not just that the rule exists. */
+  /** Set by `retentionPrune` each time it fires, so the latest snapshot shows the daily prune actually ran, not just that the rule exists. */
   retention: { lastPrunedAt: string | null };
 
   recentHistory: ContextSnapshot[];
@@ -2174,7 +2480,7 @@ export interface KernelState {
      * it; `contradictionCheck` defaults it to `null` the same way it backfills
      * `pendingObject`/`pendingCount`.
      */
-    factCursor: Record<string, { object: string | null; factId: string | null; confidence: number; pendingObject: string | null; pendingCount: number; projectId: string | null }>;
+    factCursor: Record<string, { object: string | null; factId: string | null; confidence: number; pendingObject: string | null; pendingCount: number; projectId: string | null; /** lane Q: the local day the confirmed fact was last reinforced — one increment a day, however often it is re-seen. */ reinforcedOn?: string }>;
     /**
      * D5 (docs/audit/production-proposal-and-enhancements.md, addresses
      * A§5.1, A§5.5) — the last N companion insights (`kind` is the
@@ -2265,7 +2571,8 @@ export interface KernelState {
      * nothing for the whole call. The schedule slice survives moment
      * boundaries, which is what a rule needs.
      */
-    active: { title: string; start: string; end: string } | null;
+    /** `others`: attendees who are not the owner or a room; a block with 0 is not a call. Missing on an older fold. */
+    active: { title: string; start: string; end: string; others?: number } | null;
   };
 
   /**
@@ -2417,7 +2724,7 @@ export interface KernelState {
   };
 
   /**
-   * enhancements/outcome-feedback-signal — the return path. Until this
+   * The feedback loop (decisions/assistant-as-an-event-source) — the return path. Until this
    * existed, nothing anywhere observed whether an insight, journal, or fact
    * Gnomon produced was accurate, useful, or unwelcome, which is why both
    * "move a fact's confidence on predictive success" (fact-lifecycle-policy)
@@ -2497,6 +2804,14 @@ export interface KernelState {
   commitments: {
     open: Commitment[];
     recentClosed: ClosedCommitment[];
+    /**
+     * UC1: open promises, kept apart from the branch threads with a cap of
+     * their own, so twenty branches can never evict one (the shared cap of 20
+     * could). Written by `promiseTrack` only.
+     */
+    promises: Commitment[];
+    /** UC1: the question about promises the owner has not answered yet, so the answer can be read after `ownerAsk` closes it. */
+    promiseAsk: { askId: string; kind: 'meeting' | 'kept'; ids: string[]; attendees: string[]; meeting: { title: string; start: string } | null } | null;
   };
 
   /**
@@ -2586,6 +2901,8 @@ export interface KernelState {
    */
   mail: {
     recent: { from: string; subject: string; at: string }[];
+    /** UC1: mail the owner sent — To and Cc as names or `person-<hash>`, the subject, when. Absent on a snapshot from before it. */
+    sent?: { to: string[]; subject: string; at: string }[];
     messages: { from: string; chat: string | null; fromMe: boolean; at: string }[];
     accessible: boolean | null;
   };
@@ -2595,6 +2912,7 @@ export interface KernelState {
    * judge read as a claim or an instruction, with the probability, so the
    * fan-out and the render can leave it out (docs/jarvis/05, defence 3).
    * Marked text is never deleted from the log — only kept out of state above L2.
+   * Both hold `textKey(text)` since lane Q (Q9), never the text itself.
    */
   ingestAnomaly: {
     seen: string[];
@@ -2731,7 +3049,7 @@ export interface KernelState {
    * that would drive it.
    */
   lifeEvent: {
-    /** Project/process of the most recently closed moment — for cross-moment context-switch detection. */
+    /** Project of the last closed moment that had one, and process of the last closed moment — for cross-moment context-switch detection. */
     lastMomentProject: string | null;
     lastMomentProcess: string | null;
     /** Keyed by `${cwd}|${testKey}` — most recent failing run awaiting a passing re-run within the recovery window. */
@@ -2747,8 +3065,119 @@ export interface KernelState {
     recentSwitches: { at: string; process: string }[];
     lastThrashEmitAt: string | null;
     /** B3 (docs/audit/production-proposal-and-enhancements.md) — consecutive zero-activity `input:activity` windows; `isIdle` flips once that count crosses `idleTrack`'s threshold, driving `idle:start`/`idle:end` emission and `momentClose`'s idle-gap boundary. */
-    idle: { consecutiveZeroWindows: number; isIdle: boolean };
+    idle: {
+      consecutiveZeroWindows: number;
+      isIdle: boolean;
+      /**
+       * The last `input:activity` window with real input. A break is measured from
+       * here on the wall clock (U2-F1): zero windows stop while the Mac sleeps, so
+       * counting them hid the long breaks. Optional: older snapshots predate it.
+       */
+      lastActiveAt?: string | null;
+    };
   };
+  // lane E (#12)
+  /**
+   * The night shift: supervised Claude Code jobs, each in its own git worktree.
+   * Single writer: `nightShift`. Optional: older snapshots predate it. Nothing
+   * enters it, and nothing starts, while `config.jobs.enabled` is off.
+   */
+  nightShift?: NightShiftState;
+
+  // lane D
+  /** Where an interruption goes right now (#6 the right channel). Single writer: `noticeRoute`. */
+  route: NoticeRoute;
+
+  // lane C (enhancements 7, 8) — both optional: older snapshots predate them.
+  /** Weekly trends from waking days (use case 8). Single writer: `driftTrack`. See `drift.ts`. */
+  drift?: DriftState;
+  /** Each testable belief's record against what the owner then did (use case 7). Single writer: `factTestTrack`. See `fact-tests.ts`. */
+  factTests?: FactTestsState;
+
+  // lane B — briefs (standup draft, meeting prep). Written by `briefClock`; optional because older snapshots predate it.
+  briefs?: BriefState;
+
+  // lane H
+  /** Sundial's own health: what broke, since when, and whether it was said. Single writer: `sensorHealth`. */
+  sensorHealth: SensorHealthState;
+}
+
+// lane H
+/**
+ * One thing wrong with Sundial itself (a grant dropped, a helper gone quiet,
+ * a model refusing its key). Said once per incident: `raisedAt` is set when
+ * the candidate goes to the gate, and the entry is removed when the trouble
+ * clears, which re-arms it.
+ */
+export interface HealthTrouble {
+  /** When it began, or when the Mac woke with it still standing (the clock restarts on a wake). */
+  since: string;
+  /** How long it must stand before it is said. */
+  holdMs: number;
+  observation: string;
+  evidence: string[];
+  raisedAt: string | null;
+}
+
+export interface SensorHealthState {
+  /** Keyed by what broke: `input-grant`, `input-keys`, `sidecar:<label>`, `microphone`, `screen-recording`, `config`, `llm-auth:<provider>`. */
+  troubles: Record<string, HealthTrouble>;
+  /** The last `clock:tick`: a longer gap is a sleep, and restarts every trouble's clock. */
+  lastTickAt: string | null;
+  /** The run of input windows with no key press, timed in 30-minute windows. */
+  keys: { since: string; windowStart: string; windowClicks: number; windowActive?: number; lastAt: string } | null;
+  /** Consecutive auth refusals (401/403) per model provider. */
+  llmAuth: Record<string, { count: number; label: string; statusCode: number | null }>;
+  /** Purpose → the local day its budget last ran out (shown in Settings, never said). */
+  budgetExhausted: Record<string, string>;
+  /** The phone push: last success and last failure (shown in Settings). */
+  push: { lastOkAt: string | null; lastFailedAt: string | null; lastError: string | null };
+}
+
+// lane D
+/**
+ * Where a notice the gate admitted as an interruption goes (#6 the right channel).
+ *
+ * One router, computed by `noticeRoute` from the log alone: `mac` (at the Mac
+ * and active: the chat turn and the banner), `phone` (idle or asleep: ntfy),
+ * `hold` (in a call, or a focus mode: wait for it to end). The gate reads it
+ * with `routeFor`, and the phasic `Notify` carries the answer, so the
+ * delivery plugin never decides.
+ */
+export interface NoticeRoute {
+  channel: 'mac' | 'phone' | 'hold';
+  /** `call` = an app holds the mic, or a calendar meeting is running. `focus` = a macOS focus mode is on. */
+  reason: 'active' | 'away' | 'call' | 'focus';
+  /** When this channel began. Null before the first event. */
+  since: string | null;
+  /** Idle or asleep since then; null = present. From `idle:start` / sleep until the first real input. */
+  awaySince: string | null;
+}
+
+/** One owner-local day of work, as the standup draft reads it back. Bounded per field. */
+export interface BriefDay {
+  /** Commits per project (the repo folder's name), with up to three branches. */
+  commits: Record<string, { n: number; branches: string[] }>;
+  /** Pull requests whose state was first seen or changed that day, keyed `project#number`. */
+  prs: Record<string, { number: number; title: string; state: string }>;
+  /** Ticket keys named by that day's commits, branches and pull requests. */
+  tickets: string[];
+  /** Coding-agent session ids seen working, per project. */
+  agents: Record<string, string[]>;
+}
+
+/** Lane B: what the briefs remember between ticks. */
+export interface BriefState {
+  /** The last few owner-local days, the oldest pruned at the day boundary. */
+  days: Record<string, BriefDay>;
+  /** Each pull request's last seen state, keyed `project#number`, so a change is counted once. Bounded. */
+  prState: Record<string, string>;
+  /** Person → the last meeting the owner was in with them (`calendar:active`). Bounded. */
+  lastMet: Record<string, { title: string; start: string }>;
+  /** Brief keys already raised, with when. Pruned with the days. */
+  done: Record<string, string>;
+  /** The last brief raised, for Today. */
+  latest?: { kind: 'standup-draft' | 'meeting-prep'; title: string; start: string; end: string; lines: string[]; at: string } | null;
 }
 
 /**
@@ -3086,7 +3515,7 @@ export interface RunAskHarvestBackfillEffect {
 
 /**
  * The delivery channel. The harness executor forwards this to the Cordis
- * event `gnomon/notice`; the `gnomon-proactive` plugin injects it into the
+ * event `gnomon/notice`; the `sundial-proactive` plugin injects it into the
  * companion agent (and wakes it for `phasic-notice`). The old daemon could
  * only console.log it.
  */
@@ -3263,6 +3692,16 @@ export interface DeleteRowsEffect {
    * general prune: signals, moments, llm_audit, orphaned embeddings.
    */
   signalTypes?: string[];
+  /**
+   * With `signalTypes`: only rows whose payload `processName`/`bundleId`
+   * contains one of these — the purge of captures from an app that has since
+   * joined the sensitive list. Bounded per run by the executor.
+   */
+  apps?: string[];
+  /** With `signalTypes`: only these `event_type`s (`audio` + `transcript`). */
+  eventTypes?: string[];
+  /** lane Q (Q10): instead of deleting, clear `llm_audit` text and prune completed `applied_effects` rows older than `olderThan`. */
+  trim?: 'audit-bodies';
 }
 
 /**
@@ -3329,7 +3768,7 @@ export interface SupersedeFactEffect {
  *   the entire point, and it happens without touching a single read path.
  * - Every history path keeps it, with `supersededBy: null` marking it as
  *   retracted rather than replaced. "You used to believe X and I told you it was
- *   wrong" stays in the timeline, exactly as `assertions-versus-observations`
+ *   wrong" stays in the timeline, exactly as `concepts/entity-facts-and-belief`
  *   argues a correction should.
  *
  * The fact's row is never deleted or rewritten, same invariant supersession
@@ -3361,6 +3800,26 @@ export interface RetractFactEffect {
  * history, and `scoredSearch` sweeps its embedding exactly as it sweeps a
  * superseded fact's, so the claim cannot come back as evidence.
  */
+/**
+ * UC1 (U1-F2): one promise pass over a whole meeting that just ended. The
+ * executor gathers what hearing wrote down inside the window (the utterances,
+ * speaker-labelled when the far side was heard, and any Meet captions), asks
+ * the `extract` model for the promises in it, keeps those grounded in the
+ * words, and ingests one `meeting:promises` — with an empty list when nothing
+ * was heard or nothing was promised, so the fold learns the pass is done.
+ * The transcript never enters the log.
+ */
+export interface RunMeetingPromisesEffect {
+  type: 'RunMeetingPromises';
+  meetingKey: string;
+  title: string;
+  start: string;
+  end: string;
+  /** The other people on the invite, as the log names them. */
+  attendees: string[];
+  ts: string;
+}
+
 export interface RetractKnowledgeEntryEffect {
   type: 'RetractKnowledgeEntry';
   entryId: string;
@@ -3581,6 +4040,8 @@ export interface ReinforceFactEffect {
   factId: string;
   delta: number;
   ts: string;
+  /** lane C: `beta` is evidence AGAINST — a prediction the fact made that failed (`factTestTrack`). Absent means `alpha`. */
+  side?: 'alpha' | 'beta';
 }
 
 /**
@@ -3697,7 +4158,7 @@ export interface RecordPredictionEffect {
 
 /**
  * One gate verdict, on its way to the durable `gate_decisions` table
- * (`almanac/enhancements/unsaid-room-gate-decision-persistence.md`).
+ * (`almanac/architecture/rules/noticing-and-expectations.md`).
  *
  * The gate computes channel, weight, utility and the five-term arithmetic for
  * every candidate and — before this effect existed — returned them in memory
@@ -3799,6 +4260,7 @@ export type Effect =
   | RunFactExtractionEffect
   | ResolveAliasesEffect
   | RunConversationExtractionEffect
+  | RunMeetingPromisesEffect
   | RunRefutationEffect
   | RunBeliefAuditEffect
   | RunAliasAlignmentEffect

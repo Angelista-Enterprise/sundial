@@ -28,31 +28,31 @@ describe('splitStatus', () => {
 
 describe('linkMovement', () => {
   const commitments = [
-    { branch: 'ledger-failure-views', name: 'ledger-failure-views', projectName: 'sundial', lastTouchedAt: '2026-09-17T17:24:11.156Z', touches: 4 },
+    { branch: 'ledger-retry-views', name: 'ledger-retry-views', projectName: 'sundial', lastTouchedAt: '2026-09-17T17:24:11.156Z', touches: 4 },
     { branch: 'board-audit', name: 'board-audit', projectName: 'puzzlebox-studio', lastTouchedAt: '2026-09-17T22:57:33.652Z', touches: 1 },
-    { branch: 'chore/dsh-0.1.5-rc.1', name: 'DSH-0', projectName: 'sundial', lastTouchedAt: '2026-09-13T09:22:06.899Z', touches: 66 },
+    { branch: 'chore/abc-0.1.5-rc.1', name: 'ABC-0', projectName: 'sundial', lastTouchedAt: '2026-09-13T09:22:06.899Z', touches: 66 },
   ]
   const commits = [
-    { branch: 'ledger-failure-views', commitLine: '94cb291 ledger(L1): retry lineage on the call ledger [1/7]' },
-    { branch: 'ledger-failure-views', commitLine: 'edfcd87 ledger: failure views complete [7/7]' },
-    { branch: 'ledger-failure-views', commitLine: '828c36b ledger(L6): lost answers [6/7]' },
+    { branch: 'ledger-retry-views', commitLine: '94cb291 ledger(L1): retry lineage on the call ledger [1/7]' },
+    { branch: 'ledger-retry-views', commitLine: 'edfcd87 ledger: failure views complete [7/7]' },
+    { branch: 'ledger-retry-views', commitLine: '828c36b ledger(L6): lost answers [6/7]' },
     { branch: 'main', commitLine: 'b061c5a fix(day): the fold adds [1/9]' },
   ]
 
   it('links a goal to the branch its own name contains, and reads the progress token', () => {
-    const link = linkMovement('Ledger failure views (L1–L7)', commitments, commits)
-    expect(link).toMatchObject({ branch: 'ledger-failure-views', project: 'sundial', lastAt: '2026-09-17T17:24:11.156Z', touches: 4, commits: 3, done: 7, total: 7 })
+    const link = linkMovement('Ledger retry views (L1–L7)', commitments, commits)
+    expect(link).toMatchObject({ branch: 'ledger-retry-views', project: 'sundial', lastAt: '2026-09-17T17:24:11.156Z', touches: 4, commits: 3, done: 7, total: 7 })
   })
 
   it('carries that branch commits back, newest first, and nobody elses', () => {
-    const link = linkMovement('Ledger failure views (L1–L7)', commitments, commits)
+    const link = linkMovement('Ledger retry views (L1–L7)', commitments, commits)
     expect(link.log.map((c) => c.commitLine)).toEqual([commits[2].commitLine, commits[1].commitLine, commits[0].commitLine])
     expect(link.log.some((c) => c.branch === 'main')).toBe(false)
   })
 
   it('takes the furthest token, not the last commit', () => {
     const backwards = [commits[2], commits[1], commits[0]]
-    expect(linkMovement('Ledger failure views (L1–L7)', commitments, backwards)?.done).toBe(7)
+    expect(linkMovement('Ledger retry views (L1–L7)', commitments, backwards)?.done).toBe(7)
   })
 
   it('links a goal whose words differ from the branch only in punctuation', () => {
@@ -66,7 +66,7 @@ describe('linkMovement', () => {
   })
 
   it('refuses a short branch slug, which would match half the sentences anyone writes', () => {
-    // `dsh-0` is five characters; a goal named "Push the rc branch" must not
+    // `abc-0` is five characters; a goal named "Push the rc branch" must not
     // claim it, and nothing else should either.
     expect(linkMovement('Push the rc branch', commitments, commits)).toBeNull()
     expect(linkMovement('Strip auth tokens from stored URLs', commitments, commits)).toBeNull()

@@ -59,6 +59,10 @@ const STATE_SCOPES: Record<string, string | null> = {
   'agent:session': null,
   // Every coding-agent session and its state — sampled the same way, deduped here.
   'agent:fleet': null,
+  // Arc's tabs in the focused space: a state, re-read on every restart.
+  'browser:arc-space': null,
+  // lane H (H2): Sundial's own health, read once a minute; logged only on a change.
+  'sensor:health': null,
 };
 
 /**
@@ -84,11 +88,15 @@ export function stateSignature(type: string, payload: Record<string, unknown>): 
 
   const scopeField = STATE_SCOPES[type];
   const scope = scopeField ? String(payload[scopeField] ?? '') : '';
+  // The one exception to "the whole payload": a working agent's cost, line counts
+  // and last prompt move on nearly every 15 s sample, and would write a fleet row
+  // each time. The row still carries them; they ride on the next state change.
+  const signed = type === 'agent:fleet' && Array.isArray(payload.sessions) ? { ...payload, sessions: payload.sessions.map((s) => (typeof s === 'object' && s !== null ? { ...s, costUsd: undefined, lines: undefined, lastPrompt: undefined } : s)) } : payload;
   const value = JSON.stringify(
-    Object.keys(payload)
+    Object.keys(signed)
       .filter((k) => k !== 'timestamp')
       .sort()
-      .map((k) => [k, payload[k]]),
+      .map((k) => [k, (signed as Record<string, unknown>)[k]]),
   );
 
   return { key: scope ? `${type}|${scope}` : type, value };

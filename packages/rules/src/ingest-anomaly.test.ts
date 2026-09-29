@@ -49,3 +49,22 @@ describe('ingestAnomalyCheck (J3.7)', () => {
     expect(JSON.stringify(render.messages)).not.toContain('leisure');
   });
 });
+
+describe('ingestAnomaly keeps keys, not texts (Q9)', () => {
+  it('500 novel 6 KB texts leave a ring of short keys, and each is still asked once', () => {
+    let state = createInitialState('d1');
+    const texts = Array.from({ length: 500 }, (_, i) => `${i} `.padEnd(6 * 1024, 'x'));
+    let asked = 0;
+    for (const [i, text] of texts.entries()) {
+      const out = ingestAnomalyCheck(state, { id: `p${i}`, type: 'page:text', ts: '2026-09-22T10:00:00.000Z', payload: { text }, sanitized: true });
+      state = out.state;
+      asked += out.effects.length;
+    }
+    expect(asked).toBe(500);
+    expect(ingestAnomalyCheck(state, { id: 'again', type: 'page:text', ts: '2026-09-22T10:00:00.000Z', payload: { text: texts[42] }, sanitized: true }).effects).toEqual([]);
+    for (let i = 0; i < 200; i += 1) state = ingestAnomalyCheck(state, answered(texts[i]!, 0.9, `m${i}`)).state;
+    expect(isMarked(state, texts[199]!)).toBe(true);
+    // 500 × 6 KB = 3 MB of text; the slice is a few tens of KB.
+    expect(JSON.stringify(state.ingestAnomaly).length).toBeLessThan(40 * 1024);
+  });
+});

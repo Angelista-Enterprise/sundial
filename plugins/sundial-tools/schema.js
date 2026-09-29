@@ -8,7 +8,7 @@
 //
 //   - `exclusiveMinimum` (every z.number().positive())
 //   - `maximum`          (every .max(N) row limit)
-//   - `maxLength`        (gnomon_show_view's `because` chip text)
+//   - `maxLength`
 //
 // Dropping those silently would delete the one place the model is told "limit
 // is at most 200", so each dropped constraint is folded into the property's

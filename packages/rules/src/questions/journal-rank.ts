@@ -10,7 +10,6 @@
  * sentence saying what the answer is for; no other moment is in it, so the
  * scores are comparable across calls (pointwise, PROBES: 83 % > listwise).
  */
-import type { JudgementResultPayload } from '@sundial/kernel/types.js';
 import { noul, score, type QuestionSet } from './index.js';
 import { momentFanout, momentFanoutState, type MomentFanoutInput } from './moment-fanout.js';
 
@@ -36,14 +35,6 @@ export interface JournalRankAnswer {
   level: number;
   p: number;
   headline: number;
-}
-
-export function journalRankOf(id: string, answers: JudgementResultPayload['answers']): JournalRankAnswer | null {
-  const a = answers.prominence;
-  if (typeof a?.score !== 'number') return null;
-  const level = Math.round(a.score);
-  const probabilities = a.probabilities ? Object.values(a.probabilities).filter((v) => typeof v === 'number') : [];
-  return { id, level, p: probabilities.length > 0 ? Math.max(...probabilities) : (a.confidence ?? 0), headline: typeof answers.is_the_headline?.noul === 'number' ? answers.is_the_headline.noul : 0 };
 }
 
 /** The top K by level, then by the probability behind the level, then by headline. Stable for ties. */

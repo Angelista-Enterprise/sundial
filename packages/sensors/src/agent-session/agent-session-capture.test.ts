@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { readAgentSession } from './agent-session-capture.js';
+import { LOCATOR_HEAD_BYTES, readAgentSession, readSessionLocator } from './agent-session-capture.js';
 
 let root: string;
 const NOW = Date.parse('2026-08-01T12:00:00Z');
@@ -107,5 +107,17 @@ describe('readAgentSession', () => {
     const at = new Date(NOW - MINUTE);
     fs.utimesSync(full, at, at);
     expect(readAgentSession(NOW, root)?.cwd).toBe('/Users/x/Projects/app');
+  });
+});
+
+describe('readSessionLocator (U3-F11)', () => {
+  it('reads only the head of a transcript', () => {
+    const file = path.join(root, 'big.jsonl');
+    const pad = JSON.stringify({ type: 'user', message: { content: 'x'.repeat(LOCATOR_HEAD_BYTES) } });
+    fs.writeFileSync(file, `${JSON.stringify({ cwd: '/Users/pat/Projects/acme', gitBranch: 'main' })}\n${pad}\n`);
+    expect(readSessionLocator(file)).toEqual({ cwd: '/Users/pat/Projects/acme', branch: 'main' });
+    // A cwd past the head is never reached: the read stops at 64 KB.
+    fs.writeFileSync(file, `${pad}\n${JSON.stringify({ cwd: '/Users/pat/Projects/acme' })}\n`);
+    expect(readSessionLocator(file)).toBeNull();
   });
 });

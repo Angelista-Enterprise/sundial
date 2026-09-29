@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import { getSundialHome } from '@sundial/helpers/config.js';
 import path from 'node:path';
-import { isHiddenProcess, isSensitiveProcess } from '@sundial/helpers/redact/redact-policy.js';
 import { readScreenOcrSnapshot } from '../screen-ocr/screen-ocr-capture.js';
+import { isPrivateCapture } from '../screen-ocr/index.js';
 
 /**
  * J3.3 — screen understanding. The OCR helper writes a downscaled frame
@@ -59,7 +59,7 @@ export class ScreenVisionSensor {
     if (stat.mtimeMs === this.lastMtimeMs || now - stat.mtimeMs > 2 * this.config.intervalMs) return out;
     const ocr = readScreenOcrSnapshot();
     const processName = ocr?.processName ?? null;
-    if (processName && (isSensitiveProcess(processName) || isHiddenProcess(processName))) return out;
+    if (ocr && isPrivateCapture(ocr)) return out;
     this.lastAt = now;
     this.lastMtimeMs = stat.mtimeMs;
     this.inFlight = true;

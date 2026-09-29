@@ -126,10 +126,34 @@ function claimHome() {
 // ---------------------------------------------------------------------------
 // doctor
 
+// lane H (H7)
+/** The install's app.env as key → value, or {} when there is none. */
+function readAppEnv() {
+  try {
+    return Object.fromEntries(
+      fs
+        .readFileSync(path.join(HOME, 'app.env'), 'utf8')
+        .split('\n')
+        .filter((l) => /^[A-Z_]+=/.test(l))
+        .map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]),
+    );
+  } catch {
+    return {};
+  }
+}
+
+/** What an existing install needs to still start: the Node its app.env names. Empty before an install. */
+function installChecks() {
+  const env = readAppEnv();
+  if (!env.SUNDIAL_NODE) return [];
+  return [{ name: `app.env's Node (${env.SUNDIAL_NODE})`, ok: fs.existsSync(env.SUNDIAL_NODE), fix: 'That Node is gone (a Homebrew upgrade moves it). Run `node bin/sundial install --skip-build` with the Node you use now; it rewrites app.env and rebuilds nothing.' }];
+}
+
 function checks() {
   const node = Number(process.versions.node.split('.')[0]);
   const clt = spawnSync('xcode-select', ['-p'], { encoding: 'utf8' });
   return [
+    ...installChecks(),
     { name: 'macOS', ok: process.platform === 'darwin', fix: 'Sundial runs on macOS only (the sensors are native Swift).' },
     { name: `Node.js >= 22 (found ${process.versions.node})`, ok: node >= 22, fix: 'Install Node 22 or newer: https://nodejs.org or `brew install node`.' },
     { name: 'pnpm', ok: has('pnpm'), fix: 'Install pnpm: `npm install -g pnpm` or `brew install pnpm`.' },
@@ -289,6 +313,21 @@ function appPid() {
 }
 
 /** Ask the app to quit (it stops the helpers and the web process itself) and wait for it. */
+/**
+ * Start the app. `open` hands the caller's environment to it, and Sundial.swift
+ * lets that environment win over app.env, so a shell holding the SUNDIAL_* or
+ * DSH_* of another install (a job, a test) would start this app on that
+ * install's ports, label and dsh home. app.env defines what the app needs, so
+ * none of them rides along.
+ */
+function openApp() {
+  // The caller's install variables stay out (a test shell must not reconfigure
+  // the live app); this install's own home goes in, so a bundle kept outside
+  // its data folder still finds the right app.env instead of ~/.sundial.
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(SUNDIAL|DSH)_/.test(key))), SUNDIAL_HOME: HOME };
+  return run('open', [APP], { env });
+}
+
 function stopApp() {
   const pid = appPid();
   if (!pid) return false;
@@ -395,6 +434,9 @@ async function install() {
   writeStartScript({ sidecars });
   writeAppEnv({ sidecars });
   writeMarker({ sidecars, mode, app: APP });
+  // A test install (its own label) leaves the owner's Claude settings alone unless asked.
+  if (flag('claude-hooks') || (LABEL === 'dev.sundial.agent' && !flag('no-claude-hooks'))) addClaudeHooks();
+  if (flag('claude-context') || (LABEL === 'dev.sundial.agent' && !flag('no-claude-context'))) addClaudeContext();
 
   if (flag('no-launchagent')) {
     step(6, `Not starting Sundial (--no-launchagent). Start by hand: ${mode === 'app' ? `open ${APP}` : `zsh ${path.join(HOME, 'start.sh')}`}`);
@@ -404,7 +446,7 @@ async function install() {
     step(6, 'Starting the Sundial app (it adds itself to Login Items)');
     removeAgent();
     stopApp();
-    run('open', [APP]);
+    openApp();
   } else {
     step(6, `Installing the LaunchAgent ${LABEL} (starts Sundial at login)`);
     loadAgent();
@@ -472,6 +514,116 @@ function openBrowser() {
 }
 
 // ---------------------------------------------------------------------------
+// Claude Code hooks: report-only. Each event runs packages/sensors/claude-hook.mjs,
+// which appends one whitelisted line to $SUNDIAL_HOME/.daemon/claude-hooks.jsonl
+// and prints nothing, so it never approves, denies or adds context (the one
+// exception, the SessionStart context hook, is its own entry below). The entries
+// are Sundial's by their command (the hook file plus this install's folder);
+// nothing else in the owner's settings is read into or changed.
+
+const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+const CLAUDE_SETTINGS = path.join(CLAUDE_DIR, 'settings.json');
+const HOOK_SCRIPT = path.join(REPO, 'packages', 'sensors', 'claude-hook.mjs');
+/** Event → matcher (null: every one). SessionEnd runs in the foreground: Claude is exiting, and a background child may not outlive it. */
+const CLAUDE_HOOK_EVENTS = {
+  SessionStart: null,
+  SessionEnd: null,
+  UserPromptSubmit: null,
+  Notification: null,
+  Stop: null,
+  StopFailure: null,
+  PreCompact: null,
+  PostToolUse: 'Edit|Write|MultiEdit|NotebookEdit',
+};
+const shq = (s) => `'${s.replaceAll("'", "'\\''")}'`;
+const hookCommand = () => `${shq(SIDECAR_NODE)} ${shq(HOOK_SCRIPT)} ${shq(HOME)}`;
+const isOurHook = (h) => typeof h?.command === 'string' && h.command.includes('claude-hook.mjs') && h.command.endsWith(` ${shq(HOME)}`);
+
+function readClaudeSettings() {
+  if (!fs.existsSync(CLAUDE_SETTINGS)) return {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS, 'utf8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+  } catch {}
+  fail(`${CLAUDE_SETTINGS} is not a JSON object. Left as it is; no hooks were changed.`);
+}
+
+/** The settings without Sundial's entries for this install (`is` picks which). Groups and events left empty by it are dropped. */
+function withoutOurHooks(settings, is = isOurHook) {
+  if (!settings.hooks || typeof settings.hooks !== 'object') return settings;
+  const hooks = {};
+  for (const [event, groups] of Object.entries(settings.hooks)) {
+    if (!Array.isArray(groups)) {
+      hooks[event] = groups;
+      continue;
+    }
+    const kept = groups
+      .map((g) => (Array.isArray(g?.hooks) && g.hooks.some(is) ? { ...g, hooks: g.hooks.filter((h) => !is(h)) } : g))
+      .filter((g) => !(Array.isArray(g?.hooks) && g.hooks.length === 0));
+    if (kept.length > 0) hooks[event] = kept;
+  }
+  // Rebuilt key by key, so `hooks` keeps its place and the rest of the file its order.
+  return Object.fromEntries(Object.entries(settings).flatMap(([k, v]) => (k !== 'hooks' ? [[k, v]] : Object.keys(hooks).length > 0 ? [[k, hooks]] : [])));
+}
+
+function writeClaudeSettings(settings) {
+  fs.mkdirSync(CLAUDE_DIR, { recursive: true });
+  const mode = fs.existsSync(CLAUDE_SETTINGS) ? fs.statSync(CLAUDE_SETTINGS).mode & 0o777 : 0o600;
+  const tmp = `${CLAUDE_SETTINGS}.sundial-${process.pid}`;
+  fs.writeFileSync(tmp, `${JSON.stringify(settings, null, 2)}\n`, { mode });
+  fs.renameSync(tmp, CLAUDE_SETTINGS);
+}
+
+/** Add (or refresh) Sundial's hooks. Idempotent: a second run leaves the file byte-for-byte the same. */
+function addClaudeHooks() {
+  const settings = withoutOurHooks(readClaudeSettings());
+  const hooks = { ...(settings.hooks ?? {}) };
+  for (const [event, matcher] of Object.entries(CLAUDE_HOOK_EVENTS)) {
+    const hook = { type: 'command', command: hookCommand(), timeout: 10, ...(event === 'SessionEnd' ? {} : { async: true }) };
+    hooks[event] = [...(Array.isArray(hooks[event]) ? hooks[event] : []), { ...(matcher ? { matcher } : {}), hooks: [hook] }];
+  }
+  writeClaudeSettings({ ...settings, hooks });
+  say(`  Claude Code hooks (report-only) in ${CLAUDE_SETTINGS}: ${Object.keys(CLAUDE_HOOK_EVENTS).join(', ')}`);
+}
+
+/** Remove exactly Sundial's hooks for this install (`is` picks which). True when there were any. */
+function removeClaudeHooks(is = isOurHook) {
+  if (!fs.existsSync(CLAUDE_SETTINGS)) return false;
+  const before = readClaudeSettings();
+  const after = withoutOurHooks(before, is);
+  if (JSON.stringify(after) === JSON.stringify(before)) return false;
+  writeClaudeSettings(after);
+  return true;
+}
+
+function claudeHooks() {
+  if (flag('remove')) return say(removeClaudeHooks() ? `Removed Sundial's Claude Code hooks from ${CLAUDE_SETTINGS}.` : 'No Sundial hooks to remove.');
+  addClaudeHooks();
+}
+
+// lane E (#11): the SessionStart context hook, the ONE Sundial hook that adds
+// context (owner-approved 2026-09-29, for SessionStart only). It is its own
+// entry, so it goes in and out without touching the report-only hooks.
+const CONTEXT_SCRIPT = path.join(REPO, 'packages', 'sensors', 'claude-context.mjs');
+const isOurContextHook = (h) => typeof h?.command === 'string' && h.command.includes('claude-context.mjs') && h.command.endsWith(` ${shq(HOME)}`);
+const isAnyOurHook = (h) => isOurHook(h) || isOurContextHook(h);
+
+/** Add (or refresh) the context hook. Not async: Claude reads a SessionStart hook's stdout only when it waits for it. It gives up by itself after 450 ms. */
+function addClaudeContext() {
+  const settings = withoutOurHooks(readClaudeSettings(), isOurContextHook);
+  const hooks = { ...(settings.hooks ?? {}) };
+  const hook = { type: 'command', command: `${shq(SIDECAR_NODE)} ${shq(CONTEXT_SCRIPT)} ${shq(HOME)}`, timeout: 2 };
+  hooks.SessionStart = [...(Array.isArray(hooks.SessionStart) ? hooks.SessionStart : []), { hooks: [hook] }];
+  writeClaudeSettings({ ...settings, hooks });
+  say(`  Claude Code SessionStart context hook in ${CLAUDE_SETTINGS} (off: sundial claude-context --remove, or privacy.claudeContext false)`);
+}
+
+function claudeContext() {
+  if (flag('remove')) return say(removeClaudeHooks(isOurContextHook) ? `Removed Sundial's SessionStart context hook from ${CLAUDE_SETTINGS}.` : 'No Sundial context hook to remove.');
+  addClaudeContext();
+}
+
+// ---------------------------------------------------------------------------
 // uninstall
 
 function uninstall() {
@@ -495,6 +647,8 @@ function uninstall() {
     say(`  LaunchAgent ${label}${plistOurs ? ` (${plist})` : ' (not installed)'}`);
     for (const t of targets.slice(0, 1)) say(`  ${t}  — the data folder: database, config, .env, logs`);
     if (appOurs) say(`  ${app}  — the app`);
+    if (fs.existsSync(CLAUDE_SETTINGS) && JSON.stringify(withoutOurHooks(readClaudeSettings(), isAnyOurHook)) !== JSON.stringify(readClaudeSettings())) say(`  Sundial's hooks in ${CLAUDE_SETTINGS} (nothing else in it)`);
+    if (backupsOutside()) say(`\nKept: ${backupsOutside()} — daily copies of the whole record. Remove them by hand if you want them gone.`);
     say('\nRun `sundial uninstall --yes` to do it. The repository folder is not touched.');
     return;
   }
@@ -512,11 +666,19 @@ function uninstall() {
   }
   if (plistOurs) fs.rmSync(plist, { force: true });
   if (appOurs) fs.rmSync(app, { recursive: true, force: true });
+  if (removeClaudeHooks(isAnyOurHook)) say(`Removed Sundial's Claude Code hooks from ${CLAUDE_SETTINGS}.`);
   fs.rmSync(HOME, { recursive: true, force: true });
   say(`Removed ${targets.join(' and ')}.`);
   say('macOS keeps permission grants per app. To clear them too, run:');
-  say('  tccutil reset All dev.sundial.daemon');
+  say(`  tccutil reset All ${BUNDLE_ID}`);
   say('If you added the shell hook line to ~/.zshrc, remove it by hand.');
+  if (backupsOutside()) say(`Kept: ${backupsOutside()} — daily copies of the whole record (up to 7). To remove them: rm -rf '${backupsOutside()}'`);
+}
+
+/** The daily copies, when they live outside the data folder (the owner's install: ~/sundial-backups/daily). Same rule as packages/helpers/src/backup-dir.ts. */
+function backupsOutside() {
+  const dir = path.join(os.homedir(), 'sundial-backups', 'daily');
+  return path.resolve(HOME) === path.join(os.homedir(), '.sundial') && fs.existsSync(dir) ? dir : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -617,6 +779,11 @@ function status() {
   }
   if (appMode()) say(`app       ${APP} ${appPid() ? `running (pid ${appPid()})` : 'not running'}`);
   else say(`agent     ${LABEL} ${agentLoaded() ? 'loaded' : 'not loaded'}`);
+  // lane H (H7): a bundle in the data folder beside the real app is a stray from a build run without SUNDIAL_APP_PATH.
+  if (appMode() && path.resolve(APP) !== path.resolve(HOME_APP) && fs.existsSync(HOME_APP)) {
+    say(`  !!      a second Sundial.app is in ${HOME_APP}; the app runs from ${APP}. It is a stray from a build; delete it when Sundial is stopped.`);
+  }
+  for (const c of installChecks()) if (!c.ok) say(`  !!      ${c.name} is missing\n          ${c.fix}`);
   const r = spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', `http://127.0.0.1:${WEB_PORT}/`], { encoding: 'utf8' });
   say(`web       http://127.0.0.1:${WEB_PORT} → ${r.stdout || 'no answer'}`);
   const db = path.join(HOME, 'sundial.db');
@@ -635,7 +802,7 @@ const commands = {
   status,
   doctor: () => process.exit(doctor() ? 0 : 1),
   start: () => {
-    if (appMode()) return appPid() ? say('Sundial is already running.') : run('open', [APP]);
+    if (appMode()) return appPid() ? say('Sundial is already running.') : openApp();
     if (agentLoaded()) return run('launchctl', ['kickstart', `gui/${UID}/${LABEL}`]);
     if (!fs.existsSync(PLIST)) fail(`there is no LaunchAgent (${PLIST}). Installed with --no-launchagent? Start by hand: zsh ${path.join(HOME, 'start.sh')}`);
     return run('launchctl', ['bootstrap', `gui/${UID}`, PLIST]);
@@ -650,9 +817,11 @@ const commands = {
   restart: () => {
     if (!appMode()) return run('launchctl', ['kickstart', '-k', `gui/${UID}/${LABEL}`]);
     stopApp();
-    run('open', [APP]);
+    openApp();
   },
   open: openBrowser,
+  'claude-hooks': claudeHooks,
+  'claude-context': claudeContext,
   mcp: () => run(process.execPath, [path.join(REPO, 'packages', 'mcp', 'bin', 'sundial-mcp.js')], { env: { ...process.env, SUNDIAL_HOME: HOME } }),
 };
 
@@ -663,6 +832,8 @@ if (!commands[command]) {
   install     check prerequisites, build, write ${HOME}, start at login
                 --no-open  --no-sidecars  --no-launchagent  --no-mcp  --skip-build
                 --no-app (a LaunchAgent instead of the Mac app)  --no-login-item
+                --no-claude-hooks  --claude-hooks (a test install adds none unless asked)
+                --no-claude-context  --claude-context (the same, for the SessionStart context hook)
                 --timeout <seconds>  (how long to wait for the web client, default 120)
   status      what is installed and running
   doctor      check prerequisites only
@@ -671,6 +842,10 @@ if (!commands[command]) {
   mcp         run the read-only MCP server over stdio (for Claude Code etc.)
   migrate     copy an old ~/.gnomon install into ${HOME} (never moves)
                 --from <dir>  --dsh-from <dir>
+  claude-hooks  add Sundial's report-only hooks to Claude Code's settings.json
+                --remove  (take exactly Sundial's entries out again)
+  claude-context  add the SessionStart hook that gives a new Claude session Gnomon's
+                context for its folder (at most 5 lines); --remove takes it out
   uninstall   remove what install wrote (dry run without --yes)
 
 Environment: SUNDIAL_HOME, SUNDIAL_LABEL, SUNDIAL_WEB_PORT, SUNDIAL_PHONE_PORT, SUNDIAL_CHROME_PORT, SUNDIAL_SIDECAR_NODE`);

@@ -73,3 +73,17 @@ export function looksLikePersonName(value: string): boolean {
   if (/[,;:!]|\.\s/u.test(name)) return false;
   return true;
 }
+
+/**
+ * A meeting room on a calendar's attendee list. Rooms end in their capacity
+ * (`HQ-2-14 (8)`, `HQ-3-02 - The Long Room (14)`) and open with a short site
+ * code and a floor (`HQ-2-…`); either is enough on its own, so a site that
+ * names rooms one way and not the other still works. No human name ends in a
+ * number in brackets. Detected, not listed: a list is out of date the first
+ * time the office adds a room. One definition for every reader: the people
+ * card, the situation's "who is in it", and the entity-name gate.
+ */
+export function isMeetingRoom(name: unknown): boolean {
+  const text = String(name ?? '');
+  return /\(\d+\)\s*$/.test(text) || /^[A-Z]{2,4}-\d/.test(text);
+}

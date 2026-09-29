@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
-import { expandHomePath } from './sensor-runtime.js';
+import { expandHomePath, SensorRuntime } from './sensor-runtime.js';
+import { loadSundialConfig } from '@sundial/helpers/sundial-config.js';
 import { classifySidecar, type SidecarCheck } from './sensor-health.js';
 import { signVerdict } from '@sundial/helpers/verdict-sign.js';
 import { createPhoneIngestHandler, startPhoneIngestServer } from './phone-ingest.js';
@@ -11,6 +12,19 @@ describe('expandHomePath', () => {
     expect(expandHomePath('~')).toBe(os.homedir());
     expect(expandHomePath('~/Projects/x')).toBe(path.join(os.homedir(), 'Projects/x'));
     expect(expandHomePath('/opt/thing')).toBe('/opt/thing');
+  });
+});
+
+describe('pollTick isolates each sensor', () => {
+  it('a sensor that throws does not skip the sensors after it', async () => {
+    const appended: string[] = [];
+    const runtime = new SensorRuntime({ appendSignal: async (type) => void appended.push(type), getState: () => null, config: loadSundialConfig() });
+    const fields = runtime as unknown as Record<string, unknown>;
+    for (const key of Object.keys(fields)) if (key.endsWith('Sensor')) fields[key] = { poll: () => [] };
+    fields.calendarSensor = { poll: async () => { throw new TypeError("Cannot read properties of undefined (reading 'slice')"); } };
+    fields.sleepWakeSensor = { poll: () => ({ type: 'test:after-calendar', payload: {} }) };
+    await runtime.pollTickGuarded();
+    expect(appended).toContain('test:after-calendar');
   });
 });
 

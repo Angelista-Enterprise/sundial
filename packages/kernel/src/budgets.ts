@@ -2,12 +2,9 @@ import type { LlmPurpose } from './types.js';
 
 /**
  * Default daily per-purpose caps (Phase 4, docs/design/03-effects-and-llm-
- * policy.md). Lives here (not duplicated in the daemon and the CLI
- * separately) so `gnomon ask` — which calls the LLM directly from the CLI
- * process, with no access to the daemon's live `state.budgets` (A§1.3) —
- * can enforce the same numbers the daemon does, checked against the latest
- * snapshot instead of live state (docs/audit/production-proposal-and-
- * enhancements.md's A3: "give `gnomon ask` its own enforced cap").
+ * policy.md). Lives here, not in one consumer, so the kernel runtime
+ * (`packages/harness-runtime`), the chat's budget guard (`sundial-tools`) and
+ * the Ledger (`sundial-theme`) all enforce and show the same numbers.
  */
 /**
  * Caps are a runaway-loop backstop, not a cost lever (docs/design/07 §14) —
@@ -95,9 +92,8 @@ export const DEFAULT_DAILY_CAPS: Record<LlmPurpose, number> = {
  * dependency graph) — only recognized purpose keys with a positive number
  * actually override anything; an unrecognized key or a bad value is
  * silently ignored rather than injecting a bogus purpose into the caps
- * object. Both the daemon and the CLI call this with the *same* loaded
- * config so `gnomon ask`'s enforced cap (A3) never drifts from the
- * daemon's.
+ * object. Every caller passes the *same* loaded config, so no two of them
+ * can drift apart.
  */
 export function resolveDailyCaps(overrides?: Partial<Record<string, number>>): Record<LlmPurpose, number> {
   const resolved = { ...DEFAULT_DAILY_CAPS };

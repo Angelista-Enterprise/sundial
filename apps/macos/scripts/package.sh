@@ -53,7 +53,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$RES/app/bin" "$RES/app/plugins" "$RES/app/packages/sensors"
 cp "$DIST"/sundial-daemon "$DIST"/sundial-*-helper "$APP/Contents/MacOS/"
 # The app itself, with Sparkle: swift.sh's copy (for a checkout) has none.
-swiftc -O -o "$APP/Contents/MacOS/Sundial" apps/macos/Sundial.swift -F "$SPARKLE" -framework Sparkle \
+swiftc -O -swift-version 5 -o "$APP/Contents/MacOS/Sundial" apps/macos/Sundial.swift -F "$SPARKLE" -framework Sparkle \
   -framework AppKit -framework WebKit -framework ServiceManagement -Xlinker -rpath -Xlinker @executable_path/../Frameworks
 ditto "$SPARKLE/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 # The browser helper is an app of its own (see app.sh), nested here with its
@@ -85,7 +85,7 @@ for DIR in plugins/sundial-*; do
 done
 cp bin/sundial "$RES/app/bin/"
 cp env.example "$RES/app/"
-cp packages/sensors/shell-hook.zsh "$RES/app/packages/sensors/"
+cp packages/sensors/shell-hook.zsh packages/sensors/claude-hook.mjs "$RES/app/packages/sensors/"
 cp "$NODE_BIN" "$RES/node"
 
 # The live bundle's plist (usage strings and all), as build.sh takes it.

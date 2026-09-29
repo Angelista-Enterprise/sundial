@@ -86,6 +86,9 @@ export const SHIPPED_PHASIC_BAR = 1.6
  */
 export const GATE_DAILY_BUDGET = 4
 
+/** Interruptions a local day allows (`phasicDailyCap`); past it an alert is judged as an ambient notice. */
+export const GATE_PHASIC_CAP = 6
+
 /**
  * Where the two bars actually stand, given the owner's own dial.
  *
@@ -140,7 +143,7 @@ export function outcomeOf(row) {
  * what the rule actually writes — `below-bar`, `too-soon` and `focus` are not
  * `reason` values, so three of its seven entries could never fire and
  * `below-threshold` fell through to "below threshold", which is the storage in
- * a nicer font. These are the five the rule emits, plus `owner-silent`, and
+ * a nicer font. These are the five the rule emits, plus `owner-silent`, `owner-away` and `expired`, and
  * each one says which number settled it.
  */
 export function whySentence(row) {
@@ -167,6 +170,19 @@ export function whySentence(row) {
       return `it was worth ${w(row.weight)}, but interrupting then cost ${w(row.interruptionCost)} — held for a cheaper moment`
     case 'owner-silent':
       return 'you had noticing turned off, so it was never weighed'
+    case 'owner-quiet':
+      return 'you turned this kind of notice off in Settings, so it was never weighed'
+    case 'expired':
+      return `it was worth ${w(row.weight)} but no moment cheap enough came before it went stale, so it was let go`
+    case 'owner-away':
+      return `it was worth ${w(row.weight)} while you were away, so it waited for you to come back`
+    // lane D — #6 the right channel
+    case 'held-call':
+      return `it was worth ${w(row.weight)} while you were in a call, so it waited for the call to end`
+    case 'held-focus':
+      return `it was worth ${w(row.weight)} while a focus mode was on, so it waited for the focus to end`
+    case 'displaced':
+      return `it was worth ${w(row.weight)} and waiting, but newer notices filled the queue, so it was let go`
     default:
       return String(row?.reason ?? '').replace(/-/g, ' ')
   }
@@ -245,6 +261,41 @@ export const octaves = (scale) => {
   return out
 }
 
+/** A key a test or a smoke run wrote, not a notice the owner was actually given. */
+export const isTestKey = (key) => /test|experiment/i.test(key) || key.startsWith('j0.')
+
+/**
+ * How often a notice was worth hearing, by kind, with its n.
+ *
+ * `verdicts` are `{ artifactId, verdict, at }` for notices, oldest first. Test
+ * and smoke keys are left out, and only the LATEST verdict on each notice
+ * counts, so a notice tapped twice is one judgement. Measured 2026-09-28: 44
+ * verdicts in thirty days read as 50% useful; without tests, latest-only, they
+ * are 37%, and one family (0 of 15) is most of the gap. A single figure hides
+ * that, so the kinds travel with it. `kindOf(key)` names a key's kind.
+ */
+export function noticePrecision(verdicts, kindOf) {
+  const latest = new Map()
+  let excluded = 0
+  for (const v of Array.isArray(verdicts) ? verdicts : []) {
+    if (typeof v?.artifactId !== 'string') continue
+    if (isTestKey(v.artifactId)) excluded += 1
+    else latest.set(v.artifactId, v.verdict)
+  }
+  const kinds = new Map()
+  let useful = 0
+  for (const [key, verdict] of latest) {
+    const kind = kindOf(key) ?? key.split(/[:|]/)[0]
+    const row = kinds.get(kind) ?? { kind, n: 0, useful: 0, wrong: 0, notNow: 0 }
+    row.n += 1
+    if (verdict === 'useful') (row.useful += 1), (useful += 1)
+    else if (verdict === 'wrong') row.wrong += 1
+    else if (verdict === 'not-now') row.notNow += 1
+    kinds.set(kind, row)
+  }
+  return { n: latest.size, useful, excluded, byKind: [...kinds.values()].sort((a, b) => b.n - a.n || a.kind.localeCompare(b.kind)) }
+}
+
 /** What the whole record says about the bar, as counts the card states on its face. */
 export function gateCensus(rows, bars) {
   const list = Array.isArray(rows) ? rows : []
@@ -295,7 +346,7 @@ export function gateCensus(rows, bars) {
     daysByKey.set(row.noticeKey, seen)
     reasons[row.reason] = (reasons[row.reason] ?? 0) + 1
     outcomes[outcomeOf(row)] += 1
-    if (row.channel === 'phasic' || row.channel === 'deferred' || row.interruptionCost > 0) urgent += 1
+    if (row.channel === 'phasic' || (row.channel === 'deferred' && row.reason !== 'owner-away') || row.interruptionCost > 0) urgent += 1
     // K0.2 — every comparison to the bar uses the row's OWN bar where it has
     // one. `placedWeight` rescales it into the card's, which on this axis is
     // the same statement: so many doublings above the line it actually met.

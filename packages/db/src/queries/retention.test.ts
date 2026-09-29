@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { getDb, resetDb } from '../db-client.js';
-import { deleteRowsOlderThan } from './retention.js';
+import { deleteRowsOlderThan, deleteSignalsOlderThan, trimAuditBodies } from './retention.js';
 
 async function setupTestDb() {
   resetDb();
@@ -131,5 +131,64 @@ describe('deleteRowsOlderThan', () => {
     expect(result.embeddingsDeleted).toBe(2);
     const remaining = await db.all(sql`SELECT id FROM memory_embeddings ORDER BY id`);
     expect(remaining).toEqual([{ id: 'e2' }, { id: 'e3' }]);
+  });
+});
+
+describe('deleteSignalsOlderThan — sensitive apps', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+  });
+
+  it('deletes screens whose app name or bundle id matches, whatever the display language, and keeps the rest', async () => {
+    const db = getDb();
+    const row = (id: string, type: string, data: Record<string, unknown>) =>
+      db.run(sql`INSERT INTO signals (id, signal_type, event_type, data, captured_at) VALUES (${id}, ${type}, 'ocr', ${JSON.stringify(data)}, '2026-07-01T00:00:00.000Z')`);
+    await row('s1', 'screen', { processName: 'Wachtwoorden', bundleId: 'com.apple.Passwords' });
+    await row('s2', 'screen', { processName: 'loginwindow', bundleId: null });
+    await row('s3', 'screen', { processName: 'Code', bundleId: 'com.microsoft.VSCode' });
+    await row('s4', 'window', { processName: 'loginwindow' });
+
+    expect(await deleteSignalsOlderThan('2026-07-17T00:00:00.000Z', ['screen'], { apps: ['passwords', 'loginwindow'] })).toBe(2);
+    expect(await db.all(sql`SELECT id FROM signals ORDER BY id`)).toEqual([{ id: 's3' }, { id: 's4' }]);
+    // Idempotent: a second run finds nothing.
+    expect(await deleteSignalsOlderThan('2026-07-17T00:00:00.000Z', ['screen'], { apps: ['passwords', 'loginwindow'] })).toBe(0);
+  });
+});
+
+describe('deleteSignalsOlderThan — event types', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+  });
+
+  it('sweeps only the named event types of a signal type', async () => {
+    const db = getDb();
+    await db.run(sql`INSERT INTO signals (id, signal_type, event_type, data, captured_at) VALUES ('t1', 'audio', 'transcript', '{}', '2026-07-01T00:00:00.000Z')`);
+    await db.run(sql`INSERT INTO signals (id, signal_type, event_type, data, captured_at) VALUES ('t2', 'audio', 'transcript', '{}', '2026-07-16T00:00:00.000Z')`);
+    await db.run(sql`INSERT INTO signals (id, signal_type, event_type, data, captured_at) VALUES ('d1', 'audio', 'device-changed', '{}', '2026-07-01T00:00:00.000Z')`);
+    expect(await deleteSignalsOlderThan('2026-07-10T00:00:00.000Z', ['audio'], { eventTypes: ['transcript'] })).toBe(1);
+    expect(await db.all(sql`SELECT id FROM signals ORDER BY id`)).toEqual([{ id: 'd1' }, { id: 't2' }]);
+  });
+});
+
+describe('trimAuditBodies (Q10)', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+    const db = getDb();
+    await db.run(sql`ALTER TABLE llm_audit ADD COLUMN response_content text`);
+    await db.run(sql`CREATE TABLE applied_effects (event_id text NOT NULL, effect_index integer NOT NULL, applied_at text NOT NULL, status text DEFAULT 'completed' NOT NULL, PRIMARY KEY(event_id, effect_index))`);
+  });
+
+  it('clears old prompt and response text but keeps the row; deletes only old completed journal rows', async () => {
+    const db = getDb();
+    await db.run(sql`INSERT INTO llm_audit (id, purpose, model, prompt, requested_at, response_content) VALUES ('old', 'judge', 'm', 'a long prompt', '2026-08-01T00:00:00.000Z', 'an answer'), ('new', 'judge', 'm', 'a new prompt', '2026-09-20T00:00:00.000Z', 'x')`);
+    await db.run(sql`INSERT INTO applied_effects (event_id, effect_index, applied_at, status) VALUES ('e1', 0, '2026-08-01T00:00:00.000Z', 'completed'), ('e2', 0, '2026-08-01T00:00:00.000Z', 'failed'), ('e3', 0, '2026-09-20T00:00:00.000Z', 'completed')`);
+    expect(await trimAuditBodies('2026-09-01T00:00:00.000Z')).toEqual({ llmBodiesCleared: 1, effectsDeleted: 1 });
+    expect(await db.all(sql`SELECT id, prompt, response_content AS response FROM llm_audit ORDER BY id`)).toEqual([
+      { id: 'new', prompt: 'a new prompt', response: 'x' },
+      { id: 'old', prompt: '', response: null },
+    ]);
+    expect(await db.all(sql`SELECT event_id AS id FROM applied_effects ORDER BY event_id`)).toEqual([{ id: 'e2' }, { id: 'e3' }]);
+    // A second run finds nothing to clear.
+    expect(await trimAuditBodies('2026-09-01T00:00:00.000Z')).toEqual({ llmBodiesCleared: 0, effectsDeleted: 0 });
   });
 });

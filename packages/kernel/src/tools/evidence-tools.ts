@@ -184,7 +184,8 @@ export function slimSignalData(data: Record<string, unknown>, cap = MAX_SIGNAL_F
  * `llm` and `privacy` are excluded for a different reason: they are Gnomon
  * describing its own internals, and feeding them back to a model answering a
  * question about the owner's day invites exactly the self-referential summary
- * recorded in `almanac/issues/journal-summarises-model-output-not-evidence`.
+ * recorded in `issues/journal-summarises-model-output-not-evidence` (since
+ * retired from the almanac).
  */
 export const OWNER_EVIDENCE_TYPES = [
   'window',

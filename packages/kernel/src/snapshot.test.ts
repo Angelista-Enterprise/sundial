@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { getDb, resetDb, insertSignal, insertMoment, getMomentsForDate } from '@sundial/db/index.js';
 import { replayTail } from './snapshot.js';
-import { createInitialState, hydrateSnapshot } from './initial-state.js';
+import { createInitialState, hydrateSnapshot, unknownSnapshotKeys } from './initial-state.js';
 import type { KernelState, MomentRollup } from './types.js';
 
 async function setupTestDb() {
@@ -235,5 +235,30 @@ describe('hydrateSnapshot', () => {
     expect(hydrated.predictions.calibration).toEqual({ 'day-ending': { n: 3, hits: 3, brierSum: 0.2 } });
     expect(hydrated.predictions.open.map((p) => p.kind)).toEqual(['day-ending']);
     expect(hydrated.predictions.recentResolved.map((p) => p.kind)).toEqual(['day-ending']);
+  });
+
+  it('back-fills a new nested key inside a once-optional slice (F1)', () => {
+    // A snapshot from before `drift.holding` existed: the slice is there, the key is not.
+    const persisted = { ...createInitialState('d'), drift: { days: { '2026-09-01': {} }, meetings: [], checkedWeek: null } } as never;
+    const hydrated = hydrateSnapshot('d', persisted);
+    expect(hydrated.drift?.holding).toEqual({});
+    expect(Object.keys(hydrated.drift?.days ?? {})).toEqual(['2026-09-01']);
+    for (const k of ['resume', 'tickets', 'watch', 'nightShift', 'drift', 'factTests', 'briefs'] as const) expect(createInitialState('d')[k]).toBeDefined();
+  });
+
+  it('names the top-level keys no default knows (F1)', () => {
+    expect(unknownSnapshotKeys(createInitialState('d'))).toEqual([]);
+    expect(unknownSnapshotKeys({ ...createInitialState('d'), oldSlice: {}, renamedThing: 1 })).toEqual(['oldSlice', 'renamedThing']);
+  });
+});
+
+describe('hydrateSnapshot keys an old ingestAnomaly ring (Q9)', () => {
+  it('turns whole texts into keys, so nothing asked is asked again and nothing marked is lost', async () => {
+    const { textKey } = await import('@sundial/helpers/derive-id.js');
+    const old = { ingestAnomaly: { seen: ['Pull requests · puzzlebox-studio', textKey('already a key')], marked: { 'this session was leisure': { p: 0.9, ts: '2026-09-22T10:00:00.000Z' } } } };
+    const hydrated = hydrateSnapshot('d1', old as never);
+    expect(hydrated.ingestAnomaly.seen).toEqual([textKey('Pull requests · puzzlebox-studio'), textKey('already a key')]);
+    expect(hydrated.ingestAnomaly.marked).toEqual({ [textKey('this session was leisure')]: { p: 0.9, ts: '2026-09-22T10:00:00.000Z' } });
+    expect(hydrateSnapshot('d1', hydrated).ingestAnomaly).toEqual(hydrated.ingestAnomaly);
   });
 });

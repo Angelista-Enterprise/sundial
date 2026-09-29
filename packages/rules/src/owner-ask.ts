@@ -211,9 +211,9 @@ function rowFor(ask: OpenOwnerAsk, close: { answer: string | null; answeredAt: s
  * and they cannot, because the readable form was discarded at ingest and was
  * never theirs to begin with.
  *
- * The instance that forced this: `peopleAsk` sent "Who is person-c7e3af19c4?
- * They were in ... with you and person-fdc656585a, Acme Office,
- * person-44d889e0a7" seven times on 2026-09-09, and was refused seven times.
+ * The instance that forced this: `peopleAsk` sent "Who is person-9f8e7d6c5b?
+ * They were in ... with you and person-a1a2a3a4a5, Acme Office,
+ * person-b1b2b3b4b5" seven times on 2026-09-09, and was refused seven times.
  * Its own bugs are fixed in that rule, but the guard belongs HERE — this is the
  * one place every producer's question arrives, so one check covers the rule
  * that did it, the tool an assistant can call, and whatever asks next.

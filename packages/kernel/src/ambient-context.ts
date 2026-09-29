@@ -1,15 +1,16 @@
 // The ambient memory slice: what the model should know about the owner before
 // the owner has said anything.
 //
-// `buildContext` (context.ts) packs context FOR A QUESTION — it embeds the
-// query, runs `scoredSearch`, and pulls the facts of entities the question
-// names. The dsh harness has no question at assembly time: a system-prompt
+// Context FOR A QUESTION is the tools' job — they embed the query, run
+// `scoredSearch`, and pull the facts of entities the question names (the old
+// `buildContext` in context.ts did that for the retired `/ask`, and was deleted
+// once nothing called it). The dsh harness has no question at assembly time: a system-prompt
 // context is resolved before the turn, for a greeting as much as for a hard
 // question. Until this existed the harness registered exactly one context, the
 // clock, so every turn started from a model that knew the date and nothing
-// about the person it was talking to (`enhancements/ambient-context-injection`).
+// about the person it was talking to (almanac/architecture/llm/tool-loop).
 //
-// This is the question-independent half of `buildContext`'s four layers, plus
+// This is the question-independent half of that old context's four layers, plus
 // the live slices the kernel already holds and never told the model about:
 //
 //   1. facts about the owner — every current fact on an entity whose name is
@@ -19,13 +20,12 @@
 //      open research goal — all straight off `KernelState`;
 //   4. what was noticed recently — the last few `knowledge_entries`;
 //   5. the assistant's own track record, under the same ten-resolution floor
-//      `buildContext` uses.
+//      the tools' track-record readout uses.
 //
 // `scoredSearch` is deliberately NOT here. Retrieval needs a query; the tools
-// carry that half. Routines are not here either, for the reason
-// `enhancements/collected-but-unused-data` records: at ~40% out-of-sample
-// precision they are candidates a person weighs, not context a model asserts
-// from. `gnomon_routines` states its precision; a prompt line cannot.
+// carry that half. Routines are not here either (almanac/concepts/memory-tiers):
+// at about 27% out-of-sample precision they are candidates a person weighs, not
+// context a model asserts from. `gnomon_routines` states its precision; a prompt line cannot.
 //
 // Split in two so the composition is testable without a database:
 // `gatherAmbientInput` does the reads, `composeAmbientContext` is pure.
@@ -52,7 +52,7 @@ export const MAX_WAKEUPS = 3;
 export const MAX_RECENT_KNOWLEDGE = 3;
 /** How far back "recently noticed" reaches. */
 export const RECENT_KNOWLEDGE_MS = 48 * 60 * 60 * 1000;
-/** Same floor as `buildContext`: a rate over fewer resolutions is noise wearing a percentage. */
+/** Ten resolutions: a rate over fewer is noise wearing a percentage. */
 const MIN_RESOLVED_FOR_RATE = 10;
 
 export interface AmbientOwnerFact {
@@ -70,6 +70,8 @@ export interface AmbientInput {
   goals: { name: string; facts: { predicate: string; object: string }[] }[];
   today: { sessions: number; minutes: number; activeMinutes?: number; mostRecentProcess: string; topProjects?: { name: string; minutes: number }[] } | null;
   commitments: { name: string; projectName: string | null; activeDays: number; lastTouchedAt: string }[];
+  /** UC1: open promises, in the owner's words, with when they are due. */
+  promises?: { line: string; due: string | null; confirmed: boolean }[];
   wakeups: { at: string; reason: string }[];
   ownerAsk: { question: string; askId?: string } | null;
   /** Gnomon's own open research question, if one is open. */
@@ -164,6 +166,16 @@ export function composeAmbientContext(input: AmbientInput): string {
       // Presence is not attention: the open-window minutes and the minutes with
       // real input are both said, so "a long day" and "a busy day" stay distinct.
       `Today so far: ${input.today.sessions} activity session(s), about ${input.today.minutes}m tracked${typeof input.today.activeMinutes === 'number' && input.today.activeMinutes > 0 ? ` (${input.today.activeMinutes}m with hands on keyboard or mouse)` : ''}, most recently in ${input.today.mostRecentProcess}.${input.today.topProjects && input.today.topProjects.length > 0 ? ` Mostly on ${input.today.topProjects.map((p) => `${p.name} (${p.minutes}m)`).join(', ')}.` : ''}`,
+    );
+  }
+
+  const promises = (input.promises ?? []).slice(0, MAX_COMMITMENTS);
+  if (promises.length > 0) {
+    blocks.push(
+      [
+        `Open promises (${input.promises!.length}; closed by themselves when the mail, commit or file shows up — gnomon_open_commitments has the terms):`,
+        ...promises.map((p) => `- ${p.line}${p.due ? `, due ${p.due.slice(0, 16).replace('T', ' ')} UTC` : ''}${p.confirmed ? '' : ' (heard, not confirmed)'}`),
+      ].join('\n'),
     );
   }
 
@@ -303,6 +315,13 @@ export async function gatherAmbientInput(options: GatherAmbientOptions): Promise
     ownerFacts,
     goals,
     today,
+    promises: (state?.commitments.promises ?? []).map((c) => {
+      const p = c.promise;
+      const who = p?.counterparty ? (state?.memory.aliasNames?.[p.counterparty] ?? p.counterparty) : null;
+      const named = who && !/^person-[0-9a-f]{10}$/.test(who) ? who : null;
+      const line = !p ? c.name : p.direction === 'awaiting' ? `${named ?? 'someone'} owes you ${p.deliverable}` : `${p.deliverable}${named ? ` for ${named}` : ''}`;
+      return { line, due: p?.due ?? null, confirmed: p?.confirmed === true };
+    }),
     commitments: (state?.commitments.open ?? []).map((commitment) => ({
       name: commitment.name,
       projectName: commitment.projectName,

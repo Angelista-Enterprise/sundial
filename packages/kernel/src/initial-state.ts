@@ -1,4 +1,6 @@
 import type { KernelState, MomentRollup } from './types.js';
+import { NATURAL_KEY } from './watch.js';
+import { isTextKey, textKey } from '@sundial/helpers/derive-id.js';
 
 /**
  * UTC, deliberately. This seeds `budgets.day` for a state that has no config yet
@@ -71,7 +73,7 @@ export function createInitialState(deviceId: string): KernelState {
     av: { call: null, lastCall: null },
     browser: { current: null, authorized: true, lastError: null },
     hearing: { listening: false, reason: null, until: null, title: null, mutedUntil: null },
-    settings: { autonomy: 'act', noticeBias: 0, autoAdvanceMs: null, paper: 'system', motion: 'full', blur: 'full', updatedAt: null },
+    settings: { autonomy: 'act', noticeBias: 0, autoAdvanceMs: null, paper: 'system', motion: 'full', blur: 'full', quiet: [], updatedAt: null },
     board: { cards: {}, scenes: {}, lenses: {}, focus: null, notice: null, walk: null, plan: null, span: null, recent: [], sections: {}, updatedAt: null },
     screen: { app: null, prevLines: [], eventId: null, kept: [], refs: [], audit: { captures: 0, lines: 0, kept: 0, furniture: 0, noise: 0 } },
     workbench: { open: null, queue: [], recent: [], done: {}, briefPoints: {}, day: null, countToday: 0 },
@@ -96,7 +98,7 @@ export function createInitialState(deviceId: string): KernelState {
     // (see `KernelState.config`'s doc comment) — these are just the
     // zero-config defaults for a daemon that's never had `startDaemon` run
     // (e.g. a bare `createInitialState()` in a test).
-    config: { retentionDays: 180, screenTextRetentionDays: 14, decayFactor: 0.95, projectRules: [], sharedPlaces: [], projectAliases: {}, orgByPath: {}, locationLabels: {}, ownerAliases: [], timezone: 'UTC', refutationEnabled: true, leisureRules: { browserProfiles: {}, domainOverrides: {}, processes: {}, excluded: [] }, experiments: { ownerStateInGateCost: false, learnedGate: false, forecasting: false, gateFeatures: false, presence: false }, vault: null },
+    config: { retentionDays: 180, screenTextRetentionDays: 14, transcriptRetentionDays: 14, autoHearMeetings: false, decayFactor: 0.95, projectRules: [], sharedPlaces: [], projectAliases: {}, orgByPath: {}, locationLabels: {}, ownerAliases: [], timezone: 'UTC', refutationEnabled: true, leisureRules: { browserProfiles: {}, domainOverrides: {}, processes: {}, excluded: [] }, experiments: { ownerStateInGateCost: false, learnedGate: false, forecasting: false, gateFeatures: false, presence: false }, vault: null },
     pending: { llmCalls: {}, timers: {}, debounces: {} },
     budgets: {
       byPurpose: {
@@ -158,13 +160,13 @@ export function createInitialState(deviceId: string): KernelState {
       fragmentation: { current: null, emitsThisHour: 0, emitsKey: '', prevFragmented: null, prevDay: null, byPrevState: { 'prev-frag': { n: 0, hits: 0 }, 'prev-calm': { n: 0, hits: 0 } } },
       projectTouch: { day: null, emitsThisHour: 0, emitsKey: '', touched: {}, lastTouched: {}, byProject: {} },
     },
-    // enhancements/outcome-feedback-signal: the owner's verdicts on what Gnomon
+    // The feedback loop (decisions/assistant-as-an-event-source): the owner's verdicts on what Gnomon
     // produced, plus the currently-open rating request (`solicitFeedback`).
     feedback: { recent: [], countsByVerdict: {}, lastVerdictAt: null, solicitation: null, solicitedRecently: [] },
     // What Jev's probabilities mean for this owner, learned per question id from verdicts. See `KernelState.judgement`.
     judgement: { questions: {}, recent: [], recentByArtifact: [], degraded: 'none', degradedSince: null, degradedMs: 0 },
     // The commitment ledger — open threads of work spanning hours to weeks.
-    commitments: { open: [], recentClosed: [] },
+    commitments: { open: [], recentClosed: [], promises: [], promiseAsk: null },
     // Wake-ups the owner or the model asked for. Folded from the log on
     // `clock:tick`, never a timer — see `KernelState.wakeups`.
     wakeups: { open: [] },
@@ -203,7 +205,33 @@ export function createInitialState(deviceId: string): KernelState {
       lastThrashEmitAt: null,
       idle: { consecutiveZeroWindows: 0, isIdle: false },
     },
+    // lane D — #6: nothing seen yet, so the owner is taken to be at the Mac.
+    route: { channel: 'mac', reason: 'active', since: null, awaySince: null },
+    // lane F (F1): the slices typed optional because older snapshots predate
+    // them. A default here is what lets `deepMergeDefaults` back-fill a key
+    // added inside one of them later; without it the persisted slice is taken
+    // whole and a new nested key stays `undefined`. Same shapes as each
+    // writer's own EMPTY.
+    resume: { last: null, intents: {} },
+    tickets: {},
+    watch: { rules: [], runtime: {} },
+    nightShift: { queue: [], open: null, recent: [], night: null, countTonight: 0, spentUsdTonight: 0 },
+    drift: { days: {}, meetings: [], checkedWeek: null, holding: {} },
+    factTests: { day: null, seen: {}, records: {} },
+    briefs: { days: {}, prState: {}, lastMet: {}, done: {} },
+    // lane H
+    sensorHealth: { troubles: {}, lastTickAt: null, keys: null, llmAuth: {}, budgetExhausted: {}, push: { lastOkAt: null, lastFailedAt: null, lastError: null } },
   };
+}
+
+/**
+ * Top-level keys of a loaded snapshot that `createInitialState` does not know:
+ * a field that was removed or renamed. `deepMergeDefaults` keeps them, so they
+ * ride along in every snapshot until someone notices. Boot prints them.
+ */
+export function unknownSnapshotKeys(persisted: object): string[] {
+  const known = createInitialState('');
+  return Object.keys(persisted).filter((k) => !(k in known));
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -305,6 +333,32 @@ function hydrateRetiredForecasters(state: KernelState): KernelState {
   };
 }
 
+/**
+ * A watch rule adopted before `NATURAL_KEY` existed was validated without it,
+ * and the snapshot holds it as validated then: one stream, so another repo's
+ * clean status ends every dirty stretch. Only `validateWatchRule` gave the
+ * default, and boot does not re-validate. The same default, here: no `by`, no
+ * count, a state stream. `by: []` is the owner's one stream and stays.
+ */
+function hydrateWatch(state: KernelState): KernelState {
+  if (!state.watch?.rules?.length) return state;
+  const rules = state.watch.rules.map((r) => (r.by !== undefined || r.count || !NATURAL_KEY[r.when.type] ? r : { ...r, by: [...NATURAL_KEY[r.when.type]!] }));
+  return { ...state, watch: { ...state.watch, rules } };
+}
+
+/**
+ * lane Q (Q9): a snapshot from before `ingestAnomaly` kept keys holds whole
+ * texts in both rings. Each becomes its key, so nothing already asked is asked
+ * again and nothing marked stops being marked.
+ */
+function hydrateIngestAnomaly(state: KernelState): KernelState {
+  const slice = state.ingestAnomaly;
+  if (!slice || (slice.seen.every(isTextKey) && Object.keys(slice.marked).every(isTextKey))) return state;
+  const seen = [...new Set(slice.seen.map((s) => (isTextKey(s) ? s : textKey(s))))];
+  const marked = Object.fromEntries(Object.entries(slice.marked).map(([k, v]) => [isTextKey(k) ? k : textKey(k), v]));
+  return { ...state, ingestAnomaly: { seen, marked } };
+}
+
 export function hydrateSnapshot(deviceId: string, persisted: Partial<KernelState>): KernelState {
-  return hydrateRetiredForecasters(hydrateMoment(deepMergeDefaults(createInitialState(deviceId), persisted)));
+  return hydrateIngestAnomaly(hydrateWatch(hydrateRetiredForecasters(hydrateMoment(deepMergeDefaults(createInitialState(deviceId), persisted)))));
 }

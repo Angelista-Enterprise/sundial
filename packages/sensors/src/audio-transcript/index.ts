@@ -41,6 +41,46 @@ const MIN_CHARS = 2;
 const MAX_NO_SPEECH_PROB = 0.6;
 
 /**
+ * Below this mean token log-probability the words are a guess, and the row is
+ * dropped. The gate above cannot do this job: whisper.cpp's `no_speech_prob`
+ * was never seen above 1e-6 on the live record, so it never fires. -1.0 is
+ * whisper's own `logprob_thold`; it drops under 1% of what this machine heard.
+ */
+const MIN_AVG_LOGPROB = -1.0;
+
+/**
+ * What whisper writes when handed silence or a fan: subtitle credits and
+ * sign-offs from its training data, said with full confidence (a high
+ * log-probability, so the floor above keeps them). Matched against the WHOLE
+ * utterance, lower-cased and without punctuation, so "thank you" inside a real
+ * sentence is kept; only an utterance that is nothing but one of these goes.
+ * A real one-word "thank you" is lost with them, which is the cheap side.
+ */
+const SILENCE_PHRASES = new Set([
+  'you',
+  'bye',
+  'bye bye',
+  'thank you',
+  'thank you very much',
+  'thank you for watching',
+  'thanks for watching',
+  'gracias',
+  'subtitles by',
+  'subtitles by the amaraorg community',
+  'i dont know what to do',
+]);
+
+/** Lower-cased, punctuation dropped, whitespace collapsed: the key `SILENCE_PHRASES` is written in. */
+function phraseKey(text: string): string {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
+}
+
+/** Whether an utterance is, in full, one of whisper's silence phrases. */
+export function isSilencePhrase(text: string): boolean {
+  return SILENCE_PHRASES.has(phraseKey(text));
+}
+
+/**
  * Ambient hearing — one `audio:transcript` event per utterance the
  * `sundial-audio-helper` sidecar transcribed.
  *
@@ -78,7 +118,14 @@ export class AudioTranscriptSensor {
     if (!this.enabled || process.platform !== 'darwin') return [];
     return this.tail
       .read()
-      .filter((line) => line.text.length >= MIN_CHARS && line.noSpeechProb <= this.maxNoSpeechProb && this.spoken(line.language))
+      .filter(
+        (line) =>
+          line.text.length >= MIN_CHARS &&
+          line.noSpeechProb <= this.maxNoSpeechProb &&
+          line.avgLogprob >= MIN_AVG_LOGPROB &&
+          !isSilencePhrase(line.text) &&
+          this.spoken(line.language),
+      )
       .map((line) => this.toEvent(line));
   }
 
@@ -110,6 +157,7 @@ export class AudioTranscriptSensor {
         // how much to trust a sentence should be able to see the same number
         // this sensor judged it by.
         noSpeechProb: line.noSpeechProb,
+        avgLogprob: line.avgLogprob,
         // A fact about the stream, not a claim about the speaker: `system` is
         // what the Mac played, `mic` what its microphone heard. Only a reader
         // that knows it was a call may turn that into "them" and "me".

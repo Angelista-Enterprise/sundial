@@ -49,6 +49,15 @@ describe('fileTrack', () => {
   });
 });
 
+describe('fileTrack tool caches (U2-F21)', () => {
+  it('drops changes under any dot-folder but .github', () => {
+    const { state } = fold(createInitialState('d'), fileTrack, [
+      ev('file:changed', { projectRoot: '~/p', changes: [{ relPath: '.claude/worktrees/x/src/a.ts', kind: 'modify' }, { relPath: 'pkg/.cache/b.json', kind: 'modify' }, { relPath: '.github/workflows/ci.yml', kind: 'modify' }, { relPath: 'src/.env.example', kind: 'modify' }] }),
+    ]);
+    expect(Object.keys(state.files.hot).sort()).toEqual(['~/p|.github/workflows/ci.yml', '~/p|src/.env.example']);
+  });
+});
+
 describe('shellFailureTrack', () => {
   const run = (command: string, exitCode: number | null, minutes: number) => ev('shell:command', { command, cwd: '~/p', exitCode, durationMs: 0 }, at(minutes));
 
@@ -71,6 +80,15 @@ describe('shellFailureTrack', () => {
     const after = shellFailureTrack(state, run('npm test', 0, 4)).state;
     expect(after.shell.streak).toBeNull();
     expect(after.shell.lastCommandAt).toBe(at(4));
+  });
+
+  it('keeps the last failure per folder until the same command passes there (U2-F17)', () => {
+    const other = ev('shell:command', { command: 'ls', cwd: '~/q', exitCode: 0 }, at(2));
+    const { state } = fold(createInitialState('d'), shellFailureTrack, [run('pnpm test', 1, 0), run('git push', 0, 1), other]);
+    // A success of another command, or anywhere else, is not the fix.
+    expect(state.shell.streak).toBeNull();
+    expect(state.shell.lastFailure?.['~/p']).toEqual({ command: 'pnpm test', exitCode: 1, at: at(0) });
+    expect(shellFailureTrack(state, run('pnpm test', 0, 3)).state.shell.lastFailure).toEqual({});
   });
 
   it('a null exit code neither extends nor breaks; a gap over 30 min starts a fresh streak; a different command continues it', () => {

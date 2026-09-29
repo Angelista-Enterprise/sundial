@@ -68,13 +68,6 @@ export async function retractKnowledgeEntry(id: string, retractedAt: string): Pr
     .where(and(eq(knowledgeEntries.id, id), isNull(knowledgeEntries.retractedAt)));
 }
 
-/** Single entry by id — for `gnomon search`'s result display. */
-export async function getKnowledgeEntryById(id: string): Promise<StoredKnowledgeEntry | null> {
-  const db = getDb();
-  const [row] = await db.select().from(knowledgeEntries).where(eq(knowledgeEntries.id, id));
-  return row ?? null;
-}
-
 /**
  * P6 — single entry by its unique `dedupeKey` (e.g. `daily:2026-07-20`). The
  * daily journal's `createdAt` is the day-boundary timestamp (the *next* day),
@@ -89,8 +82,8 @@ export async function getKnowledgeEntryByDedupeKey(dedupeKey: string): Promise<S
 
 /**
  * P6 — delete the entry with this `dedupeKey`, returning whether one existed.
- * Backs the daily journal's regenerate (`gnomon journal --force` / the UI
- * button): the `dedupeKey daily:<date>` insert is a no-op on conflict, so an
+ * Backs the daily journal's regenerate (`overwrite` on the journal effect;
+ * its callers, the retired CLI's `gnomon journal --force` and a UI button, are gone): the `dedupeKey daily:<date>` insert is a no-op on conflict, so an
  * overwrite deletes the old row first. The old row's embedding becomes orphaned
  * and is swept by `scoredSearch`/retention — no separate embedding delete.
  */
@@ -114,7 +107,7 @@ export async function getKnowledgeEntriesByIds(ids: string[]): Promise<StoredKno
 
 /**
  * Entries created on `date` (YYYY-MM-DD) in `timeZone`, most recent first — for
- * `gnomon doctor`, `buildDailyContext`, and the `gnomon_anomalies` tool.
+ * `buildDailyContext` and the `gnomon_anomalies` tool.
  *
  * The owner's day, not UTC's, per
  * `almanac/decisions/day-boundaries-use-owner-timezone`. Fixed alongside
@@ -154,12 +147,6 @@ export async function getKnowledgeEntriesSince(since: string): Promise<StoredKno
 export async function decayKnowledgeScores(factor: number): Promise<void> {
   const db = getDb();
   await db.run(sql`UPDATE knowledge_entries SET importance_score = MAX(1, importance_score * ${factor})`);
-}
-
-/** Bumps `lastAccessedAt` — an LRU-like signal for `gnomon search` hits, independent of decay. */
-export async function touchKnowledgeAccess(id: string, accessedAt: string): Promise<void> {
-  const db = getDb();
-  await db.update(knowledgeEntries).set({ lastAccessedAt: accessedAt }).where(eq(knowledgeEntries.id, id));
 }
 
 /** D2 (fixes A§2.2) — one `UPDATE ... WHERE id IN (...)` for every knowledge-entry hit `scoredSearch` returns, instead of a `touchKnowledgeAccess` round-trip per hit. */

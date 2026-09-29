@@ -31,3 +31,25 @@ describe('clockContext', () => {
     expect(clockContext()).toMatchObject({ name: CLOCK_CONTEXT_NAME, order: CLOCK_CONTEXT_ORDER });
   });
 });
+
+describe('frozenPerTurn (Q12)', () => {
+  const running = (id, turn) => ({ agent: { id, phase: { kind: 'running', turn, step: 1 } } });
+  it('reads once per turn of each agent, and again on the next turn', async () => {
+    const { frozenPerTurn } = await import('./clock.js');
+    let n = 0;
+    const context = frozenPerTurn({ name: 'x', order: 0, text: () => `read ${++n}` });
+    expect(context.name).toBe('x');
+    expect([context.text(running('a', 1)), context.text(running('a', 1)), context.text(running('b', 1)), context.text(running('a', 1))]).toEqual(['read 1', 'read 1', 'read 2', 'read 1']);
+    expect(context.text(running('a', 2))).toBe('read 3');
+  });
+  it('resolves live without a running agent, and keeps a bounded memory', async () => {
+    const { frozenPerTurn, MAX_FROZEN_AGENTS } = await import('./clock.js');
+    let n = 0;
+    const context = frozenPerTurn({ name: 'x', order: 0, text: () => `read ${++n}` });
+    expect([context.text(undefined), context.text({ agent: { id: 'a', phase: { kind: 'idle', lastTurn: 3 } } })]).toEqual(['read 1', 'read 2']);
+    for (let i = 0; i <= MAX_FROZEN_AGENTS; i += 1) context.text(running(`agent-${i}`, 1));
+    // The first agent was dropped past the bound, so it reads again.
+    expect(context.text(running('agent-0', 1))).toBe(`read ${n}`);
+    expect(n).toBe(2 + MAX_FROZEN_AGENTS + 2);
+  });
+});

@@ -83,11 +83,12 @@ const tablesFor = (url) => {
   return TABLES_BY_ROUTE[path] ?? null
 }
 
-/** Did `tables` (from a `stale` frame) move anything this URL is made of? */
-const affects = (tables, url) => {
-  const mine = tablesFor(url)
-  return mine !== null && mine.some((table) => tables.includes(table))
-}
+/** Did `tables` (from a `stale` frame) move anything this URL (or any of these URLs) is made of? */
+const affects = (tables, url) =>
+  [].concat(url).some((one) => {
+    const mine = tablesFor(one)
+    return mine !== null && mine.some((table) => tables.includes(table))
+  })
 
 /** URL → the promise currently fetching it. */
 const inflight = new Map()
@@ -130,6 +131,7 @@ export function read(url, { maxAge = 2000 } = {}) {
 
   const request = fetch(url, { headers: { accept: 'application/json' } })
     .then((response) => {
+      if (response.status === 401) sayOut()
       if (!response.ok) throw new Error(String(response.status))
       return response.json()
     })
@@ -144,6 +146,33 @@ export function read(url, { maxAge = 2000 } = {}) {
   inflight.set(url, request)
   announce()
   return request
+}
+
+// ── Signed out ─────────────────────────────────────────────────────────────
+// dsh's session cookie ends after 30 days. A tab left open past that went quiet
+// with no word: every read answered 401 and the live channel closed. Noticed
+// here, once per page; app.js draws the one line that says what to do.
+let out = false
+function sayOut() {
+  if (out || typeof document === 'undefined') return
+  out = true
+  document.dispatchEvent(new CustomEvent('gnomon:signed-out'))
+}
+
+/**
+ * The live channel failed: signed out, or only a restart? An EventSource cannot
+ * see the status it was refused with, so ask one guarded route. A network error
+ * is a restart, and the browser reconnects the channel on its own.
+ */
+export function checkSignedIn() {
+  if (out) return Promise.resolve(false)
+  return fetch('/gnomon/api/board', { headers: { accept: 'application/json' } }).then(
+    (response) => {
+      if (response.status === 401) sayOut()
+      return response.status !== 401
+    },
+    () => true,
+  )
 }
 
 // ── When a card reads ──────────────────────────────────────────────────────
@@ -164,6 +193,8 @@ const observer =
           for (const entry of entries) {
             const state = watched.get(entry.target)
             if (state === undefined) continue
+            // A node that left the page was pruned from `cards`; the same node can come back (Today's parts are kept per day).
+            cards.add(state)
             state.on = entry.isIntersecting
             if (entry.isIntersecting && !state.done) {
               state.done = true
@@ -186,6 +217,7 @@ const observer =
  * go blank if there ever is one) it loads at once and always reports visible —
  * the old behaviour, which was correct and only slow.
  */
+/** `url` may be one route or a list of them, for a card made of several readings. */
 export function whenVisible(node, load, url = null) {
   if (observer === null) {
     load()
@@ -228,7 +260,7 @@ export function rereadAll() {
     // it is being re-read, or a slow read looks like a frozen card. Only here,
     // not in `markStale` — a live-beat re-read nobody asked for must not flash.
     card.node.setAttribute('aria-busy', 'true')
-    Promise.resolve(card.run()).finally(() => card.node.removeAttribute('aria-busy'))
+    Promise.resolve(card.run(true)).finally(() => card.node.removeAttribute('aria-busy'))
   }
 }
 
@@ -242,4 +274,56 @@ export function markStale(tables) {
     }
     if (card.on && card.done && card.url !== null && affects(tables, card.url)) card.run()
   }
+}
+
+/**
+ * A card that keeps itself current, for a card built from several readings at
+ * once (Kanban, In play, Rhythm, Voice, the parts of Today). They used to read
+ * once and then sit there for as long as the tab was open.
+ *
+ * `build()` draws the card; the node it returns is the one the pane holds for
+ * good. After that, while the card is on screen, a `stale` frame naming a table
+ * one of `urls` is made of draws it again and moves the new children into the
+ * same node. Three rules keep that cheap and calm:
+ *
+ *   - at most once per `every` ms (the fold names `state` on every window
+ *     change; a card of six readings must not follow that), with one trailing
+ *     draw so the last change still lands. A new span or a new day (`rereadAll`)
+ *     draws at once;
+ *   - an identical drawing is not swapped in, so rows do not animate for nothing;
+ *   - never under the owner's hand: a field with focus keeps its text.
+ *
+ * `swap(node, next)` moves the children; a caller that parks something of its
+ * own inside the node (Today's live line) passes its own.
+ */
+export function keepCurrent(node, build, urls, { every = 30_000, swap = (into, next) => into.replaceChildren(...next.childNodes) } = {}) {
+  if (!node) return node
+  let seen = false
+  let last = Date.now()
+  let later = 0
+  const draw = async () => {
+    last = Date.now()
+    const active = document.activeElement
+    if (active && node.contains(active) && active.matches('input, textarea, select')) return
+    const next = await build()
+    if (!next || next.innerHTML === node.innerHTML) return
+    swap(node, next)
+    // A redraw is not an arrival: the sheet keeps its rows still (app.css).
+    node.setAttribute('data-redrawn', '')
+  }
+  whenVisible(
+    node,
+    (now = false) => {
+      clearTimeout(later)
+      const first = !seen
+      seen = true
+      const wait = now === true ? 0 : last + every - Date.now()
+      if (wait <= 0) return draw()
+      // First sight of a card built a moment ago: there is nothing new to read.
+      if (first) return
+      later = setTimeout(() => node.isConnected && draw(), wait)
+    },
+    urls,
+  )
+  return node
 }

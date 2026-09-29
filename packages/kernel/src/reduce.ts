@@ -7,7 +7,8 @@ import type { AttributedEffect, KernelState, ReduceResult, Rule, SanitizedEvent 
  * `packages/kernel` for the `KernelState`/`Rule`/`Effect` types, so kernel
  * importing rules back would be a build cycle `tsc -b` project references
  * can't express. The composition (`reduce(state, event, RULE_MANIFEST)`)
- * happens in `apps/daemon`, which depends on both packages — no cycle.
+ * happens in `KernelRuntime.applyEvent` (`packages/harness-runtime`), which
+ * depends on both packages — no cycle.
  * Behavior is identical; only where the manifest is bound differs.
  *
  * Each rule's effects are tagged with `rule.name` here — the one place that

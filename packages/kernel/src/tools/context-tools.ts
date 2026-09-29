@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { getBoardTraffic, getSignalsInRange, getLeftOff, getMomentById, getMomentCost, getMomentsForProject, getMultiDayCommitments, getOpenCommitments, getRecentSignals } from '@sundial/db/index.js';
+import { getBoardTraffic, getSignalsInRange, getLeftOff, getMomentById, getMomentCost, getMomentsForProject, getMultiDayCommitments, getOpenCommitments, getPromises, getRecentSignals, loadAliasNames } from '@sundial/db/index.js';
+import { promiseReliability } from '../promise-reliability.js';
 import { localDate, localDayRange, localHour } from '@sundial/helpers/local-day.js';
 import { getLlmLedgerRows, type LlmLedgerGroupBy } from '@sundial/db/index.js';
 import { loadSundialConfig } from '@sundial/helpers/sundial-config.js';
@@ -7,7 +8,9 @@ import { buildDailyContext } from '../daily-context.js';
 import { DEFAULT_PAGE_ROWS, OWNER_EVIDENCE_TYPES, pageWithinBudget, RESULT_BUDGET_CHARS, slimSignalData } from './evidence-tools.js';
 import { loadLatestSnapshot } from '../snapshot.js';
 import { sharedCheckouts } from '../agent-fleet.js';
-import { backtestWatch, validateWatchRule } from '../watch.js';
+import { backtestTypes, describeRule, resolvePeople, validateWatchRule, WATCH_FLAG_TYPES, WATCH_GRAMMAR } from '../watch.js';
+import { MINE_TYPES, mineRules } from '../watch-mine.js';
+import { summarizeBacktest } from '../watch-backtest.js';
 import { buildSituation } from '../situation.js';
 import { routineForecast, routineLabel, topRoutines } from '../routines.js';
 import type { GnomonTool } from './registry.js';
@@ -192,7 +195,9 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
         agents: s.agent?.fleet ?? [],
         // Folders two sessions work in at once: a build or commit in one ships
         // the other's unsaved edits. If yours is here, you have a sibling.
-        sharedCheckouts: sharedCheckouts(s.agent?.fleet ?? []),
+        sharedCheckouts: sharedCheckouts(s.agent?.fleet ?? [], new Date().toISOString()),
+        // lane D — #6: where an interruption would go now: mac, phone, or hold (a call, a focus mode).
+        route: s.route ?? null,
       };
       const { projectId, source, confidence } = window.attribution;
       const resolvedProject = projectId
@@ -250,10 +255,10 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
   {
     name: 'gnomon_test_rule',
     description:
-      "Backtest a WATCH RULE — a small spec Gnomon can adopt to notice something on its own — against the owner's real log, or (no `rule`) list the adopted ones. A rule: {title, when: {type: 'window:changed', where: [{field: 'processName', op: 'eq'|'contains'|'matches'|'gt'|'lt', value}]}, one trigger — count: {atLeast, withinMin} | dwell: {atLeastMin} (a state held, e.g. one app frontmost) | absent: {forMin} (daytime silence) | none (every match) — say: 'the sentence, {field} and {minutes}/{count} filled in', cooldownMin}. Returns how often it matched and every time it WOULD have spoken, so the owner sees exactly what adopting it means. Always test before proposing, show the result, and adopt (gnomon_adopt_rule) only on the owner's yes. Tune a rule that fires more than a few times a day.",
+      `Backtest a WATCH RULE — a small spec Gnomon can adopt to notice something on its own — against the owner's real log, or (no \`rule\`) list the adopted ones. ${WATCH_GRAMMAR} Returns how often it matched, how often it fired, and under \`gate\` how many of those fires the owner would actually have heard — interrupting (phasic), on the list (tonic) or held back (suppressed, with reasons) — under their current dial, so the owner sees exactly what adopting it means. Report \`gate\`, not \`fired\`, as what they will hear. \`holdout\` splits the days in two halves: a rule tuned on the older half must still fire in the recent one. \`byKey\` counts fires per thing (hashed); each example lists the signal ids behind it; \`nearest\` says how close a rule that never fired came. Always test before proposing, show the result, and adopt (gnomon_adopt_rule) only on the owner's yes. Tune a rule that fires more than a few times a day.`,
     schema: {
       rule: z.any().optional().describe('The spec, as an object (see description). Omit to list adopted rules.'),
-      days: z.number().int().positive().max(30).optional().describe('How many past days to replay (default 14)'),
+      days: z.number().int().positive().max(60).optional().describe('How many past days to replay (default 14, at most 60 — a rule that holds for days needs weeks of history)'),
     },
     readOnly: true,
     handler: async ({ rule, days }) => {
@@ -261,7 +266,8 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
       const zone = snapshot?.state.config.timezone ?? ownerTimeZone();
       if (rule === undefined || rule === null) {
         const w = snapshot?.state.watch ?? { rules: [], runtime: {} };
-        return { adopted: w.rules.map((r) => ({ ...r, lastFiredAt: w.runtime[r.id]?.lastFiredAt ?? null })) };
+        const last = (id: string) => w.stats?.[id]?.recent.at(-1) ?? w.runtime[id]?.lastFiredAt ?? null;
+        return { adopted: w.rules.map((r) => ({ ...r, words: describeRule(r), paused: w.paused?.includes(r.id) ?? false, version: w.stats?.[r.id]?.version ?? 1, fires: w.stats?.[r.id]?.fires ?? 0, verdicts: w.stats?.[r.id]?.verdicts ?? null, lastFiredAt: last(r.id) })) };
       }
       let spec: unknown = rule;
       if (typeof spec === 'string') {
@@ -271,23 +277,70 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
           return { valid: false, error: 'rule must be a JSON object' };
         }
       }
-      const checked = validateWatchRule(spec);
+      const checked = validateWatchRule(resolvePeople(spec, snapshot?.state.memory.aliasNames ?? {}));
       if ('error' in checked) return { valid: false, error: checked.error };
       const span = (days as number | undefined) ?? 14;
-      const to = new Date().toISOString();
+      const now = new Date().toISOString();
       const from = new Date(Date.now() - span * 86_400_000).toISOString();
-      const events: { type: string; ts: string; payload: unknown }[] = [];
+      const events: { id: string; type: string; ts: string; payload: unknown }[] = [];
       const PAGE = 5000;
-      for (let offset = 0; offset < 200_000; offset += PAGE) {
-        const rows = await getSignalsInRange(from, to, PAGE, [checked.rule.when.type, 'clock:tick'], offset);
-        for (const r of rows) events.push({ type: `${r.signalType}:${r.eventType}`, ts: r.capturedAt, payload: r.data });
+      for (let offset = 0; offset < 400_000; offset += PAGE) {
+        const rows = await getSignalsInRange(from, now, PAGE, backtestTypes(checked.rule), offset);
+        for (const r of rows) events.push({ id: r.id, type: `${r.signalType}:${r.eventType}`, ts: r.capturedAt, payload: r.data });
         if (rows.length < PAGE) break;
       }
       const hour = (ts: string) => localHour(ts, zone);
-      const { matched, fires } = backtestWatch(checked.rule, events, (ts) => hour(ts) >= 6 && hour(ts) < 18);
-      const perDay: Record<string, number> = {};
-      for (const f of fires) perDay[localDate(f.at, zone)] = (perDay[localDate(f.at, zone)] ?? 0) + 1;
-      return { valid: true, rule: checked.rule, days: span, eventsReplayed: events.length, matched, fired: fires.length, perDay, examples: fires.slice(-6).map((f) => ({ at: f.at, said: f.text })) };
+      const settings = snapshot?.state.settings;
+      return summarizeBacktest(checked.rule, events, { days: span, zone, dial: settings?.noticeBias ?? 0, silent: settings?.autonomy === 'off', now, daytime: (ts) => hour(ts) >= 6 && hour(ts) < 18 });
+    },
+  },
+  {
+    name: 'gnomon_mine_rules',
+    description:
+      "Find watch rules worth proposing, from the owner's own record and without a model: high values held or repeated, long silences, a routine that stops short, an app or site they asked about on three days, types behind notices they rated useful. Each candidate was replayed over the older and the recent half of 30 days and kept only with 1–10 fires in each half and a steady rate, and dropped when half its fires coincide with a notice Gnomon already raises. Returns up to 5 specs with their numbers. Their titles and sentences are placeholders: write them in the owner's words, then test the result with gnomon_test_rule before proposing it.",
+    schema: {},
+    readOnly: true,
+    handler: async () => {
+      const snapshot = await loadLatestSnapshot();
+      const zone = snapshot?.state.config.timezone ?? ownerTimeZone();
+      const days = 30;
+      const now = new Date().toISOString();
+      const from = new Date(Date.now() - days * 86_400_000).toISOString();
+      const read = async (types: string[]) => {
+        const out: { id: string; type: string; ts: string; payload: unknown }[] = [];
+        for (let offset = 0; offset < 400_000; offset += 5000) {
+          const rows = await getSignalsInRange(from, now, 5000, types, offset);
+          for (const r of rows) out.push({ id: r.id, type: `${r.signalType}:${r.eventType}`, ts: r.capturedAt, payload: r.data });
+          if (rows.length < 5000) break;
+        }
+        return out;
+      };
+      const [events, asks, verdicts, notices] = await Promise.all([read([...MINE_TYPES, ...WATCH_FLAG_TYPES]), read(['ask:route-predicted']), read(['feedback:verdict']), read(['notice:candidate'])]);
+      const rules = snapshot?.state.watch?.rules ?? [];
+      const useful = new Map<string, { kind: string; type?: string; n: number }>();
+      for (const v of verdicts) {
+        const p = v.payload as { artifactKind?: string; artifactId?: string; verdict?: string };
+        if (p.verdict !== 'useful' || p.artifactKind !== 'notice' || typeof p.artifactId !== 'string') continue;
+        const [head, id] = p.artifactId.split(':');
+        const kind = head === 'watch' ? `watch:${id}` : head!;
+        const entry = useful.get(kind) ?? { kind, ...(head === 'watch' ? { type: rules.find((r) => r.id === id)?.when.type } : {}), n: 0 };
+        useful.set(kind, { ...entry, n: entry.n + 1 });
+      }
+      const mined = mineRules({
+        events,
+        now,
+        days,
+        zone,
+        routines: Object.values(snapshot?.state.routines?.learned ?? {}).filter((r) => r.support >= 3),
+        asks: asks.map((a) => ({ ts: a.ts, query: String((a.payload as { query?: unknown }).query ?? '') })),
+        useful: [...useful.values()],
+        builtins: notices.filter((n) => !String((n.payload as { kind?: unknown }).kind ?? '').startsWith('watch:')).map((n) => n.ts),
+      });
+      return {
+        days,
+        candidates: mined.map((m) => ({ source: m.source, spec: m.spec, words: describeRule(m.spec), fired: { older: m.older, recent: m.recent, perHalfDays: days / 2 }, overlapWithBuiltins: m.overlap })),
+        note: mined.length === 0 ? 'Nothing in the record held up on both halves. Propose nothing.' : "Titles and sentences are placeholders. Word the best one for the owner, test it with gnomon_test_rule, and shelve it only if its examples are worth hearing.",
+      };
     },
   },
   {
@@ -405,7 +458,7 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
   {
     name: 'gnomon_open_commitments',
     description:
-      'Get the open threads of work — pieces of work spanning hours to weeks, each identified by the git branch it was done on, with when it started, when it was last touched, and how many distinct days it spanned. Use this for "what am I in the middle of", "what did I leave unfinished", and "what was I doing on X last week". `activeDays` is the count of separate days the thread was returned to, which is what distinguishes a real multi-session piece of work from an afternoon. A thread is closed automatically after 14 days without a touch and no longer appears here; nothing observable tells Gnomon a branch was merged, so an absent thread means it went quiet, NOT that it was finished. `total` is how many threads are open in all — itself an answer worth reporting — and when `nextOffset` is present, call again with it for the next page.',
+      'Get the open threads of work and the owner\'s open PROMISES. A promise row has `promise`: who it is owed to (or, with direction `awaiting`, who owes the owner), the thing, when it is due and why then (said, the next meeting with that person, or a three-working-day default), whether the owner confirmed it, and the evidence seen. `reliability` is how the owner keeps promises, overall and per person, with n on every count — never state a rate it does not give. Threads of work are pieces of work spanning hours to weeks, each identified by the git branch it was done on, with when it started, when it was last touched, and how many distinct days it spanned. Use this for "what am I in the middle of", "what did I leave unfinished", and "what was I doing on X last week". `activeDays` is the count of separate days the thread was returned to, which is what distinguishes a real multi-session piece of work from an afternoon. A thread is closed automatically after 14 days without a touch and no longer appears here; nothing observable tells Gnomon a branch was merged, so an absent thread means it went quiet, NOT that it was finished. `total` is how many threads are open in all — itself an answer worth reporting — and when `nextOffset` is present, call again with it for the next page.',
     schema: {
       limit: z.number().int().positive().max(100).optional().describe(`How many threads on this page. Default ${DEFAULT_PAGE_ROWS}.`),
       offset: z.number().int().min(0).optional().describe('Where to start. Use the `nextOffset` from a previous call.'),
@@ -419,9 +472,13 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
       // the whole set is fetched once and paged here — `total` is then the real
       // number of open threads, which is itself an answer ("you have 31 things
       // open") that no page of rows could give.
-      const all = multiDayOnly === true ? await getMultiDayCommitments(100) : await getOpenCommitments(100);
+      const [all, promises, aliasNames] = await Promise.all([multiDayOnly === true ? getMultiDayCommitments(100) : getOpenCommitments(100), getPromises(500), loadAliasNames()]);
       const page = pageWithinBudget(all, { offset: from, limit: want, budget: RESULT_BUDGET_CHARS });
       return {
+        reliability: promiseReliability(promises, (who) => {
+          const named = aliasNames[who] ?? who;
+          return /^person-[0-9a-f]{10}$/.test(named) ? null : named;
+        }),
         commitments: page.rows,
         count: page.rows.length,
         total: page.total,
@@ -433,7 +490,7 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
   {
     name: 'gnomon_routines',
     description:
-      'Get what the owner habitually does: the sequences of apps they repeat (the procedural tier), strongest first, plus `forecast` — the step they usually take next from where they are right now, when a learned routine predicts one. A step is `App/class`, where class is work or personal by the owner\'s own taxonomy; a routine never carries window content. Use this for "what do I usually do after standup", "am I in my normal flow", and to notice when the owner is off their usual path — but hold it lightly: measured out of sample, a routine predicts the next step about 40% of the time, so it is a tendency to mention once, never a rule to enforce. `support` is how many times the exact sequence recurred.',
+      'Get what the owner habitually does: the sequences of apps they repeat (the procedural tier), strongest first, plus `forecast` — the step they usually take next from where they are right now, when a learned routine predicts one. A step is `App/class`, where class is work or personal by the owner\'s own taxonomy; a routine never carries window content. Use this for "what do I usually do after standup", "am I in my normal flow", and to notice when the owner is off their usual path — but hold it lightly: measured out of sample, a routine predicts the next step about 27% of the time (roughly one in four), so it is a tendency to mention once, never a rule to enforce. `support` is how many times the exact sequence recurred.',
     schema: {
       limit: z.number().int().positive().max(64).optional().describe('How many routines to return. Default 10.'),
     },
@@ -456,7 +513,7 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
           forecast === null
             ? null
             : { next: forecast.expectedProcess, from: routineLabel(forecast.routine), support: forecast.routine.support, matchedSteps: forecast.matched },
-        note: 'Out-of-sample precision of a forecast is about 40%. Mention a tendency once; never enforce it.',
+        note: 'Out-of-sample precision of a forecast is about 27% (roughly one in four). Mention a tendency once; never enforce it.',
       };
     },
   },

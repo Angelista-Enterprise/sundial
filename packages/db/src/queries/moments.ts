@@ -1,6 +1,6 @@
 import { and, eq, gte, inArray, lt, asc, desc, sql } from 'drizzle-orm';
 import { getDb } from '../db-client.js';
-import { WAKING_DAY_START_HOUR, localDayRange } from '@sundial/helpers/local-day.js';
+import { localDayRange, wakingDate, wakingMinute } from '@sundial/helpers/local-day.js';
 import { moments } from '../schemas/db-schema.js';
 
 export interface StoredMoment {
@@ -119,6 +119,23 @@ export async function getMomentsForDate(date: string, timeZone = 'UTC'): Promise
 export async function getAllMoments(): Promise<StoredMoment[]> {
   const db = getDb();
   const rows = await db.select().from(moments).orderBy(asc(moments.startTime));
+  return rows.map((row) => ({ ...row, data: JSON.parse(row.data) as Record<string, unknown> }));
+}
+
+/**
+ * Moments starting in `[from, to)`, oldest first. With `needles`, only those
+ * whose stored data holds one of them (case-insensitive substring) — the
+ * "did I…?" and timeline reads, which want a window and a name, never a table.
+ */
+export async function getMomentsBetween(from: string, to: string, needles: string[] = [], limit = 2000): Promise<StoredMoment[]> {
+  const usable = [...new Set(needles.map((n) => n.trim().toLowerCase()).filter((n) => n !== ''))];
+  const hit = usable.length > 0 ? sql.join(usable.map((n) => sql`instr(lower(${moments.data}), ${n}) > 0`), sql` or `) : undefined;
+  const rows = await getDb()
+    .select()
+    .from(moments)
+    .where(and(gte(moments.startTime, from), lt(moments.startTime, to), hit ? sql`(${hit})` : undefined))
+    .orderBy(asc(moments.startTime))
+    .limit(limit);
   return rows.map((row) => ({ ...row, data: JSON.parse(row.data) as Record<string, unknown> }));
 }
 
@@ -281,46 +298,44 @@ export interface DayArc {
  * local midnight, and every one of them was silently lost this way. `MAX` over
  * the timestamp cannot make that mistake.
  *
- * The offset is passed in rather than computed in SQL because SQLite has no
- * timezone database; the caller's `localDate` does. It is only used to bucket
- * into days and to take a minute-of-day, and both are wrong by an hour on the
- * far side of a daylight saving change — which the caller can correct by
- * asking for a range inside one offset, and which a coverage arc can carry.
+ * **And each moment is put in its day in the owner's zone, one at a time.**
+ * This took one constant UTC offset for the whole 28–90-day window (SQLite
+ * has no timezone database), which is an hour wrong on the far side of a
+ * daylight saving change: on 2026-10-25 every day before it in the window
+ * would have moved its first and last touch by an hour. The rows are grouped
+ * here instead, with `wakingDate`/`wakingMinute` in `timeZone`.
  */
-export async function getDayArcs(fromIso: string, toIso: string, offsetHours = 0): Promise<DayArc[]> {
+export async function getDayArcs(fromIso: string, toIso: string, timeZone: string): Promise<DayArc[]> {
   const db = getDb();
-  // One shift for the zone, one for the waking-day boundary. Applied to the
-  // START time only for bucketing, so every moment of one evening lands
-  // together however late it runs.
-  const shift = `${offsetHours >= 0 ? '+' : '-'}${Math.abs(offsetHours)} hours`;
-  const waking = `-${WAKING_DAY_START_HOUR} hours`;
   const rows =
-    (await db.all<{ date: string; first: string; last: string; activeMs: number; moments: number }>(sql`
-      SELECT date(${moments.startTime}, ${shift}, ${waking})           AS date,
-             MIN(${moments.startTime})                                 AS first,
-             MAX(${moments.endTime})                                   AS last,
-             SUM(${moments.durationMs})                                AS activeMs,
-             COUNT(*)                                                  AS moments
+    (await db.all<{ start: string; end: string; durationMs: number }>(sql`
+      SELECT ${moments.startTime} AS start, ${moments.endTime} AS "end", ${moments.durationMs} AS durationMs
       FROM ${moments}
-      WHERE ${moments.startTime} >= ${fromIso} AND ${moments.startTime} < ${toIso}
-      GROUP BY date
-      ORDER BY date`)) ?? [];
-
-  // Minutes from the waking day's own 04:00 start. Computed here rather than in
-  // SQL for the same reason the offset is passed in: this is arithmetic on an
-  // instant and a zone, and SQLite has only one of the two.
-  const minuteOf = (iso: string): number => {
-    const shifted = Date.parse(iso) + offsetHours * 3_600_000 - WAKING_DAY_START_HOUR * 3_600_000;
-    const d = new Date(shifted);
-    return d.getUTCHours() * 60 + d.getUTCMinutes();
-  };
-  return rows.map((row) => ({
-    date: row.date,
-    firstMin: minuteOf(row.first),
-    lastMin: minuteOf(row.last),
-    activeMin: Math.round((row.activeMs ?? 0) / 60_000),
-    moments: row.moments,
-  }));
+      WHERE ${moments.startTime} >= ${fromIso} AND ${moments.startTime} < ${toIso}`)) ?? [];
+  // Bucketed by the START only, so every moment of one evening lands together
+  // however late it runs; the ends are instants, so a day that crossed
+  // midnight keeps its true end.
+  const days = new Map<string, { first: string; last: string; activeMs: number; moments: number }>();
+  for (const row of rows) {
+    const date = wakingDate(row.start, timeZone);
+    const day = days.get(date);
+    if (!day) days.set(date, { first: row.start, last: row.end, activeMs: row.durationMs ?? 0, moments: 1 });
+    else {
+      if (Date.parse(row.start) < Date.parse(day.first)) day.first = row.start;
+      if (Date.parse(row.end) > Date.parse(day.last)) day.last = row.end;
+      day.activeMs += row.durationMs ?? 0;
+      day.moments += 1;
+    }
+  }
+  return [...days.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, day]) => ({
+      date,
+      firstMin: wakingMinute(day.first, timeZone),
+      lastMin: wakingMinute(day.last, timeZone),
+      activeMin: Math.round(day.activeMs / 60_000),
+      moments: day.moments,
+    }));
 }
 
 /** Where a name showed up inside a moment — the four places a moment carries people and words. */
@@ -422,3 +437,24 @@ export async function getLeftOff(sinceIso: string, limit = 6): Promise<{ project
      limit ${limit}
   `);
 }
+
+/**
+ * The week-away digest (U2-F38): the last few intent lines on ONE project,
+ * newest first, from its certain moments — what the owner was doing there
+ * before they went away, in their own record's words. Consecutive duplicates
+ * (one line re-rendered over several moments) collapse to one.
+ */
+export async function getProjectIntents(projectId: string, beforeIso: string, limit = 5): Promise<{ at: string; what: string }[]> {
+  const rows = await getDb().all<{ at: string; what: string }>(sql`
+    select start_time as at, json_extract(data, '$.intent.text') as what
+      from moments
+     where project_id = ${projectId}
+       and start_time < ${beforeIso}
+       and json_extract(data, '$.intent.text') is not null
+       and json_extract(data, '$.projectConfidence') = 'certain'
+     order by start_time desc
+     limit ${limit * 4}
+  `);
+  return rows.filter((r, i) => i === 0 || r.what !== rows[i - 1].what).slice(0, limit);
+}
+

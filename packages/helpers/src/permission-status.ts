@@ -7,7 +7,9 @@ import {
   getFocusInfoJsonPath,
   getCalendarInfoJsonPath,
   getLocationInfoJsonPath,
+  getSundialRuntimeDir,
 } from './sundial-paths.js';
+import path from 'node:path';
 
 /**
  * macOS TCC permissions Gnomon's sensors depend on. Deliberately the *grant*
@@ -23,7 +25,9 @@ export type PermissionKey =
   | 'inputMonitoring'
   | 'fullDiskAccess'
   | 'calendar'
-  | 'locationServices';
+  | 'locationServices'
+  // lane H (H1)
+  | 'microphone';
 
 export interface PermissionStatus {
   key: PermissionKey;
@@ -43,10 +47,11 @@ const HINTS: Record<PermissionKey, string> = {
   accessibility: 'Add "Sundial" to System Settings → Privacy & Security → Accessibility.',
   screenRecording: 'Add "Sundial" to System Settings → Privacy & Security → Screen Recording.',
   inputMonitoring: 'Add "Sundial" to System Settings → Privacy & Security → Input Monitoring.',
-  fullDiskAccess: 'Only needed for Mail and Messages capture (off by default) and to read the Focus mode name. Leave it off unless you want those.',
+  fullDiskAccess: 'Only needed for Mail capture (off by default) and to read the Focus mode name. Leave it off unless you want those.',
   calendar: 'Grant "Sundial" Calendar access in System Settings → Privacy & Security → Calendars.',
   locationServices:
     'macOS hides Wi-Fi names without Location Services, so places show as gateway addresses. Sundial never asks for your location; name places in config.json (locationLabels) instead.',
+  microphone: 'Only for hearing (audio.enabled in config.json). Add "Sundial" to System Settings → Privacy & Security → Microphone.',
 };
 
 const LABELS: Record<PermissionKey, string> = {
@@ -56,6 +61,7 @@ const LABELS: Record<PermissionKey, string> = {
   fullDiskAccess: 'Full Disk Access',
   calendar: 'Calendar',
   locationServices: 'Location Services',
+  microphone: 'Microphone',
 };
 
 /** Reads a sidecar JSON without staleness-gating — grant state is slow-varying, so a stale-but-present file still reflects the last-known grant. Missing/unparseable → `null` (can't tell). */
@@ -67,7 +73,7 @@ function readSidecar(path: string): Record<string, unknown> | null {
   }
 }
 
-/** `notification-badges.json` carries the launcher's `AXIsProcessTrusted()` result — the authoritative Accessibility check. */
+/** `notification-badges.json` carries the notification helper's `AXIsProcessTrusted()` result — the authoritative Accessibility check. */
 function accessibilityGranted(): boolean | null {
   const sidecar = readSidecar(getNotificationBadgesJsonPath());
   if (!sidecar) return null;
@@ -139,6 +145,21 @@ function locationServicesGranted(): boolean | null {
   return sidecar.locationServicesGranted;
 }
 
+/**
+ * lane H (H1). The audio helper asks for the microphone in its own name and
+ * writes the answer into `audio-status.json`: `denied` is a refusal. Every
+ * state it can only reach AFTER the grant (asleep, listening, a capture or
+ * transcribe failure) is a yes. The whisper states come before the question
+ * is asked, so they say nothing about the grant.
+ */
+const MIC_GRANTED_STATES = new Set(['asleep', 'listening', 'capture-failed', 'transcribe-failed']);
+function microphoneGranted(): boolean | null {
+  const sidecar = readSidecar(path.join(getSundialRuntimeDir(), 'audio-status.json'));
+  if (!sidecar || typeof sidecar.state !== 'string') return null;
+  if (sidecar.state === 'denied') return false;
+  return MIC_GRANTED_STATES.has(sidecar.state) ? true : null;
+}
+
 function toStatus(key: PermissionKey, granted: boolean | null): PermissionStatus {
   return { key, label: LABELS[key], granted, hint: HINTS[key] };
 }
@@ -157,5 +178,6 @@ export function getPermissionStatus(): PermissionStatus[] {
     toStatus('fullDiskAccess', fullDiskAccessGranted()),
     toStatus('calendar', calendarGranted()),
     toStatus('locationServices', locationServicesGranted()),
+    toStatus('microphone', microphoneGranted()),
   ];
 }

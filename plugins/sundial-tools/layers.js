@@ -38,7 +38,7 @@
 // byte-identical, and discovery costs one ordinary tool result.
 //
 // `gnomon_call` delegates to the cold tool's own `toDshTool` definition, so the
-// repeat-call handles, the figure/view capture points, the zod validation and
+// repeat-call handles, the figure capture point, the zod validation and
 // the timeout all apply exactly as they would if it had been registered.
 //
 // Named exports only.
@@ -182,16 +182,16 @@ export function layerTools({ coldTools, definitionsByName, defineTool, toolDefin
       schema: { type: 'json' },
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
     },
-    // Conservative: the deferred set contains gnomon_show_view, which is not
-    // read-only, and one flag has to cover the whole door. Losing parallel
-    // dispatch on a tool called twice in 1,260 calls costs nothing.
+    // Conservative: one flag has to cover the whole door, whatever tool comes
+    // through it next. Losing parallel dispatch on a tool called twice in
+    // 1,260 calls costs nothing.
     isConcurrencySafe: () => false,
     async execute(args, exec) {
       const name = String(args?.name ?? '');
       const definition = definitionsByName.get(name);
       if (!definition) return { error: `No deferred tool named ${name}.`, available: known };
       // Straight through the real definition, so validation, the repeat-call
-      // handles, the figure/view capture and the timeout all behave as if this
+      // handles, the figure capture and the timeout all behave as if this
       // tool had been registered directly.
       return definition.execute(args?.args ?? {}, exec);
     },

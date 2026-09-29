@@ -34,6 +34,29 @@ describe('ownerPerceive (J2.1)', () => {
     for (const key of Object.keys(judge.state as object)) expect(['kind', 'intent', 'label', 'verdict', 'life_events', 'window_titles', 'app']).not.toContain(key);
   });
 
+  /** J1 — the judge ran on every tick while nothing read its answer. */
+  it('asks nothing when no tap is due and the gate does not read the beliefs', () => {
+    const base = withMoment(createInitialState('d1'));
+    const tapped = { ...base, owner: { ...base.owner, selfReports: [{ ts: '2026-09-22T09:00:00.000Z', tap: 'flow' as const, pFlow: 0.5, pStuck: 0.5, brier: 0.1 }] } };
+    const quiet = ownerPerceive(tapped, ev('clock:tick'));
+    expect(quiet.effects).toEqual([]);
+    // Nothing was judged, so nothing claims a fresh read.
+    expect(quiet.state.owner.perception.lastJudgedAt).toBeNull();
+    const gated = { ...tapped, config: { ...tapped.config, experiments: { ...tapped.config.experiments, ownerStateInGateCost: true } } };
+    expect(ownerPerceive(gated, ev('clock:tick')).effects.map((e) => e.type)).toEqual(['Judge']);
+  });
+
+  it('with only a due tap reading it, judges at most once an hour; the gate flag is not limited', () => {
+    const base = withMoment(createInitialState('d1'));
+    const first = ownerPerceive(base, ev('clock:tick'));
+    expect(first.effects.map((e) => e.type)).toEqual(['Judge']);
+    const kinds = (s: KernelState, ts: string) => ownerPerceive(s, ev('clock:tick', {}, ts)).effects.map((e) => e.type);
+    expect(kinds(first.state, '2026-09-22T10:59:00.000Z')).toEqual([]);
+    expect(kinds(first.state, '2026-09-22T11:00:00.000Z')).toEqual(['Judge']);
+    const gated = { ...first.state, config: { ...first.state.config, experiments: { ...first.state.config.experiments, ownerStateInGateCost: true } } };
+    expect(kinds(gated, '2026-09-22T10:01:00.000Z')).toEqual(['Judge']);
+  });
+
   it('asks nothing while idle or with no moment open', () => {
     const idle = { ...withMoment(createInitialState('d1')) };
     idle.lifeEvent = { ...idle.lifeEvent, idle: { consecutiveZeroWindows: 9, isIdle: true } };

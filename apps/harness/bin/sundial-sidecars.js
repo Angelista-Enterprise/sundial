@@ -23,8 +23,26 @@ import { fileURLToPath } from 'node:url';
 const SUNDIAL_HOME = process.env.SUNDIAL_HOME || path.join(os.homedir(), '.sundial');
 const RUNTIME_DIR = path.join(SUNDIAL_HOME, '.daemon');
 const PID_FILE = path.join(RUNTIME_DIR, 'sidecars.pid');
-const APP_MACOS_DIR = path.join(process.env.SUNDIAL_APP_PATH || path.join(SUNDIAL_HOME, 'Sundial.app'), 'Contents', 'MacOS');
+// lane H (H7): unset, the install's app.env says where its app is (never a stray bundle in the data folder).
+const appEnvApp = (() => {
+  try {
+    const line = fs.readFileSync(path.join(SUNDIAL_HOME, 'app.env'), 'utf8').split('\n').reverse().find((l) => l.startsWith('SUNDIAL_APP_PATH='));
+    return line ? line.slice('SUNDIAL_APP_PATH='.length).trim() : '';
+  } catch {
+    return '';
+  }
+})();
+const APP_MACOS_DIR = path.join(process.env.SUNDIAL_APP_PATH || appEnvApp || path.join(SUNDIAL_HOME, 'Sundial.app'), 'Contents', 'MacOS');
 const LAUNCHER = path.join(APP_MACOS_DIR, 'sundial-daemon');
+
+// lane H (H5): `start` and `stop` write into the install's log, so their lines
+// carry a time like the web process's (stampConsole in @sundial/helpers). `status` is read by a person.
+if (process.argv[2] === 'start' || process.argv[2] === 'stop') {
+  for (const level of ['log', 'error']) {
+    const original = console[level].bind(console);
+    console[level] = (first, ...rest) => original(typeof first === 'string' ? `${new Date().toISOString()} ${first}` : new Date().toISOString(), ...(typeof first === 'string' ? rest : [first, ...rest]));
+  }
+}
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 

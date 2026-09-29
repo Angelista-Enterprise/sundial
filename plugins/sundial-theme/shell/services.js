@@ -13,30 +13,44 @@
 /**
  * `path`: the config key. `values`: what the switch may write, in order, with
  * labels; the first is the code default when `fallback` is not given.
- * `signal`: `type:event` rows whose newest capture is the health.
+ * `signal`: `type:event` rows whose newest capture is the health. `under`: the
+ * service this one refines, drawn only while that one is on. `claude`: a hook
+ * in Claude Code's own settings rather than a config key — it takes effect on
+ * the next Claude session, with no restart here.
  */
 export const SERVICES = [
+  { sep: true, title: 'What Sundial senses' },
   { id: 'ocr', label: 'Screen text', what: 'Reads the text of the window in front, on this Mac, for moments and search.', path: 'ocr.enabled', signal: ['screen:ocr'] },
-  { id: 'vision', label: 'Screen facts', what: 'A local vision model notes up to three facts per screen.', path: 'ocr.vision.enabled', signal: ['screen:fact'], needs: 'Ollama running with the configured vision model.' },
+  { id: 'vision', label: 'Screen facts', what: 'A local vision model notes up to three facts per screen.', path: 'ocr.vision.enabled', signal: ['screen:fact'], needs: 'Ollama running with the configured vision model.', under: 'ocr' },
   { id: 'pageText', label: 'Page text', what: 'The visible text of the browser tab in front.', path: 'browser.pageText', signal: ['page:text'] },
   { id: 'clipboard', label: 'Clipboard', what: 'Only the kind and size of what you copy, never the content.', path: 'clipboardEnabled', signal: ['clipboard:activity'] },
-  { id: 'mail', label: 'Mail and Messages', what: 'Senders and subjects from Mail.app and Messages. Never a body.', path: 'privacy.mail', signal: ['mail:received', 'message:received'], needs: 'Your accounts in Mail.app. Mail read only in a browser is not seen.' },
-  { id: 'hearing', label: 'Hearing', what: 'Local transcripts of meetings and calls, both sides. Wakes for the calendar and for calls.', path: 'audio.enabled', signal: ['audio:transcript'] },
+  { id: 'mail', label: 'Mail', what: 'Senders, recipients and subjects from Mail.app. Never a body.', path: 'privacy.mail', signal: ['mail:received', 'mail:sent'], needs: 'Your accounts in Mail.app. Mail read only in a browser is not seen.' },
+  { id: 'messages', label: 'Messages', what: 'Who wrote in Messages, and in which chat. Never the text.', path: 'privacy.messages', signal: ['message:received'], needs: 'Full Disk Access for Sundial.' },
+  { id: 'hearing', label: 'Hearing', what: 'Local transcripts of what is said near this Mac, while you press Listen.', path: 'audio.enabled', signal: ['audio:transcript'] },
+  { id: 'hearMeetings', label: 'Hear meetings by itself', what: 'Every meeting with attendees and every call opens the microphone without a Listen. Nobody else is told.', path: 'audio.autoMeetings', under: 'hearing' },
   { id: 'presence', label: 'Devices nearby', what: 'Hashed devices on a network you agreed to, as a sign of where you are.', path: 'experiments.presence', signal: ['presence:scan'] },
-  { sep: true },
+  { id: 'vault', label: 'Obsidian vault', what: 'Notes edited today as subjects, and the day\'s journal page written into the vault.', path: 'vault', text: true, placeholder: '~/Documents/Notes' },
+  { sep: true, title: 'How Gnomon reaches you' },
   { id: 'banners', label: 'Mac banners', what: 'A banner when Gnomon speaks first, with Useful, Not now and Wrong.', path: 'notifications.enabled' },
-  { id: 'push', label: 'Phone push', what: 'Notices and shelved work to your phone through ntfy.', path: 'notifications.ntfy', text: true, needs: 'An ntfy topic URL in notifications.ntfy.' },
+  { id: 'push', label: 'Phone push', what: 'Notices and shelved work to your phone through ntfy. The topic is as private as its name.', path: 'notifications.ntfy', text: true, placeholder: 'https://ntfy.sh/a-long-private-topic' },
+  { id: 'pushAtMac', label: 'Push while at the Mac', what: 'Always: the phone hears everything. Only when away: at the Mac the banner is enough.', path: 'notifications.pushAtMac', values: [[true, 'Always'], [false, 'Only when away']], under: 'push' },
   { id: 'phone', label: 'Phone signals', what: 'Place, sleep and health from your phone.', signal: ['phone:place', 'phone:sleep', 'health:sleep'], needs: 'Tailscale running, a Serve route to port 8767, and the Shortcuts on the phone.' },
-  { sep: true },
-  { id: 'outward', label: 'Outward actions', what: 'Shell commands, calendar events and web actions Gnomon may take.', path: 'actions.outward.all', values: [['off', 'Off'], ['ask', 'Ask'], ['auto', 'Auto']] },
+  { sep: true, title: 'Claude Code' },
+  { id: 'claudeHooks', label: 'Claude reports to Gnomon', what: 'Each session tells Gnomon when it waits, asks, fails or ends. Report only: it never approves anything.', claude: 'hooks', signal: ['agent:hook'] },
+  { id: 'claudeContext', label: 'Context at session start', what: 'A new session gets up to five lines: the project, its open ticket, promises, the last failure.', claude: 'context' },
   { id: 'hands', label: 'Claude as hands', what: 'Background jobs run on your Claude Code, read-only, capped per job.', path: 'hands.claude', needs: 'Claude Code installed and signed in.' },
+  { id: 'nightShift', label: 'Night shift', what: 'Jobs you ask for in chat run while you are away, each in its own worktree. Never pushed, never approved for you.', path: 'jobs.enabled', needs: 'tmux, and Claude Code signed in.' },
+  { id: 'jobsPerNight', label: 'Jobs a night', what: 'At most this many night jobs, 90 minutes each.', path: 'jobs.maxJobsPerNight', values: [[1, '1'], [2, '2'], [3, '3']], fallback: 2, under: 'nightShift' },
+  { id: 'usdPerNight', label: 'Spend a night', what: 'Claude stops a night once its estimate passes this.', path: 'jobs.maxUsdPerNight', values: [[2, '$2'], [5, '$5'], [10, '$10']], fallback: 5, under: 'nightShift' },
+  { sep: true, title: 'What Gnomon may do' },
+  { id: 'outward', label: 'Outward actions', what: 'Shell commands, calendar events, reminders and web actions Gnomon may take.', path: 'actions.outward.all', values: [['off', 'Off'], ['ask', 'Ask'], ['auto', 'Auto']] },
   { id: 'webSearch', label: 'Web search', what: 'Searches for jobs and answers, through your own SearXNG.', signal: ['web:search'], needs: 'The SearXNG container on 127.0.0.1:8888.' },
   { id: 'refutation', label: 'Nightly skeptic', what: 'Checks each night whether a fact still holds.', path: 'refutationEnabled', fallback: true },
-  { sep: true },
+  { sep: true, title: 'Experiments' },
   { id: 'forecasting', label: 'Forecasts', what: 'The shape of your day, predicted and scored.', path: 'experiments.forecasting' },
   { id: 'gateFeatures', label: 'Gate features', what: 'Logs what the judge saw beside every notice decision.', path: 'experiments.gateFeatures' },
-  { id: 'learnedGate', label: 'Learned gate', what: 'A fitted model replaces the fixed notice bar. Only once it wins on held-out data.', path: 'experiments.learnedGate' },
-  { id: 'ownerState', label: 'Your state in the gate', what: 'How you feel prices an interruption. Needs two weeks of self-report taps first.', path: 'experiments.ownerStateInGateCost' },
+  { id: 'learnedGate', label: 'Learned gate', what: 'A fitted model replaces the fixed notice bar. Only once it wins on held-out data.', path: 'experiments.learnedGate', needs: 'About 100 notices you marked Useful, Not now or Wrong.' },
+  { id: 'ownerState', label: 'Your state in the gate', what: 'How you feel prices an interruption.', path: 'experiments.ownerStateInGateCost', needs: 'Two weeks of self-report taps, scoring 0.15 or better.' },
 ]
 
 export const getPath = (obj, path) => path.split('.').reduce((v, k) => (v && typeof v === 'object' ? v[k] : undefined), obj)
@@ -62,28 +76,55 @@ export function valueOf(service, config) {
   return v
 }
 
+/**
+ * A text value the owner typed, cleaned, or null when this service does not
+ * take it. An empty string clears the key. `push`: an http(s) ntfy URL.
+ * `vault`: an absolute (or `~/`) folder path; whether it exists is the route's
+ * to check.
+ */
+export function textValue(service, value) {
+  if (!service?.text || typeof value !== 'string') return null
+  const v = value.trim()
+  if (v === '') return ''
+  if (v.length > 500 || /[\u0000-\u001f]/.test(v)) return null
+  if (service.id === 'push') return /^https?:\/\/[^\s]+$/.test(v) ? v : null
+  if (service.id === 'vault') return /^(\/|~\/)/.test(v) ? v.replace(/\/+$/, '') : null
+  return null
+}
+
 /** Whether a POSTed value is one this service's switch may write. */
-export const allowed = (service, value) => Boolean(service?.path) && !service.text && choices(service).some(([v]) => v === value)
+export const allowed = (service, value) => Boolean(service?.path || service?.claude) && !service.text && choices(service).some(([v]) => v === value)
+
+/** Whether a service is on, for the ones drawn `under` it. A set text value counts. */
+const isOn = (v) => v !== false && v !== 'off' && v !== 'unset' && v !== null
 
 /**
  * The rows the card draws: each service with its value in the saved file, the
  * value this process booted with, its choices, and its last signal.
  */
-export function describe(config, booted, freshness) {
+export function describe(config, booted, freshness, claude = {}) {
   const last = new Map(freshness.map((f) => [`${f.signalType}:${f.eventType}`, f.lastCapturedAt]))
-  return SERVICES.map((s) =>
-    s.sep
-      ? { sep: true }
-      : {
-          id: s.id,
-          label: s.label,
-          what: s.what,
-          needs: s.needs ?? null,
-          value: valueOf(s, config),
-          changed: s.path ? valueOf(s, config) !== valueOf(s, booted) : false,
-          choices: s.path && !s.text ? choices(s) : null,
-          watched: (s.signal ?? []).length > 0,
-          lastSignal: (s.signal ?? []).map((t) => last.get(t)).filter(Boolean).sort().pop() ?? null,
-        },
-  )
+  const value = (s) => (s.claude ? claude[s.claude] === true : valueOf(s, config))
+  const byId = new Map(SERVICES.filter((s) => !s.sep).map((s) => [s.id, s]))
+  return SERVICES.flatMap((s) => {
+    if (s.sep) return [{ sep: true, title: s.title ?? null }]
+    // A refinement of a service that is off has nothing to refine.
+    if (s.under && !isOn(value(byId.get(s.under)))) return []
+    return [
+      {
+        id: s.id,
+        label: s.label,
+        what: s.what,
+        needs: s.needs ?? null,
+        value: value(s),
+        changed: s.path ? valueOf(s, config) !== valueOf(s, booted) : false,
+        live: Boolean(s.claude),
+        under: s.under ?? null,
+        choices: (s.path || s.claude) && !s.text ? choices(s) : null,
+        placeholder: s.text ? (s.placeholder ?? '') : null,
+        watched: (s.signal ?? []).length > 0,
+        lastSignal: (s.signal ?? []).map((t) => last.get(t)).filter(Boolean).sort().pop() ?? null,
+      },
+    ]
+  })
 }

@@ -32,7 +32,13 @@ const BASE_URL_ENV = 'SUNDIAL_LLM_BASE_URL'
 const MODEL_ENV = 'SUNDIAL_LLM_MODEL'
 const DEFAULT_API_KEY_ENV = 'SUNDIAL_LLM_API_KEY'
 const DEFAULT_MODEL = 'qwen/qwen3.8-flash-next'
-const DEFAULT_CONTEXT_WINDOW = 128_000
+/**
+ * The window this route DECLARES, not the model's: dsh compacts at 80% of it.
+ * At 128k compaction began near 102k while a chat call averaged 41.6k prompt
+ * tokens, history driving it (measured 2026-09-28). 64k starts it at ~51k.
+ * Plugin config `contextWindow` overrides it.
+ */
+const DEFAULT_CONTEXT_WINDOW = 64_000
 
 /**
  * The models the picker offers on this route. The default comes first. A
@@ -655,7 +661,7 @@ export function apply(ctx, config = {}) {
     const models = Array.isArray(config.models) ? config.models.map((m) => (typeof m === 'string' ? { id: m } : m)) : undefined
     const baseUrl = baseUrlRaw.replace(/\/+$/, '')
     const model = config.model ?? envValue(fileEnv, MODEL_ENV) ?? DEFAULT_MODEL
-    const adapter = new OpenAICompatAdapter({ baseUrl, model, resolveApiKey: keyFor(config.apiKeyEnv ?? DEFAULT_API_KEY_ENV), models, readImage })
+    const adapter = new OpenAICompatAdapter({ baseUrl, model, resolveApiKey: keyFor(config.apiKeyEnv ?? DEFAULT_API_KEY_ENV), models, readImage, contextWindow: config.contextWindow })
     ctx.llm.registerAdapter([PROVIDER, LEGACY_PROVIDER], adapter)
   }
 

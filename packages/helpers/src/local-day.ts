@@ -100,12 +100,10 @@ export function localDate(ts: string, timeZone: string): string {
 /**
  * The hour of the day (0–23) an instant falls in, in `timeZone`.
  *
- * The companion to `localDate` for any analytic that buckets by hour. Existing
- * hourly buckets in the rules (`dayShapeForecast`, `anomalyZscore`, `mindTrack`)
- * call `new Date(ts).getHours()`, which reads the HOST zone — an accepted
- * trade-off documented at those call sites, since they only ever run inside a
- * live daemon. A read-time analytic has no such excuse: it is handed the zone
- * from config, and pairing a local day with a host-zone hour is the exact
+ * The companion to `localDate` for any analytic that buckets by hour. Rules
+ * pass `state.config.timezone`; until 2026-09-28 (M3) several called
+ * `new Date(ts).getHours()`, the HOST zone, so a replay on a machine in another
+ * zone re-bucketed them. Pairing a local day with a host-zone hour is the
  * mismatch `day-shape-forecast.ts` warns about in its own header.
  *
  * Falls back to the UTC hour when the zone is unusable, matching `localDate`.
@@ -117,6 +115,23 @@ export function localHour(ts: string, timeZone: string): number {
   } catch {
     return new Date(ts).getUTCHours();
   }
+}
+
+/** Minutes since local midnight, 0–1439, in `timeZone`. UTC on an unusable zone, matching `localHour`. */
+export function localMinuteOfDay(ts: string, timeZone: string): number {
+  try {
+    const parts = partsFormatter(timeZone).formatToParts(new Date(ts));
+    const get = (type: string): number => Number(parts.find((p) => p.type === type)?.value ?? '0');
+    return get('hour') * 60 + get('minute');
+  } catch {
+    const d = new Date(ts);
+    return d.getUTCHours() * 60 + d.getUTCMinutes();
+  }
+}
+
+/** Day of the week (0 = Sunday) of the local date an instant falls on in `timeZone`. */
+export function localWeekday(ts: string, timeZone: string): number {
+  return new Date(`${localDate(ts, timeZone)}T12:00:00Z`).getUTCDay();
 }
 
 /**

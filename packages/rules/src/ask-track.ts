@@ -58,7 +58,8 @@ function trim(value: unknown): string {
  * about the record, not an observation of it, and auto-indexing every answer
  * would let the system retrieve its own earlier guesses as though they were
  * evidence — the failure already recorded for journals in
- * issues/journal-summarises-model-output-not-evidence, where a summary of
+ * issues/journal-summarises-model-output-not-evidence (since retired from the
+ * almanac), where a summary of
  * generated narrative left no way to correct an upstream misreading. `remembered`
  * plus `sourceCount` are carried in state so a later rule can make that call
  * automatically once there is a measured basis for it; the button is the first

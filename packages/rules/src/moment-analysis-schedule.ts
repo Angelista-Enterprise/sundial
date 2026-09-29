@@ -1,6 +1,7 @@
 import { isRedactedPlaceholder } from '@sundial/helpers/redact/redact-policy.js';
 import { withPersona } from '@sundial/kernel/persona.js';
-import type { MomentRollup, Rule } from '@sundial/kernel/types.js';
+import type { Commitment, KernelState, MomentRollup, Rule } from '@sundial/kernel/types.js';
+import { namesDeliverable, samePerson } from './promise-terms.js';
 import { isMarked } from './ingest-anomaly.js';
 import { notesEditedToday } from './vault-track.js';
 import { recentMailSubjects } from './mail-track.js';
@@ -49,8 +50,9 @@ function projectLabel(projectId: string | null): string | null {
  * prompt: which project the moment was attributed to, how long it ran and how
  * much of that was active, what was said aloud, and which commands were run
  * (empty until the notability filter beside this was fixed). The spoken
- * excerpt goes FIRST among the evidence because a person saying what they are
- * doing outranks every inference from a window title.
+ * excerpt goes first among the evidence, labelled for what it is: speech heard
+ * near the Mac, by anyone, or whisper's invention on noise. It is not the
+ * owner's word (the sensor claims no speaker), so it outranks nothing.
  */
 function buildActivityContext(rollup: MomentRollup, titles: string[], newProcessName: string | null, priorities: string[], projectId: string | null, durationMs: number, notes: string[] = []): string {
   const project = projectLabel(projectId);
@@ -61,9 +63,9 @@ function buildActivityContext(rollup: MomentRollup, titles: string[], newProcess
   // its absence is information too: "no project" stops the model inventing one.
   lines.push(project ? `Project: ${project}${rollup.projectConfidence ? ` (${rollup.projectConfidence} attribution)` : ''}` : 'Project: not attributable from this window.');
   if (minutes > 0) lines.push(`Lasted ${minutes} min${activeMin > 0 && activeMin !== minutes ? `, ${activeMin} min of it active` : ''}.`);
-  // First-party evidence: the owner said what they were doing. Nothing inferred
-  // from a title outranks it, and the prompt is told so.
-  if (rollup.spokenExcerpt) lines.push(`HEARD ALOUD during this moment — the owner's own words, which outrank every inference below: “${rollup.spokenExcerpt}”`);
+  // Heard near the Mac: no speaker is known, and silence transcribes as
+  // confident sentences, so the prompt is told to weigh it, not to obey it.
+  if (rollup.spokenExcerpt) lines.push(`HEARD ALOUD during this moment — heard nearby; may be anyone, may be noise: “${rollup.spokenExcerpt}”`);
   lines.push(`Window titles seen, in order: ${titles.join(' -> ')}`);
   if (rollup.gitCommitCount > 0) lines.push(`Git commits: ${rollup.gitCommitCount}${rollup.gitBranch ? ` (branch ${rollup.gitBranch})` : ''}`);
   // The count rides along only when it says something the list does not: that
@@ -113,6 +115,23 @@ function buildActivityContext(rollup: MomentRollup, titles: string[], newProcess
  * bounce (each leg individually above `MIN_MOMENT_DURATION_MS`, so neither
  * gets dropped by B1) still schedules two separate calls today.
  */
+/** UC1 (U1-F23): the promises most worth a resolve slot in this moment. */
+export function slotPromises(promises: readonly Commitment[], rollup: Pick<MomentRollup, 'meetingAttendees' | 'windowTitles'>): Commitment[] {
+  const titles = rollup.windowTitles.join(' ');
+  const score = (c: Commitment): number => (rollup.meetingAttendees.some((a) => samePerson(a, c.promise?.counterparty)) ? 2 : 0) + (c.promise && namesDeliverable(c.promise.keys, titles) ? 1 : 0);
+  return promises
+    .map((c, i) => ({ c, i, s: score(c) }))
+    .sort((a, b) => b.s - a.s || a.i - b.i)
+    .slice(0, MAX_PROMISE_SLOTS)
+    .map(({ c }) => c);
+}
+
+/** A mail sent, or a message the owner wrote, inside the moment. */
+function sentDuring(state: KernelState, from: string, to: string): boolean {
+  const inside = (at: string) => at >= from && at <= to;
+  return (state.mail?.sent ?? []).some((m) => inside(m.at)) || (state.mail?.messages ?? []).some((m) => m.fromMe && inside(m.at));
+}
+
 export const momentAnalysisSchedule: Rule = (state, event) => {
   // D2-adjacent fix (see moment-close.ts's `closingMomentRow` doc comment) —
   // a same-process/same-project title change appends to the open moment (B1)
@@ -159,12 +178,16 @@ export const momentAnalysisSchedule: Rule = (state, event) => {
   // the metadata so `applyMomentJudgement` credits THE goal that was in the
   // slot, not whichever is open when the answer lands.
   const goals = openGoals(state.memory.factCursor).slice(0, MAX_GOAL_SLOTS);
-  // J4.4: the promises still open, oldest first, so a kept one can be closed.
-  const promises = state.commitments.open.filter((c) => c.source === 'speech').slice(0, MAX_PROMISE_SLOTS);
+  // J4.4: the promises still open, so a kept one can be closed — the fallback
+  // to UC1's deterministic evidence. Four slots, filled by relevance rather
+  // than age (U1-F23): a promise to someone in this moment's meeting, or whose
+  // deliverable a title names, first; then the oldest. A fifth promise was
+  // never in a slot before, so it could never be closed this way.
+  const promises = slotPromises(state.commitments.promises, closing.rollup);
   const durationMs = typeof closed.durationMs === 'number' ? closed.durationMs : 0;
   const projectId = typeof closed.projectId === 'string' ? closed.projectId : null;
   const notes = notesEditedToday(state);
-  const fanout = momentFanout.build({ rollup: closing.rollup, projectId, durationMs, openGoals: goals.map(goalLabel), openPromises: promises.map((c) => c.name), notesEditedToday: notes, mailSubjects: recentMailSubjects(state, event.ts) });
+  const fanout = momentFanout.build({ rollup: closing.rollup, projectId, durationMs, openGoals: goals.map(goalLabel), openPromises: promises.map((c) => c.promise?.quote ?? c.name), notesEditedToday: notes, mailSubjects: recentMailSubjects(state, event.ts) });
   const r = closing.rollup;
 
   return {
@@ -187,7 +210,8 @@ export const momentAnalysisSchedule: Rule = (state, event) => {
           // J4.4's second key (docs/jarvis/05): closing a promise needs evidence a
           // third party could not have typed into a title — a commit, commands run,
           // a meeting on the calendar, the mic open.
-          nonText: r.gitCommitCount > 0 || r.shellCommandCount > 0 || Boolean(r.calendarActive) || Boolean(r.micActive),
+          // U1-F25: a mail sent or a message written in the moment is such evidence too.
+          nonText: r.gitCommitCount > 0 || r.shellCommandCount > 0 || Boolean(r.calendarActive) || Boolean(r.micActive) || sentDuring(state, closing.startTime, event.ts),
           // The words the promise would be quoted from, clipped; absent when nothing was heard.
           ...(r.spokenExcerpt ? { spoken: clip(r.spokenExcerpt, 160) } : {}),
         },

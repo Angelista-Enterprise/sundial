@@ -228,6 +228,15 @@ describe('noticeGate rule', () => {
     expect(next).toBe(state); // nothing spent, nothing habituated
   });
 
+  it('holds back a group the owner turned off, records why, and never quiets an owner question', () => {
+    const state = { ...utcState(), settings: { ...utcState().settings, quiet: ['agents'] } };
+    const held = noticeGate(state, candidateEvent(candidate({ kind: 'agent-waiting' })));
+    expect(held.effects.map((e) => (e as unknown as { reason: string }).reason)).toEqual(['owner-quiet']);
+    expect(held.state).toBe(state);
+    const asked = noticeGate(state, candidateEvent(candidate({ kind: 'owner-question' })));
+    expect(asked.effects.some((e) => (e as unknown as { reason?: string }).reason === 'owner-quiet')).toBe(false);
+  });
+
   it('moves the same bar the policy judges by when the owner asks for quieter', () => {
     const verdict = (state: KernelState) =>
       (noticeGate(state, candidateEvent(candidate({ surprise: 2, precision: 0.75 }))).effects.find((e) => (e as unknown as { type: string }).type === 'RecordGateDecision') as unknown as { channel: string }).channel;
@@ -288,6 +297,23 @@ describe('noticeGate rule', () => {
     expect(next.notices.spentToday).toBe(0);
   });
 
+  /** N2 — the interrupting channel had a threshold and a cost, and no count. */
+  it('past `phasicDailyCap` interruptions today, an urgent candidate lands on the list instead', () => {
+    const urgent = (i: number) => candidate({ kind: 'day-runs-long', key: `day-runs-long:${i}`, valueHalfLifeMs: 90 * 60_000, surprise: 4, precision: 0.9 });
+    let state = utcState();
+    const channels: string[] = [];
+    for (let i = 0; i <= POLICY.phasicDailyCap; i += 1) {
+      const out = noticeGate(state, { ...candidateEvent(urgent(i), `2026-03-10T1${i}:00:00.000Z`), id: `c${i}` });
+      state = out.state;
+      channels.push((out.effects[0] as unknown as { channel: string }).channel);
+    }
+    expect(channels.filter((c) => c === 'phasic-notice')).toHaveLength(POLICY.phasicDailyCap);
+    expect(channels.at(-1)).toBe('tonic-notice');
+    // A new day, a fresh allowance — the queue is not cleared, it is counted by day.
+    const tomorrow = noticeGate(state, { ...candidateEvent(urgent(99), '2026-03-11T09:00:00.000Z'), id: 'c99' });
+    expect((tomorrow.effects[0] as unknown as { channel: string }).channel).toBe('phasic-notice');
+  });
+
   it('leaves no trace in the gate memory when it suppresses — but records the verdict durably', () => {
     // A producer may legitimately re-offer a candidate before it ever clears the bar.
     // Habituating on presentation would kill exactly those before they were said once.
@@ -295,7 +321,7 @@ describe('noticeGate rule', () => {
     const weak = candidate({ surprise: 0.2, precision: 0.2 });
     const { state: next, effects } = noticeGate(state, candidateEvent(weak));
     // STATE identity is preserved (the hot-path guarantee); the decision itself
-    // is persisted as an effect — unsaid-room-gate-decision-persistence's trade.
+    // is persisted as an effect — the gate-decision record's trade.
     expect(next).toBe(state);
     expect(effects).toHaveLength(1);
     const record = effects[0] as unknown as { type: string; channel: string; reason: string; surprise: number; habituation: number };
@@ -407,5 +433,71 @@ describe('J2.1 / J3.1 — the owner in the interruption cost', () => {
     const on = interruptionCostOf({ ...sure, config: { ...sure.config, experiments: { ...sure.config.experiments, ownerStateInGateCost: true } } });
     expect(off).toBeLessThan(0.5);
     expect(on).toBeCloseTo(0.99, 2);
+  });
+});
+
+describe('noticeGate · away from the Mac, the list waits for the return', () => {
+  const T0 = '2026-03-10T08:00:00.000Z';
+  const ev = (type: string, payload: Record<string, unknown>, ts: string, id = `${type}-${ts}`): SanitizedEvent => ({ id, type, ts, payload, sanitized: true });
+  const plus = (min: number) => new Date(Date.parse(T0) + min * 60_000).toISOString();
+  const fold = (state: KernelState, events: SanitizedEvent[]) => {
+    const effects: { type: string; channel?: string; reason?: string }[] = [];
+    for (const e of events) {
+      const out = noticeGate(state, e);
+      state = out.state;
+      effects.push(...(out.effects as { type: string; channel?: string; reason?: string }[]));
+    }
+    return { state, effects };
+  };
+  // A four-hour half-life, like a shelved job: tonic, and decayed by morning.
+  const shelved = candidate({ kind: 'work-shelved', key: 'work-shelved:j1', valueHalfLifeMs: 4 * HOUR });
+
+  it('an hour into an absence a tonic notice is held, not spent; before the hour it lands as ever', () => {
+    const early = fold(utcState(), [ev('idle:start', {}, T0), candidateEvent(shelved, plus(30))]);
+    expect(early.effects.some((e) => e.type === 'Notify' && e.channel === 'tonic-notice')).toBe(true);
+
+    const late = fold(utcState(), [ev('idle:start', {}, T0), candidateEvent(shelved, plus(70))]);
+    expect(late.effects.map((e) => e.type)).toEqual(['RecordGateDecision']);
+    expect(late.effects[0]).toMatchObject({ channel: 'deferred', reason: 'owner-away' });
+    expect(late.state.notices.away?.held.map((h) => h.candidate.key)).toEqual(['work-shelved:j1']);
+    expect(late.state.notices.spentToday).toBe(0);
+  });
+
+  it('the first real input weighs it again and delivers it, however long the absence ate of its half-life', () => {
+    const { state, effects } = fold(utcState(), [
+      ev('system:sleep-wake', { kind: 'sleep' }, T0),
+      candidateEvent(shelved, plus(70)),
+      ev('system:sleep-wake', { kind: 'wake' }, plus(600)),
+      ev('input:activity', { keyDownCount: 0, mouseMoveCount: 0 }, plus(601)),
+      ev('input:activity', { keyDownCount: 3 }, plus(602)),
+    ]);
+    const notify = effects.filter((e) => e.type === 'Notify');
+    expect(notify).toHaveLength(1);
+    expect(notify[0]).toMatchObject({ channel: 'tonic-notice' });
+    expect(state.notices.away).toEqual({ since: null, held: [] });
+    expect(state.notices.spentToday).toBe(1);
+    expect(state.notices.habituation['work-shelved:j1']?.at).toBe(plus(602));
+  });
+
+  it('an interruption is never held: it still goes out while the owner is away', () => {
+    const urgent = candidate({ kind: 'wakeup', key: 'wakeup:x', surprise: 2, precision: 1, valueHalfLifeMs: 30 * 60_000 });
+    const { effects } = fold(utcState(), [ev('idle:start', {}, T0), candidateEvent(urgent, plus(90))]);
+    expect(effects.some((e) => e.type === 'Notify' && e.channel === 'phasic-notice')).toBe(true);
+  });
+
+  it('input while present costs nothing and allocates nothing', () => {
+    const s = utcState();
+    expect(noticeGate(s, ev('input:activity', { keyDownCount: 5 }, T0)).state).toBe(s);
+  });
+});
+
+describe('noticeGate · a held notice that runs out of time says so', () => {
+  it('records an expiry as suppressed / expired instead of vanishing', () => {
+    const base = utcState();
+    const held = candidate({ kind: 'agent-waiting', key: 'agent-waiting:s1', valueHalfLifeMs: 30 * 60_000 });
+    const state = { ...base, notices: { ...base.notices, deferred: [{ candidate: held, since: '2026-03-10T09:00:00.000Z', reconsidered: 3 }] } };
+    const out = noticeGate(state, { id: 't1', type: 'clock:tick', ts: '2026-03-10T09:45:00.000Z', payload: {}, sanitized: true });
+    expect(out.state.notices.deferred).toEqual([]);
+    expect(out.effects).toEqual([expect.objectContaining({ type: 'RecordGateDecision', noticeKey: 'agent-waiting:s1', channel: 'suppressed', reason: 'expired' })]);
   });
 });

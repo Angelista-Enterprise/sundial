@@ -1,5 +1,5 @@
 import type { Effect, KernelState, Rule } from '@sundial/kernel/types.js';
-import { slugifyEntityName } from './entity-extract.js';
+import { NON_TOOL_PROCESSES, normaliseProcessName, slugifyEntityName } from './entity-extract.js';
 import { canonicalOwnerName, knownProjectNames, rejectEntityName, type EntityNameContext } from './entity-name-validation.js';
 import { predicateCardinality } from './predicate-cardinality.js';
 
@@ -50,14 +50,33 @@ export type HygieneAction = { op: 'retract'; factId: string; reason: string } | 
  */
 const RETIRED_SOURCES = new Set(['symbol', 'screen']);
 
-const norm = (text: string): string => text.trim().toLowerCase();
+const norm = (text: string): string => normaliseProcessName(text).toLowerCase();
+
+/**
+ * Evidence the executor reads from the DB and the plan judges against.
+ * Optional: a caller without them plans exactly what it planned before.
+ */
+export interface HygieneEvidence {
+  /** Written moments of `tool` inside the project entity's paths (the belief audit's count). */
+  toolSessionsInProject?: (projectEntityId: string, tool: string) => number;
+  /** Facts whose LATEST owner verdict is `wrong`. */
+  wrongFactIds?: ReadonlySet<string>;
+  /** The pass's time. With it, a `usesTool` fact younger than `THIN_TOOL_GRACE_MS` is not judged thin yet. */
+  now?: string;
+}
+
+/** A freshly promoted `usesTool` has had no time to gather sessions; the thin rule leaves it this long. */
+export const THIN_TOOL_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Below this many in-project sessions, `project usesTool X` is a sighting, not a habit. */
+export const MIN_TOOL_SESSIONS = 3;
 
 /**
  * The plan, pure. Order matters and is kept: retractions first, then merges,
  * because a merge moves every fact the `from` entity still holds and a fact that
  * should not survive must be gone before it is carried across.
  */
-export function planHygiene(entities: HygieneEntity[], facts: HygieneFact[], context: EntityNameContext): HygieneAction[] {
+export function planHygiene(entities: HygieneEntity[], facts: HygieneFact[], context: EntityNameContext, evidence: HygieneEvidence = {}): HygieneAction[] {
   const byId = new Map(entities.map((e) => [e.id, e]));
   const retract = new Map<string, string>();
   const merges: HygieneAction[] = [];
@@ -77,6 +96,28 @@ export function planHygiene(entities: HygieneEntity[], facts: HygieneFact[], con
     if (!entity) continue;
     const asserted = fact.provenance === 'assertion';
 
+    // M2 — the owner said wrong, and that is the last word on it. Verdicts
+    // before 2026-09-17 never landed their retraction; this repairs them.
+    if (evidence.wrongFactIds?.has(fact.id)) {
+      drop(fact.id, 'the owner marked it wrong');
+      continue;
+    }
+    // M1 — "project uses Finder": OS plumbing is not a tool, and a tool the
+    // project's own moments barely show is a sighting the old ambient-pointer
+    // producer minted. The owner's word is kept.
+    if (entity.kind === 'project' && fact.predicate === 'usesTool' && !asserted) {
+      const tool = normaliseProcessName(fact.object);
+      if (NON_TOOL_PROCESSES.has(tool)) {
+        drop(fact.id, 'OS plumbing, not a tool');
+        continue;
+      }
+      const sessions = evidence.toolSessionsInProject?.(entity.id, tool);
+      const young = evidence.now !== undefined && Date.parse(evidence.now) - Date.parse(fact.createdAt) < THIN_TOOL_GRACE_MS;
+      if (sessions !== undefined && sessions < MIN_TOOL_SESSIONS && !young) {
+        drop(fact.id, `${sessions} session(s) of it in the project, under ${MIN_TOOL_SESSIONS}`);
+        continue;
+      }
+    }
     if (fact.sourceType !== null && RETIRED_SOURCES.has(fact.sourceType) && !asserted) {
       drop(fact.id, `from a retired producer (${fact.sourceType})`);
       continue;
@@ -196,10 +237,22 @@ export function hygieneContext(state: KernelState): EntityNameContext {
 export const applyWorldHygiene: Rule = (state, event) => {
   if (event.type !== 'world:hygiene') return { state, effects: [] };
   const actions = (event.payload as { actions?: HygieneAction[] }).actions ?? [];
+  // A retracted fact must leave the cursor too, as `feedbackTrack` does for a
+  // `wrong` verdict: a cursor still holding it sends the next observation down
+  // Case 1 ("repeat of the confirmed truth"), which reinforces a gone row and
+  // never re-promotes. Reset to unconfirmed, the value earns promotion again.
+  const retracted = new Set(actions.flatMap((a) => (a.op === 'retract' ? [a.factId] : [])));
+  let factCursor = state.memory.factCursor;
+  for (const [key, entry] of Object.entries(factCursor)) {
+    if (entry?.factId == null || !retracted.has(entry.factId)) continue;
+    if (factCursor === state.memory.factCursor) factCursor = { ...factCursor };
+    factCursor[key] = { ...entry, object: null, factId: null, pendingObject: null, pendingCount: 0 };
+  }
+  const next = factCursor === state.memory.factCursor ? state : { ...state, memory: { ...state.memory, factCursor } };
   const effects: Effect[] = actions.map((action) =>
     action.op === 'retract'
       ? { type: 'RetractFact', factId: action.factId, reason: `hygiene: ${action.reason}`, ts: event.ts }
       : { type: 'MergeEntity', from: action.from, into: action.into, alias: action.alias, ts: event.ts },
   );
-  return { state, effects };
+  return { state: next, effects };
 };

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { performAttachTranscript, speakerLabels, transcriptFor, type AttachTranscriptDeps } from './attach-transcript.js';
+import { captionsFor, performAttachTranscript, speakerLabels, transcriptFor, type AttachTranscriptDeps } from './attach-transcript.js';
 
 const effect = { type: 'AttachTranscript' as const, askId: 'owner-ask:meeting-abc', title: 'Puzzlez - Planning', start: '2026-09-21T11:00:00.000Z', end: '2026-09-21T12:00:00.000Z', answer: "good, i've got a transcript, attach it to this question.", ts: '2026-09-21T12:05:00.000Z' };
 const deps = (over: Partial<AttachTranscriptDeps> = {}): AttachTranscriptDeps => ({
@@ -53,7 +53,7 @@ describe('AttachTranscript (J1.5)', () => {
         { eventType: 'transcript', capturedAt: '2026-09-21T11:01:05.000Z', data: { spokenText: 'yes, loud and clear', channel: 'system' } },
       ],
     });
-    expect(await transcriptFor(d, effect.start, effect.end, ['Pat', 'Anna de Vries'])).toEqual({ text: 'Pat: can you hear me?\nAnna de Vries: yes, loud and clear', source: 'utterances' });
+    expect(await transcriptFor(d, effect.start, effect.end, ['Pat', 'Anna de Boer'])).toEqual({ text: 'Pat: can you hear me?\nAnna de Boer: yes, loud and clear', source: 'utterances' });
   });
 
   it('a room with no system stream keeps its unlabelled text', async () => {
@@ -68,5 +68,22 @@ describe('speakerLabels', () => {
     expect(speakerLabels(['Anna', 'Bob'], ['Pat'])).toEqual({ mic: 'Pat', system: 'Them' });
     expect(speakerLabels(['person-1a2b3c4d5e'], ['Pat'])).toEqual({ mic: 'Pat', system: 'Them' });
     expect(speakerLabels([], [])).toEqual({ mic: 'Me', system: 'Them' });
+  });
+});
+
+describe('Meet captions for the promise pass (UC1)', () => {
+  it('keeps each captioned line once, from Meet pages only, in the order first seen', async () => {
+    const d = deps({
+      getSignalsInRange: async (_from, _to, _limit, types) => {
+        expect(types).toEqual(['page:text']);
+        return [
+          { eventType: 'text', capturedAt: '2026-09-21T11:01:00.000Z', data: { host: 'meet.google.com', text: 'Mira Bakker\nCould you send the draft?\nTurn on captions' } },
+          { eventType: 'text', capturedAt: '2026-09-21T11:02:00.000Z', data: { host: 'meet.google.com', text: 'Could you send the draft?\nYes, I will send it by Tuesday.' } },
+          { eventType: 'text', capturedAt: '2026-09-21T11:03:00.000Z', data: { host: 'example.com', text: 'Unrelated page text that is long enough' } },
+        ];
+      },
+    });
+    expect(await captionsFor(d, effect.start, effect.end)).toBe('Could you send the draft?\nTurn on captions\nYes, I will send it by Tuesday.');
+    expect(await captionsFor(deps(), effect.start, effect.end)).toBeNull();
   });
 });

@@ -148,8 +148,7 @@ export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS,
         // `assistantTrack` folds the signal into `state.assistant`, which two
         // prompt builders read and no surface did, so every proposal went into
         // the model's own context and nowhere else. A tool result the model
-        // trusts must not describe a delivery that did not happen — the same
-        // false-success defect `gnomon_show_view` carries.
+        // trusts must not describe a delivery that did not happen.
         render: (_args, value) => [{ type: 'text', text: value.recorded ? 'Proposal recorded — it appears on the owner’s Today surface for accept or reject.' : 'Not recorded.' }],
       },
       async execute(args) {
@@ -223,6 +222,53 @@ export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS,
         const iso = new Date(dueAt).toISOString()
         await appendSignal('wakeup:scheduled', { at: iso, reason, key })
         return { scheduled: true, at: iso, key }
+      },
+    }),
+
+    // UC1 (U1-F9): a promise the owner states to Gnomon. The terms are read by
+    // the fold (`promiseTrack`), so this only carries the owner's words and the
+    // three fields the model can see in them.
+    defineTool({
+      name: 'gnomon_track_promise',
+      description: [
+        'Track a promise the owner tells you about — "I owe Mira the draft by Tuesday", "I told Bob I\'d review his PR", "Mira will send me the numbers tomorrow".',
+        'Only when the owner states it: never a promise you infer, and never your own. Gnomon then keeps it: it closes by itself when the mail, the commit or the file shows up, and it says so, once, before it is due (at the next meeting with that person when no date was said).',
+        'Pass the person exactly as the owner named them, the thing in a few of their words, and the due words as they said them ("Tuesday", "morgen") — the date is worked out for you.',
+        'To MOVE a promise already tracked (the owner renegotiated it), pass its id (commitment:promise:…) and move_to as an ISO-8601 instant with an offset, resolved against the clock context; nothing else is needed.',
+      ].join(' '),
+      parameters: {
+        id: { type: 'string', description: 'Only to move a tracked promise: its id.' },
+        move_to: { type: 'string', description: 'Only to move a tracked promise: the new due instant, ISO-8601 with offset.' },
+        what: { type: 'string', description: 'The thing promised, a few words: "the draft". Required unless moving.' },
+        to: { type: 'string', description: 'The person it is owed to (or, with owed_to_owner, the person who owes it). Omit when nobody in particular.' },
+        due: { type: 'string', description: 'The due words as the owner said them, e.g. "Tuesday", "end of the week", "morgen". Omit when none.' },
+        owed_to_owner: { type: 'boolean', description: 'True when someone else promised the OWNER, e.g. "Mira will send me the numbers".' },
+        words: { type: 'string', description: 'The owner\'s own sentence, as typed.' },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: false, properties: { tracked: { type: 'boolean' }, id: { type: 'string' } } },
+        render: (_args, value) => [{ type: 'text', text: value.tracked ? 'Tracking it.' : 'Not tracked.' }],
+      },
+      async execute(args) {
+        const moving = typeof args.id === 'string' && args.id.startsWith('commitment:') && typeof args.move_to === 'string'
+        if (moving) {
+          if (!Number.isFinite(Date.parse(args.move_to))) throw new Error('move_to must be an ISO 8601 instant')
+          await appendSignal('commitment:closed', { id: args.id, by: 'owner', due: new Date(Date.parse(args.move_to)).toISOString() })
+          return { tracked: true, id: args.id }
+        }
+        const what = String(args.what ?? '').trim().slice(0, 80)
+        if (!what) throw new Error('what is required')
+        const id = `commitment:promise:chat-${Date.now().toString(36)}`
+        await appendSignal('commitment:heard', {
+          source: 'chat',
+          id,
+          direction: args.owed_to_owner === true ? 'awaiting' : 'owner',
+          deliverable: what,
+          ...(typeof args.to === 'string' && args.to.trim() ? { counterparty: args.to.trim().slice(0, 80) } : {}),
+          ...(typeof args.due === 'string' && args.due.trim() ? { dueText: args.due.trim().slice(0, 40) } : {}),
+          quote: typeof args.words === 'string' && args.words.trim() ? args.words.trim().slice(0, 160) : what,
+        })
+        return { tracked: true, id }
       },
     }),
 
@@ -512,6 +558,57 @@ export function calendarCreateTool(appendSignal, helperPath, run) {
       const ev = output.event ?? {}
       await appendSignal('action:performed', { tool: 'calendar_create', eventId: ev.eventId ?? null, title: ev.title ?? title, start: ev.startDate ?? start, end: ev.endDate ?? end, calendar: ev.calendar ?? null })
       return { created: true, eventId: String(ev.eventId ?? ''), title: String(ev.title ?? title), start: String(ev.startDate ?? start), end: String(ev.endDate ?? end), calendar: String(ev.calendar ?? '') }
+    },
+  })
+}
+
+/**
+ * `gnomon_reminder_create` (UC1 U1-F38) — mirror a promise as an Apple
+ * Reminder, with its due date. Outward like `gnomon_calendar_create`: the
+ * gate asks before it runs, and the helper is only a pair of hands. The
+ * reminder is recorded as `action:performed` with the promise it mirrors, so
+ * the fold takes its due date and closes the promise when it is completed.
+ */
+export function reminderCreateTool(appendSignal, helperPath, run) {
+  return defineTool({
+    name: 'gnomon_reminder_create',
+    description: [
+      "Add one reminder to the owner's Apple Reminders, for a promise Gnomon is tracking — only when the owner asks for it, never on your own initiative.",
+      'Pass the promise id from the ledger (commitment:promise:…), a title in the owner\'s words, and the due time as ISO-8601 with an offset. When the owner completes the reminder, the promise closes as kept.',
+    ].join(' '),
+    parameters: {
+      title: { type: 'string', required: true, description: 'The reminder, as the owner would write it: "Send Mira the draft".' },
+      due: { type: 'string', description: 'ISO-8601 due time with offset. Optional.' },
+      promiseId: { type: 'string', description: 'The promise this mirrors (commitment:promise:…).' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { created: { type: 'boolean' }, reminderId: { type: 'string' }, due: { type: 'string' }, error: { type: 'string' } } },
+      render: (_args, value) => [{ type: 'text', text: value.created ? `Added to Reminders${value.due ? `, due ${value.due}` : ''}.` : `Not added: ${value.error}` }],
+    },
+    isConcurrencySafe: () => false,
+    async execute(args) {
+      const title = String(args.title ?? '').trim()
+      if (!title) throw new Error('title is required')
+      const argv = ['--create-reminder', '--title', title]
+      if (typeof args.due === 'string' && args.due.trim() !== '') {
+        if (!Number.isFinite(Date.parse(args.due))) throw new Error('due must be an ISO-8601 date')
+        argv.push('--due', args.due.trim())
+      }
+      const output = await new Promise((resolve) => {
+        run(helperPath, argv, { timeout: 30_000 }, (error, stdout) => {
+          if (error && !stdout) return resolve({ created: null, error: error.message })
+          try {
+            resolve(JSON.parse(String(stdout)))
+          } catch {
+            resolve({ created: null, error: 'the helper returned something that was not JSON' })
+          }
+        })
+      })
+      if (!output.created) return { created: false, error: output.accessGranted === false ? 'Reminders access is not granted to Sundial. Grant it in System Settings → Privacy & Security → Reminders.' : String(output.error ?? 'unknown') }
+      const r = output.created
+      const promiseId = typeof args.promiseId === 'string' ? args.promiseId.trim() : ''
+      await appendSignal('action:performed', { tool: 'reminder_create', reminderId: r.id, title: r.title, due: r.due ?? null, ...(promiseId ? { promiseId } : {}) })
+      return { created: true, reminderId: String(r.id), ...(r.due ? { due: String(r.due) } : {}) }
     },
   })
 }

@@ -27,7 +27,7 @@ const audited = {
     projectConfidence: 'weak',
     shellCommandCount: 32,
     notableCommands: [],
-    spokenExcerpt: "dictate right now what I'm saying and it'll just pick it up",
+    spokenExcerpt: "so if I just say it out loud and it'll just pick it up",
     spokenLanguages: ['english'],
     typingEventCount: 184,
     windowTitles: ['Gnomon'],
@@ -83,7 +83,7 @@ describe('momentDetail', () => {
     const out = text(momentDetail(audited))
     expect(out).toContain('31 min deep focus')
     expect(out).toContain('Heard aloud')
-    expect(out).toContain("dictate right now what I'm saying")
+    expect(out).toContain("so if I just say it out loud")
     // `focusScore: 1` reached the owner as a bare number with no legend and read
     // as broken. The quality word and its reason replace it.
     expect(out).toContain('Deep.')
@@ -161,12 +161,12 @@ describe('momentRow', () => {
 })
 
 describe('the heard block', () => {
-  const clean = "Dictate right now what I'm saying, and it'll just pick it up and keep that in its memory."
+  const clean = "So if I just say it out loud, and it'll just pick it up and it goes into the memory."
   const withClean = { ...audited, data: { ...audited.data, spokenClean: { text: clean, cleanedAt: '2026-09-17T19:32:00.000Z' } } }
 
   it('shows only the capture when nothing has cleaned it', () => {
     const out = text(momentDetail(audited))
-    expect(out).toContain("dictate right now what I'm saying")
+    expect(out).toContain("so if I just say it out loud")
     expect(out).not.toContain('Show what was captured')
   })
 

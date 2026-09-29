@@ -13,6 +13,8 @@
 // Pure. `state` in, plain data out. Testable without a daemon.
 
 import { routineForecast } from '@sundial/kernel/routines.js'
+import { selfReportDue } from '@sundial/kernel/self-report.js'
+import { localDate } from '@sundial/helpers/local-day.js'
 
 const MINUTE = 60_000
 
@@ -40,24 +42,28 @@ const minutesSince = (iso, now) => {
 const HOUR_MS = 3_600_000
 const DAY_MS = 24 * HOUR_MS
 
-const SELF_REPORT_GAP_MS = 3 * HOUR_MS
-const SELF_REPORTS_A_DAY = 3
-
 function sleepOf(energy, now) {
   if (!energy || typeof energy.sleepHours !== 'number' || !energy.sleptTo) return null
   if (now - Date.parse(energy.sleptTo) > 20 * HOUR_MS) return null
   return { hours: energy.sleepHours, from: energy.sleptFrom, to: energy.sleptTo }
 }
 
-function selfOf(owner, now) {
+/** A belief the judge has not moved in this long is the prior talking, not a read. */
+const BELIEF_FRESH_MS = 10 * MINUTE
+
+function selfOf(owner, now, timeZone) {
   if (!owner) return null
-  const mean = (b) => (b ? b.alpha / (b.alpha + b.beta) : null)
-  const today = new Date(now).toDateString()
+  // The judge runs only while something reads it (a due tap, or the gate's
+  // flag), so between taps the beliefs are absent rather than a stale 50%.
+  const judged = Date.parse(owner.perception?.lastJudgedAt ?? '')
+  const fresh = Number.isFinite(judged) && now - judged <= BELIEF_FRESH_MS
+  const mean = (b) => (fresh && b ? b.alpha / (b.alpha + b.beta) : null)
+  const iso = new Date(now).toISOString()
+  const today = localDate(iso, timeZone)
   const reports = Array.isArray(owner.selfReports) ? owner.selfReports : []
-  const todays = reports.filter((r) => new Date(r.ts).toDateString() === today)
+  const todays = reports.filter((r) => localDate(r.ts, timeZone) === today)
   const last = reports.length > 0 ? reports[reports.length - 1] : null
-  const hour = new Date(now).getHours()
-  const due = todays.length < SELF_REPORTS_A_DAY && (last === null || now - Date.parse(last.ts) >= SELF_REPORT_GAP_MS) && hour >= 8 && hour < 23
+  const due = selfReportDue(owner, iso, timeZone)
   return { pFlow: mean(owner.focus), pStuck: mean(owner.stuck), lastTap: last?.tap ?? null, lastAt: last?.ts ?? null, today: todays.length, due, brierN: owner.brier?.n ?? 0 }
 }
 
@@ -86,10 +92,13 @@ export function nowSnapshot(state, now = Date.now()) {
   // gate keeps for its own budget; phasic ones are exempt from that budget and
   // live in the ring, so they are counted from it by day. The sum is the number
   // the strip shows — the invitation to go and see what those were.
+  // Both counted by the owner's day, not the UTC one: in the evening a UTC
+  // date is already tomorrow, and the count fell to zero hours early.
+  const timeZone = state?.config?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
   const localDay = typeof state?.notices?.day === 'string' ? state.notices.day : null
-  const todayIso = new Date(now).toISOString().slice(0, 10)
+  const todayIso = localDate(new Date(now).toISOString(), timeZone)
   const tonicToday = localDay === todayIso || localDay === null ? (state?.notices?.spentToday ?? 0) : 0
-  const phasicToday = recentPhasic.filter((p) => typeof p?.at === 'string' && p.at.slice(0, 10) === todayIso).length
+  const phasicToday = recentPhasic.filter((p) => typeof p?.at === 'string' && localDate(p.at, timeZone) === todayIso).length
   const noticedToday = tonicToday + phasicToday
 
   return {
@@ -110,7 +119,7 @@ export function nowSnapshot(state, now = Date.now()) {
     nextStep: forecast === null ? null : { process: forecast.expectedProcess, support: forecast.routine.support },
     /**
      * Whether Jev is answering (docs/jarvis/05, degraded modes). `none` is the
-     * quiet case and draws nothing; `local-fallback` means the text model is
+     * quiet case and draws nothing; `local-fallback` (a stored value; the name predates the rename) means the text model is
      * judging in Jev's place, `off` that nothing is judging and rules are on
      * their pre-Jev paths. A kill switch you cannot see is not engaged, it is
      * forgotten — so the strip says which is on.
@@ -138,7 +147,7 @@ export function nowSnapshot(state, now = Date.now()) {
     sleep: sleepOf(state?.owner?.energy, now),
     // J2.1: the owner-state filter's beliefs, and the taps that grade them. The
     // strip asks three times a day, three hours apart, in waking hours.
-    self: selfOf(state?.owner, now),
+    self: selfOf(state?.owner, now, state?.config?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone),
     // Fold wave one — the five slices that were logged and never read.
     /**
      * Whether the ears are open, why, and until when — so the strip can say so
@@ -212,11 +221,14 @@ function failingStreak(streak, now) {
   return { lastCommand: streak.command, count: streak.count, exitCode: streak.exitCode }
 }
 
+/** What an agent waits on, as the presence line says it; a finished turn needs no label. */
+const WAITS_ON = { tool: ' (tool call, maybe an approval)', permission: ' (an approval)', question: ' (a question for the owner)', plan: ' (a plan to approve)', failed: ' (stopped on an error)' }
+
 function fleetSummary(fleet, now) {
   if (!Array.isArray(fleet) || fleet.length === 0) return null
   const idle = fleet
     .filter((s) => s.state !== 'working' && now - Date.parse(s.since) <= 2 * HOUR_MS)
-    .map((s) => ({ project: s.cwd.split('/').filter(Boolean).pop() ?? s.cwd, state: s.state, min: minutesSince(s.since, now) }))
+    .map((s) => ({ project: s.cwd.split('/').filter(Boolean).pop() ?? s.cwd, state: s.state, min: minutesSince(s.since, now), ...(s.title ? { title: s.title } : {}) }))
     .sort((a, b) => b.min - a.min)
   return { total: fleet.length, working: fleet.filter((s) => s.state === 'working').length, idle }
 }
@@ -266,7 +278,7 @@ export function nowLine(now) {
   if (now.intent) parts.push(`doing: ${now.intent}`)
   if (now.branch) parts.push(`branch ${now.branch}${now.commits > 0 ? `, ${now.commits} commit${now.commits === 1 ? '' : 's'} so far` : ''}`)
   if (now.flowMin !== null && now.flowMin >= 5) parts.push(`in sustained focus for ${now.flowMin} min`)
-  if (now.nextStep) parts.push(`from here they usually open ${now.nextStep.process} next (seen ${now.nextStep.support} times; a tendency, about 40% reliable)`)
+  if (now.nextStep) parts.push(`from here they usually open ${now.nextStep.process} next (seen ${now.nextStep.support} times; a tendency, about 27% reliable)`)
   if (now.switchesLastHour !== null) parts.push(`${now.switchesLastHour} app switch${now.switchesLastHour === 1 ? '' : 'es'} in the last hour`)
   if (now.held > 0) parts.push(`${now.held} observation${now.held === 1 ? '' : 's'} held back for a better moment`)
   if (now.place) parts.push(`the phone puts them at ${now.place}${now.activity ? `, ${now.activity}` : ''}`)
@@ -276,7 +288,7 @@ export function nowLine(now) {
   if (now.page) parts.push(`reading ${now.page.host}${now.page.path === '/' ? '' : now.page.path}${now.page.title ? ` ("${now.page.title.slice(0, 60)}")` : ''}${now.page.min >= 2 ? `, ${now.page.min} min on it` : ''}`)
   if (now.call) parts.push(`on a ${now.call.kind === 'personal-call' ? 'personal call' : now.call.kind === 'work-call' ? 'work call' : 'call'} in ${now.call.app} for ${now.call.min} min`)
   if (now.failing) parts.push(`${now.failing.count} commands in a row have failed, last \`${now.failing.lastCommand.slice(0, 60)}\` (exit ${now.failing.exitCode})`)
-  if (now.agents) parts.push(`${now.agents.total} Claude session${now.agents.total === 1 ? '' : 's'} open, ${now.agents.working} working${now.agents.idle.length > 0 ? `; waiting on the owner: ${now.agents.idle.slice(0, 3).map((a) => `${a.project} ${a.min} min${a.state === 'tool' ? ' (tool call, maybe an approval)' : ''}`).join(', ')}` : ''}`)
+  if (now.agents) parts.push(`${now.agents.total} Claude session${now.agents.total === 1 ? '' : 's'} open, ${now.agents.working} working${now.agents.idle.length > 0 ? `; waiting on the owner: ${now.agents.idle.slice(0, 3).map((a) => `${a.title ? `'${a.title}' in ` : ''}${a.project} ${a.min} min${WAITS_ON[a.state] ?? ''}`).join(', ')}` : ''}`)
   if (now.unpushed) parts.push(`${now.unpushed.total} unpushed commit${now.unpushed.total === 1 ? '' : 's'}${now.unpushed.repos > 1 ? ` across ${now.unpushed.repos} repos` : ''} since ${new Date(now.unpushed.since).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`)
   if (Array.isArray(now.screenRefs) && now.screenRefs.length > 0) parts.push(`on screen: ${now.screenRefs.join(', ')}`)
   if (now.hotFile) parts.push(`${now.hotFile.relPath} has been touched ${now.hotFile.changes} times today`)

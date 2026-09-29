@@ -82,6 +82,14 @@ describe('buildProjectStatusContext', () => {
     expect(ctx!.recent.map((r) => r.text)).toEqual(['Reviewed a PR.', 'Reworked the reducer.']);
   });
 
+  it("reads the days in the owner's zone, not the host's (Q11)", async () => {
+    await upsertProject({ id: '/p/gnomon', name: 'gnomon', rootPath: '/p/gnomon', organizationId: 'Acme' });
+    // 22:30Z on the 20th is 00:30 on the 21st in Amsterdam, and 18:30 on the 20th in New York.
+    await moment('2026-07-20T22:30:00.000Z', '2026-07-20T23:00:00.000Z', 'Claude', { projectId: '/p/gnomon', narrative: 'Late fix.' });
+    expect((await buildProjectStatusContext('/p/gnomon', { timeZone: 'Europe/Amsterdam' }))!.recent[0]!.date).toBe('2026-07-21');
+    expect((await buildProjectStatusContext('/p/gnomon', { timeZone: 'America/New_York' }))!.recent[0]!.date).toBe('2026-07-20');
+  });
+
   it('serializes into a compact prompt log', async () => {
     await upsertProject({ id: '/p/gnomon', name: 'gnomon', rootPath: '/p/gnomon', organizationId: 'Acme' });
     await moment('2026-07-20T09:00:00.000Z', '2026-07-20T10:00:00.000Z', 'Claude', { projectId: '/p/gnomon', kind: 'focus', gitCommitCount: 1, gitBranch: 'main', narrative: 'Wired the API.' });

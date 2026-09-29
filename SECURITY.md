@@ -112,8 +112,8 @@ drops the grants and asks again.
 - **Private windows** in Safari and Arc are read like any other (see the
   Automation row), and the window sensor records a private window's title.
 - **Deleting a period** of the record has no command yet: `uninstall` deletes
-  everything. `audio.retentionDays` is not applied yet; heard speech is kept for
-  `retentionDays` like other signals.
+  everything. Heard speech is pruned on `audio.retentionDays` when that is
+  shorter than `retentionDays`.
 - **DNS rebinding against Gnomon's web tools**: a public name that resolves to a
   private address is not caught by the fetch filter.
 - **Person aliases** (`person-<hash>`) are an unsalted hash of an e-mail address

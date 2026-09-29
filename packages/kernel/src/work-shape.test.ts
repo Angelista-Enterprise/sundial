@@ -57,12 +57,14 @@ describe('buildWorkShape', () => {
           { ts: '2026-08-01T07:40:00.000Z', fromProject: 'a', toProject: 'b', fromProcess: 'Code', toProcess: 'Code' },
           // One project, two branches: the same subject from a different angle.
           { ts: '2026-08-01T07:50:00.000Z', fromProject: 'a@main', toProject: 'a@feature', fromProcess: 'Code', toProcess: 'Chrome' },
+          // The same, in the form written since 2026-09-28: the project's id on both sides.
+          { ts: '2026-08-01T07:55:00.000Z', fromProject: 'a', toProject: 'a', fromProcess: 'Code', toProcess: 'Code' },
         ],
       }),
     );
-    expect(shape.days[0].switches).toBe(3);
-    expect(shape.days[0].sameAppSwitches).toBe(1);
-    expect(shape.days[0].branchSwitches).toBe(1);
+    expect(shape.days[0].switches).toBe(4);
+    expect(shape.days[0].sameAppSwitches).toBe(2);
+    expect(shape.days[0].branchSwitches).toBe(2);
   });
 
   it('WEIGHS an hour rather than counting the ones a row appeared in', () => {

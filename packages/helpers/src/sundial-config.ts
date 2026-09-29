@@ -1,5 +1,5 @@
 import { hostTimeZone } from './local-day.js';
-import { type LlmProvider, parseProviders } from './llm-providers.js';
+import { type LlmProvider, parseProviders, parseUse } from './llm-providers.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getSundialConfigPath, getSundialHome } from './config.js';
@@ -107,6 +107,13 @@ export interface SundialConfigFile {
     sensitiveApps?: string[];
     hiddenApps?: string[];
     shellRedactPatterns?: string[];
+    // lane E (#11)
+    /** `false` keeps the Claude Code SessionStart context hook silent. Read by `packages/sensors/claude-context.mjs` itself, never by the daemon. Default on: the owner approved it on 2026-09-29. */
+    claudeContext?: boolean;
+    /** `true` reads Mail.app's senders, recipients and subjects. */
+    mail?: boolean;
+    /** `true` reads Messages (`chat.db`) senders and chats. Its own switch, off by default: the owner declined Messages on 2026-09-28, and it used to ride on `mail`. */
+    messages?: boolean;
   };
   /** Per-purpose daily LLM call cap overrides, e.g. `{ "intent": 300 }` — merged over `@sundial/kernel`'s `DEFAULT_DAILY_CAPS`, not typed against `LlmPurpose` here since `@sundial/helpers` sits below `@sundial/kernel` in the dependency graph. */
   budgets?: Partial<Record<string, number>>;
@@ -194,7 +201,11 @@ export interface SundialConfigFile {
    */
   vault?: string | null;
   /** More model providers beside Gnomon's own (the `.env` one), each a route in the chat's model picker. See `llm-providers.ts`. */
-  llm?: { providers?: { id: string; label?: string; baseUrl: string; model: string }[] };
+  llm?: {
+    providers?: { id: string; label?: string; baseUrl: string; model: string }[];
+    /** Which provider does what: `default` for every background purpose, or one purpose (`journal`, `intent`…) by name. A value is `openai` (the `.env` model) or a provider id. Unset: the `.env` model. */
+    use?: Record<string, string>;
+  };
   /** See `LeisureRules`. Merged over the built-in process defaults, never replacing them. */
   leisureRules?: {
     browserProfiles?: Record<string, string>;
@@ -202,11 +213,11 @@ export interface SundialConfigFile {
     processes?: Record<string, string[]>;
     excluded?: string[];
   };
-  /** Phase 5 #6 — network-fingerprint→location-bucket map (e.g. `{ "<fingerprint>": "office" }`), set via `gnomon location label`. Lets moments carry a home/office/… bucket without any macOS Location permission (the fingerprint is a gateway/BSSID hash, available unredacted). */
-  /** Phase 5 #6 — network-fingerprint→location-bucket map (e.g. `{ "<fingerprint>": "office" }`), set via `gnomon location label`. Lets moments carry a home/office/… bucket without any macOS Location permission — not because the fingerprint's inputs are unredacted (BSSID and NetworkID *are* redacted without Location Services), but because the parts that survive and stay stable (networkId, sname, gateway, interface, security mode) already distinguish networks well enough to label. */
+  /** Phase 5 #6 — network-fingerprint→location-bucket map (e.g. `{ "<fingerprint>": "office" }`), set by hand in config.json (the retired CLI's `gnomon location label` used to write it). Lets moments carry a home/office/… bucket without any macOS Location permission (the fingerprint is a gateway/BSSID hash, available unredacted). */
+  /** Phase 5 #6 — network-fingerprint→location-bucket map (e.g. `{ "<fingerprint>": "office" }`), set by hand in config.json (the retired CLI's `gnomon location label` used to write it). Lets moments carry a home/office/… bucket without any macOS Location permission — not because the fingerprint's inputs are unredacted (BSSID and NetworkID *are* redacted without Location Services), but because the parts that survive and stay stable (networkId, sname, gateway, interface, security mode) already distinguish networks well enough to label. */
   locationLabels?: Record<string, string>;
   /**
-   * issues/ambient-pointer-survives-in-collaborates-on — every name the owner
+   * Every name the owner
    * appears under in their own calendar's attendee lists (display name, short
    * username, the email-alias hash `sanitizeAtIngest` produces). `entityExtract`
    * drops these so the owner is not recorded as having attended a meeting with
@@ -232,6 +243,13 @@ export interface SundialConfigFile {
    */
   audio?: {
     enabled?: boolean;
+    /**
+     * Whether a meeting with attendees, or a call, opens the microphone BY
+     * ITSELF. Default false: hearing opens only when the owner presses Listen.
+     * The others in the room are not told, and recording them by default is
+     * the owner's call to make, per meeting, not the software's.
+     */
+    autoMeetings?: boolean;
     /**
      * Days to keep raw `audio:transcript` signals. Short for the same reason
      * OCR's is: a transcript is high-volume free text, and the moment rollups
@@ -280,6 +298,8 @@ export interface SundialConfigFile {
      * `feedback:verdict` back. Unset, a push is one-way.
      */
     verdictUrl?: string;
+    /** Push to the phone while you are at the Mac too (default true). `false`: the banner only, the phone when you are away. */
+    pushAtMac?: boolean;
   };
   /**
    * Who does the workbench's jobs. With `claude: true` a job runs on the local
@@ -290,40 +310,34 @@ export interface SundialConfigFile {
    * login shell's PATH; `maxBudgetUsd` caps one job (default 1).
    */
   hands?: { claude?: boolean; claudePath?: string; maxBudgetUsd?: number };
+  // lane E (#12)
   /**
-   * A Telegram bot the owner can talk to Gnomon through. `chatId` is the ONE
-   * chat the bot answers; every other sender is ignored. Off when unset.
+   * The night shift: Gnomon starts a supervised Claude Code job (an
+   * interactive `claude` in a detached tmux session) in a git worktree it makes
+   * under `$SUNDIAL_HOME/night-shift/`, never in the project's own checkout,
+   * while the owner is away. It watches the job through the agent fleet, and
+   * the result (a branch with commits, nothing pushed) goes on the shelf.
+   *
+   * **`enabled` is false by default and stays false until the owner says yes**
+   * (asked 2026-09-29, not yet given): off, no job is queued or started,
+   * whatever asks for one, and the request tool is not even registered.
+   *
+   * No permission is ever approved for a job: it runs in Claude's `manual`
+   * mode with the project's settings only (not the owner's allow rules), and
+   * `git push` is refused. A job that needs a permission waits, and the fleet's
+   * own `agent-permission` notice says so through the gate.
+   *
+   * Caps: `maxMinutes` a job (default 90) and `maxJobsPerNight` (default 2)
+   * always hold. `maxUsdPerJob` (default 2) stops a job once Claude's own cost
+   * record shows it — Claude writes that record only at a session's end or
+   * resume, so during a run the time cap is the bound. `maxUsdPerNight`
+   * (default 5) refuses the next job once the finished ones reach it.
    */
-  telegram?: {
-    token?: string;
-    chatId?: number;
-  };
+  jobs?: { enabled?: boolean; maxUsdPerJob?: number; maxUsdPerNight?: number; maxJobsPerNight?: number; maxMinutes?: number };
   retentionDays?: number;
   decayFactor?: number;
   pollIntervalMs?: number;
   clipboardEnabled?: boolean;
-  /** D4 (docs/audit/production-proposal-and-enhancements.md) — loopback port for the daemon's read API (`ask`/`search`/`context`). Both the daemon (server) and the CLI (client) resolve this the same way, so they never disagree on where to connect. */
-  apiPort?: number;
-  /**
-   * A retained historical database the claims/aspirations registries measure
-   * ALONGSIDE the live one — a path or a `file:` URL, read-only in practice.
-   *
-   * This exists because a claim measured against a small corpus can be
-   * unfalsifiable without saying so. After a full purge on 2026-07-30 the live
-   * database held 2.8 days, and claims whose thresholds are absolute counts
-   * (C18 wants 200 newly-attributed moments; C19 wants 1,000 `git:status` emits)
-   * reported themselves CLEARED because the corpus could not reach the threshold
-   * by arithmetic. Minimum-sample guards now report those as `awaiting` instead
-   * of as fixes, but a guard can only decline to answer — the evidence still
-   * exists, in the pre-purge database, and this points the registry at it.
-   *
-   * The comparison is what carries the information rather than either number
-   * alone: a claim STANDING on the reference corpus and CLEARED on the live one
-   * is a fix, while one AWAITING on both is a claim nobody can currently test.
-   *
-   * Unset by default. A missing or unreadable file degrades to a live-only pass.
-   */
-  referenceCorpus?: string;
   /**
    * An OPTIONAL, TIGHTEN-ONLY override on what the assistant is allowed to DO.
    *
@@ -426,8 +440,10 @@ export interface ResolvedSundialConfig {
     extraSensitiveApps: string[];
     extraHiddenApps: string[];
     extraShellRedactPatterns: string[];
-    /** J3.6 — Mail.app and Messages readers (subjects and senders only, behind Full Disk Access). Off by default; `"mail": true` turns them on. */
+    /** J3.6 — the Mail.app reader (senders, recipients and subjects, behind Full Disk Access). Off by default; `"mail": true` turns it on. */
     mail: boolean;
+    /** The Messages reader (`chat.db` senders and chats, never text). Off by default and separate from `mail`: the owner declined Messages on 2026-09-28. */
+    messages: boolean;
   };
   /** J3.4 — the browser helper also reads the page's text (`page:text`), when the browser allows JavaScript from Apple Events. */
   browser: { pageText: boolean };
@@ -447,7 +463,7 @@ export interface ResolvedSundialConfig {
   /** See `SundialConfigFile.vault`; null = off. */
   vault: string | null;
   /** See `SundialConfigFile.llm`; entries that fail the shape check are dropped. */
-  llm: { providers: LlmProvider[] };
+  llm: { providers: LlmProvider[]; use: Record<string, string> };
   ownerAliases: string[];
   leisureRules: LeisureRules;
   ocr: OcrConfig;
@@ -455,15 +471,13 @@ export interface ResolvedSundialConfig {
   notifications: NotificationsConfig;
   /** See `SundialConfigFile.hands`. Off by default. */
   hands: { claude: boolean; claudePath: string | null; maxBudgetUsd: number };
-  /** See `SundialConfigFile.telegram`. `null` when unset or incomplete. */
-  telegram: { token: string; chatId: number } | null;
+  // lane E (#12)
+  /** See `SundialConfigFile.jobs`. `enabled` is false unless the file says `true`. */
+  jobs: { enabled: boolean; maxUsdPerJob: number; maxUsdPerNight: number; maxJobsPerNight: number; maxMinutes: number };
   retentionDays: number;
   decayFactor: number;
   pollIntervalMs: number;
   clipboardEnabled: boolean;
-  apiPort: number;
-  /** See `SundialConfigFile.referenceCorpus`. Empty string when unset. */
-  referenceCorpus: string;
   /** See `SundialConfigFile.actions`. Internal writes default `auto`, outward `off`, filesystem empty. */
   actions: ActionsConfig;
   /** See `SundialConfigFile.integrations`. Validated; malformed entries are dropped with their reason logged. Empty by default. */
@@ -567,7 +581,7 @@ export interface OcrConfig {
    * on purpose. Screen text is the highest-volume, highest-sensitivity thing in
    * the log (measured ~13 MB an eight-hour day, and it can contain anything on
    * the display); the moment rollups keep the topics and excerpts it produced.
-   * See `enhancements/auditable-ocr-extraction`.
+   * See almanac/concepts/sanitize-at-ingest.
    */
   retentionDays: number;
 }
@@ -577,6 +591,8 @@ const DEFAULT_OCR_CONFIG: OcrConfig = { enabled: false, fullIntervalMs: 5000, cu
 /** See `SundialConfigFile.audio`. Off by default, like OCR. */
 export interface AudioConfig {
   enabled: boolean;
+  /** See `SundialConfigFile.audio.autoMeetings`. */
+  autoMeetings: boolean;
   /** See `SundialConfigFile.audio.languages`. Lower-cased; empty keeps every language. */
   languages: string[];
   retentionDays: number;
@@ -597,6 +613,7 @@ export interface AudioConfig {
 
 const DEFAULT_AUDIO_CONFIG: AudioConfig = {
   enabled: false,
+  autoMeetings: false,
   languages: [],
   retentionDays: 14,
   silenceFlushMs: 900,
@@ -615,9 +632,11 @@ export interface NotificationsConfig {
   ntfy: string;
   /** See `SundialConfigFile.notifications.verdictUrl`. Empty string when unset. */
   verdictUrl: string;
+  /** See `SundialConfigFile.notifications.pushAtMac`. */
+  pushAtMac: boolean;
 }
 
-const DEFAULT_NOTIFICATIONS_CONFIG: NotificationsConfig = { enabled: false, ntfy: '', verdictUrl: '' };
+const DEFAULT_NOTIFICATIONS_CONFIG: NotificationsConfig = { enabled: false, ntfy: '', verdictUrl: '', pushAtMac: true };
 const MIN_OCR_INTERVAL_MS = 500;
 
 /**
@@ -682,7 +701,7 @@ function resolveLeisureRules(value: unknown): LeisureRules {
 }
 
 export const DEFAULT_SUNDIAL_CONFIG: ResolvedSundialConfig = {
-  privacy: { redactionTier: 2, extraSensitiveApps: [], extraHiddenApps: [], extraShellRedactPatterns: [], mail: false },
+  privacy: { redactionTier: 2, extraSensitiveApps: [], extraHiddenApps: [], extraShellRedactPatterns: [], mail: false, messages: false },
   browser: { pageText: false },
   budgets: {},
   projectRules: [],
@@ -699,20 +718,19 @@ export const DEFAULT_SUNDIAL_CONFIG: ResolvedSundialConfig = {
   refutationEnabled: true,
   experiments: { ownerStateInGateCost: false, learnedGate: false, forecasting: false, gateFeatures: false, presence: false },
   vault: null,
-  llm: { providers: [] },
+  llm: { providers: [], use: {} },
   ownerAliases: [],
   leisureRules: { ...DEFAULT_LEISURE_RULES },
   ocr: { ...DEFAULT_OCR_CONFIG },
   audio: { ...DEFAULT_AUDIO_CONFIG },
   notifications: { ...DEFAULT_NOTIFICATIONS_CONFIG },
   hands: { claude: false, claudePath: null, maxBudgetUsd: 1 },
-  telegram: null,
+  // lane E (#12)
+  jobs: { enabled: false, maxUsdPerJob: 2, maxUsdPerNight: 5, maxJobsPerNight: 2, maxMinutes: 90 },
   retentionDays: 180,
   decayFactor: 0.95,
   pollIntervalMs: 1000,
   clipboardEnabled: false,
-  apiPort: 8765,
-  referenceCorpus: '',
   actions: {
     // Internal writes only touch Gnomon's own store and each leave an
     // overturnable proposal, so they run unprompted. Anything outward is off
@@ -902,6 +920,7 @@ function resolveAudio(value: unknown): AudioConfig {
   const str = (v: unknown, fallback: string) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : fallback);
   return {
     enabled: typeof value.enabled === 'boolean' ? value.enabled : DEFAULT_AUDIO_CONFIG.enabled,
+    autoMeetings: value.autoMeetings === true,
     languages: Array.isArray(value.languages) ? value.languages.filter((l): l is string => typeof l === 'string' && l.trim() !== '').map((l) => l.trim().toLowerCase()) : [],
     retentionDays: posInt(value.retentionDays, DEFAULT_AUDIO_CONFIG.retentionDays, 1),
     // A flush shorter than a natural pause between words chops sentences in
@@ -921,6 +940,7 @@ function resolveNotifications(value: unknown): NotificationsConfig {
     enabled: typeof value.enabled === 'boolean' ? value.enabled : DEFAULT_NOTIFICATIONS_CONFIG.enabled,
     ntfy: typeof value.ntfy === 'string' && /^https?:\/\//.test(value.ntfy) ? value.ntfy.trim() : DEFAULT_NOTIFICATIONS_CONFIG.ntfy,
     verdictUrl: typeof value.verdictUrl === 'string' && /^https:\/\//.test(value.verdictUrl) ? value.verdictUrl.trim().replace(/\/$/, '') : DEFAULT_NOTIFICATIONS_CONFIG.verdictUrl,
+    pushAtMac: value.pushAtMac !== false,
   };
 }
 
@@ -933,11 +953,18 @@ function resolveHands(value: unknown): ResolvedSundialConfig['hands'] {
   };
 }
 
-function resolveTelegram(value: unknown): { token: string; chatId: number } | null {
-  if (!isPlainObject(value)) return null;
-  const token = typeof value.token === 'string' ? value.token.trim() : '';
-  const chatId = typeof value.chatId === 'number' && Number.isInteger(value.chatId) ? value.chatId : NaN;
-  return token !== '' && Number.isFinite(chatId) ? { token, chatId } : null;
+// lane E (#12)
+function resolveJobs(value: unknown): ResolvedSundialConfig['jobs'] {
+  const d = DEFAULT_SUNDIAL_CONFIG.jobs;
+  if (!isPlainObject(value)) return { ...d };
+  const pos = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : fallback);
+  return {
+    enabled: value.enabled === true,
+    maxUsdPerJob: pos(value.maxUsdPerJob, d.maxUsdPerJob),
+    maxUsdPerNight: pos(value.maxUsdPerNight, d.maxUsdPerNight),
+    maxJobsPerNight: Math.floor(pos(value.maxJobsPerNight, d.maxJobsPerNight)),
+    maxMinutes: pos(value.maxMinutes, d.maxMinutes),
+  };
 }
 
 function sanitizeAliases(value: unknown): Record<string, string> {
@@ -1016,6 +1043,24 @@ function resolveTimezone(value: unknown): string {
   }
 }
 
+// lane H (H8)
+/**
+ * Whether `config.json` exists but cannot be parsed — the case where
+ * `loadSundialConfig` falls back to every default and says so only in the
+ * log. Pure over the file, so the sensor runtime can report it once at boot
+ * (`sensor:health.configUnreadable`) and `sensorHealth` can say it once.
+ */
+export function isSundialConfigUnreadable(): boolean {
+  const configPath = getSundialConfigPath();
+  if (!fs.existsSync(configPath)) return false;
+  try {
+    JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 export function loadSundialConfig(): ResolvedSundialConfig {
   const configPath = getSundialConfigPath();
   if (!fs.existsSync(configPath)) return DEFAULT_SUNDIAL_CONFIG;
@@ -1037,6 +1082,7 @@ export function loadSundialConfig(): ResolvedSundialConfig {
       extraHiddenApps: stringArrayOrEmpty(parsed.privacy?.hiddenApps, 'hiddenApps'),
       extraShellRedactPatterns: stringArrayOrEmpty(parsed.privacy?.shellRedactPatterns, 'shellRedactPatterns'),
       mail: (parsed.privacy as { mail?: unknown } | undefined)?.mail === true,
+      messages: (parsed.privacy as { messages?: unknown } | undefined)?.messages === true,
     },
     browser: { pageText: (parsed as { browser?: { pageText?: unknown } }).browser?.pageText === true },
     budgets: isPlainObject(parsed.budgets) ? (parsed.budgets as Partial<Record<string, number>>) : {},
@@ -1058,60 +1104,20 @@ export function loadSundialConfig(): ResolvedSundialConfig {
       presence: parsed.experiments?.presence === true,
     },
     vault: typeof parsed.vault === 'string' && parsed.vault.trim() !== '' ? parsed.vault.trim() : null,
-    llm: { providers: parseProviders((parsed as { llm?: { providers?: unknown } }).llm?.providers) },
+    llm: { providers: parseProviders(parsed.llm?.providers), use: parseUse(parsed.llm?.use) },
     ownerAliases: stringArrayOrEmpty(parsed.ownerAliases, 'ownerAliases'),
     leisureRules: resolveLeisureRules(parsed.leisureRules),
     ocr: resolveOcr(parsed.ocr),
     audio: resolveAudio(parsed.audio),
     notifications: resolveNotifications(parsed.notifications),
     hands: resolveHands(parsed.hands),
-    telegram: resolveTelegram(parsed.telegram),
+    // lane E (#12)
+    jobs: resolveJobs((parsed as { jobs?: unknown }).jobs),
     retentionDays: typeof parsed.retentionDays === 'number' && parsed.retentionDays > 0 ? parsed.retentionDays : DEFAULT_SUNDIAL_CONFIG.retentionDays,
     decayFactor: typeof parsed.decayFactor === 'number' && parsed.decayFactor > 0 && parsed.decayFactor <= 1 ? parsed.decayFactor : DEFAULT_SUNDIAL_CONFIG.decayFactor,
     pollIntervalMs: resolvePollIntervalMs(parsed.pollIntervalMs),
     clipboardEnabled: typeof parsed.clipboardEnabled === 'boolean' ? parsed.clipboardEnabled : DEFAULT_SUNDIAL_CONFIG.clipboardEnabled,
-    apiPort: typeof parsed.apiPort === 'number' && Number.isInteger(parsed.apiPort) && parsed.apiPort > 0 && parsed.apiPort < 65536 ? parsed.apiPort : DEFAULT_SUNDIAL_CONFIG.apiPort,
-    referenceCorpus: typeof parsed.referenceCorpus === 'string' ? parsed.referenceCorpus.trim() : DEFAULT_SUNDIAL_CONFIG.referenceCorpus,
     actions: resolveActions(parsed.actions),
     integrations: resolveIntegrations(parsed.integrations),
   };
-}
-
-/**
- * Merges one `fingerprint → name` into `locationLabels`, or removes it when
- * `name` is null, and returns the resulting map.
- *
- * Lives here rather than in `gnomon location` (its original home) because there
- * are now two writers — the CLI and `PUT /presence/label` — and a config write
- * implemented twice is how the two come to disagree about whitespace, removal,
- * or what happens to the rest of the file. Every other key is preserved
- * verbatim: this is a merge into a file the owner also edits by hand.
- *
- * Returning the map is what lets the daemon update `state.config.locationLabels`
- * in the same breath, so a rename takes effect on the live state instead of
- * waiting for the next boot to re-read the file.
- */
-export function writeLocationLabel(fingerprint: string, name: string | null): Record<string, string> {
-  const configPath = getSundialConfigPath();
-  let parsed: Record<string, unknown> = {};
-  if (fs.existsSync(configPath)) {
-    try {
-      parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
-    } catch {
-      // A corrupt file is not a reason to lose the label being set, but it IS a
-      // reason not to silently discard the rest of the owner's config — so this
-      // refuses rather than overwriting what it could not read.
-      throw new Error(`cannot merge a location label into unparseable ${configPath}`);
-    }
-  }
-  const labels = sanitizeAliases(parsed.locationLabels);
-  // Blank is removal, not an empty name. `sanitizeAliases` drops empty values on
-  // the next read anyway, so storing one would produce a label that exists until
-  // the daemon restarts and then silently does not.
-  const trimmed = name?.trim() ?? '';
-  if (!trimmed) delete labels[fingerprint];
-  else labels[fingerprint] = trimmed;
-  parsed.locationLabels = labels;
-  fs.writeFileSync(configPath, `${JSON.stringify(parsed, null, 2)}\n`);
-  return labels;
 }

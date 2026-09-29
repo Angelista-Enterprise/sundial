@@ -4,8 +4,7 @@
 // client owns the drawing (plugins/sundial-theme/shell/surfaces.js renders each
 // kind; the frame reaches it through the session log, not through a tool seat).
 //
-// Like gnomon_show_view it is readOnly: false — it moves the owner's window —
-// so it lives OUTSIDE ASK_TOOL_REGISTRY on purpose and is never advertised
+// It is readOnly: false — it moves the owner's window — so it lives OUTSIDE ASK_TOOL_REGISTRY on purpose and is never advertised
 // over MCP. dsh's chat is the owner's own surface, which is the only place
 // this tool exists.
 //

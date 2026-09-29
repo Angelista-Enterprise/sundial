@@ -1,7 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { createInitialState } from '@sundial/kernel/initial-state.js';
+import { createInitialState as initialState } from '@sundial/kernel/initial-state.js';
+import { hostTimeZone } from '@sundial/helpers/local-day.js';
 import type { KernelState, OpenPrediction, SanitizedEvent } from '@sundial/kernel/types.js';
 import { dayShapeForecast, forecastDayEnd } from './day-shape-forecast.js';
+
+/** These fixtures are host-local instants, so the owner's zone is the host's here (M3: the rule reads `state.config.timezone`). */
+const createInitialState = (id: string): KernelState => {
+  const s = initialState(id);
+  return { ...s, config: { ...s.config, timezone: hostTimeZone() } };
+};
 
 /**
  * The rule buckets on LOCAL day and LOCAL hour (see its own doc comment for
@@ -79,8 +86,20 @@ describe('dayShapeForecast', () => {
     expect(state.predictions.hourlyDoneRate[10]).toEqual({ n: 1, hits: 0 });
     expect(state.predictions.recentResolved).toHaveLength(1);
     expect(state.predictions.recentResolved[0]).toMatchObject({ kind: 'day-ending', hit: false });
-    // Miss surprise feeds the shared drive, same as `anomalyZscore`'s.
+    // A forecaster with no record yet has no say in the shared drive (Q8).
+    expect(state.memory.accumulatedImportance).toBe(0);
+  });
+
+  it('with skill on 50 or more resolutions, a miss feeds the shared drive, same as anomalyZscore (Q8)', () => {
+    const base = createInitialState('d1');
+    // 60 resolutions, 3 hits, Brier 0.02: well under the constant's 0.0475.
+    const skilled = { ...base, predictions: { ...base.predictions, calibration: { 'day-ending': { n: 60, hits: 3, brierSum: 1.2 } } } };
+    let state = promoteHour(skilled, 2026, 1, 1, 10, 'a');
+    state = promoteHour(state, 2026, 1, 1, 11, 'b');
     expect(state.memory.accumulatedImportance).toBeGreaterThan(0);
+    // The same record at the constant's Brier: no skill, no say.
+    const flat = { ...base, predictions: { ...base.predictions, calibration: { 'day-ending': { n: 60, hits: 3, brierSum: 2.85 } } } };
+    expect(promoteHour(promoteHour(flat, 2026, 1, 1, 10, 'a'), 2026, 1, 1, 11, 'b').memory.accumulatedImportance).toBe(0);
   });
 
   // The regression that matters. `input:activity` emits every ~10s while

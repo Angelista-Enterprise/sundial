@@ -270,7 +270,7 @@ export interface ActivityHourRow {
  *
  * Both counts are returned rather than only the useful one, because their
  * DISAGREEMENT is itself a finding: hours observed with zero active hours is the
- * signature of a lost Input Monitoring grant (`gnomon doctor` reads the same
+ * signature of a lost Input Monitoring grant (the sensor health check reads the same
  * all-counters-zero condition), and a page that silently showed a rate of zero
  * there would report a broken sensor as a quiet day.
  */

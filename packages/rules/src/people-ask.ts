@@ -1,7 +1,8 @@
 import { deriveId } from '@sundial/helpers/derive-id.js';
 import { wasAbsent } from './meeting-followup.js';
-import type { Effect, Rule } from '@sundial/kernel/types.js';
+import type { Effect, KernelState, Rule } from '@sundial/kernel/types.js';
 import { looksLikePersonName } from '@sundial/helpers/person-name.js';
+import { slugifyEntityName } from './entity-extract.js';
 import { REDACTION_ALIAS } from './entity-name-validation.js';
 
 /**
@@ -73,9 +74,9 @@ function cleanName(answer: string): string | null {
 /**
  * The question, phrased so a human can answer it.
  *
- * The shipped wording was "Who is person-c7e3af19c4? They were in "Android
- * developer meeting" with you and person-fdc656585a, Acme Office,
- * person-44d889e0a7." — it asks the owner to decode one hash by giving them two
+ * The shipped wording was "Who is person-9f8e7d6c5b? They were in "Android
+ * developer meeting" with you and person-a1a2a3a4a5, Acme Office,
+ * person-b1b2b3b4b5." — it asks the owner to decode one hash by giving them two
  * more, and a room name in the middle of the people. The owner answered "I dont
  * know, we need to handle this in code" and they were right: nothing in that
  * sentence is anchored to anything they remember.
@@ -96,6 +97,19 @@ export function meetingQuestion(meeting: { title: string; start: string }, known
   const when = new Intl.DateTimeFormat('en-GB', { timeZone: timezone, weekday: 'long', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(meeting.start));
   const withWhom = known.length > 0 ? `, with ${known.slice(0, 3).join(', ')}` : '';
   return `${when} · "${meeting.title}"${withWhom}. Who was the other person there?`;
+}
+
+/**
+ * M4 — whether the owner shares enough with this alias to be asked about it.
+ * "Who is person-…?" was rated useful 0 of 15 times: a one-off attendee of a
+ * large invite is nobody the owner can name. Shared context is what state
+ * already holds: the attendee belief CONFIRMED (the fact cursor promotes
+ * `attendedMeetingWith owner` on the second distinct meeting), or two meetings
+ * with them still in `state.meetings.seen`.
+ */
+export function sharesContext(state: KernelState, alias: string): boolean {
+  if (state.memory.factCursor[`person:${slugifyEntityName(alias)}:attendedMeetingWith:owner`]?.factId) return true;
+  return Object.values(state.meetings.seen).filter((m) => m.attendees.includes(alias)).length >= 2;
 }
 
 export const peopleAsk: Rule = (state, event) => {
@@ -169,13 +183,14 @@ export const peopleAsk: Rule = (state, event) => {
     const unnamed = meeting.attendees.filter((a) => isAlias(a) && !namedInGraph.has(a));
     if (unnamed.length !== 1) continue;
     const attendee = unnamed[0]!;
+    if (!sharesContext(state, attendee)) continue;
     {
       const askedAt = people.asked[attendee];
       if (askedAt !== undefined && now - Date.parse(askedAt) < REASK_ALIAS_AFTER_MS) continue;
       // Only the attendees the owner can RECOGNISE are named in the question.
       // Listing the other hashes was the defect on the surface: "Who is
-      // person-c7e3af19c4? They were in ... with you and person-fdc656585a,
-      // Acme Office, person-44d889e0a7" asks the owner to decode one hash using
+      // person-9f8e7d6c5b? They were in ... with you and person-a1a2a3a4a5,
+      // Acme Office, person-b1b2b3b4b5" asks the owner to decode one hash using
       // two more, with a room name sitting among the people.
       const known = meeting.attendees.filter((a) => a !== attendee && !isAlias(a));
       return {

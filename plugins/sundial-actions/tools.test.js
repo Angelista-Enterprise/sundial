@@ -175,3 +175,35 @@ describe('repeating jobs', () => {
     expect(sent).toEqual([{ type: 'work:repeat-stopped', payload: { subject: 'standup' } }])
   })
 })
+
+describe('gnomon_track_promise (UC1 U1-F9)', () => {
+  it('writes the owner\'s promise to the ledger as they said it, the date left for the fold to read', async () => {
+    const sent = []
+    const byName = Object.fromEntries(internalTools(async (type, payload) => sent.push({ type, payload }), () => ({})).map((t) => [t.name, t]))
+    const result = await byName.gnomon_track_promise.execute({ what: 'the draft', to: 'Mira Bakker', due: 'Tuesday', words: 'I owe Mira the draft by Tuesday' })
+    expect(result.tracked).toBe(true)
+    expect(sent).toEqual([{ type: 'commitment:heard', payload: { source: 'chat', id: result.id, direction: 'owner', deliverable: 'the draft', counterparty: 'Mira Bakker', dueText: 'Tuesday', quote: 'I owe Mira the draft by Tuesday' } }])
+    await byName.gnomon_track_promise.execute({ what: 'the numbers', to: 'Bob Jansen', owed_to_owner: true })
+    expect(sent[1].payload).toMatchObject({ direction: 'awaiting', quote: 'the numbers' })
+    await expect(byName.gnomon_track_promise.execute({ what: ' ' })).rejects.toThrow('what is required')
+    await byName.gnomon_track_promise.execute({ id: 'commitment:promise:x', move_to: '2026-10-09T17:00:00+02:00' })
+    expect(sent[2]).toEqual({ type: 'commitment:closed', payload: { id: 'commitment:promise:x', by: 'owner', due: '2026-10-09T15:00:00.000Z' } })
+  })
+})
+
+describe('gnomon_reminder_create (UC1 U1-F38)', () => {
+  it('is outward — the gate asks — and records the reminder with the promise it mirrors', async () => {
+    const { reminderCreateTool } = await import('./tools.js')
+    const { GNOMON_TOOLS } = await import('./gate.js')
+    expect(GNOMON_TOOLS.gnomon_reminder_create).toEqual({ kind: 'outward', tool: 'reminder_create' })
+    const sent = []
+    const asked = []
+    const run = (_path, argv, _opts, cb) => (asked.push(argv), cb(null, JSON.stringify({ created: { id: 'R1', title: 'Send Mira the draft', due: '2026-10-01T15:00:00.000Z' }, accessGranted: true })))
+    const tool = reminderCreateTool(async (type, payload) => sent.push({ type, payload }), '/helper', run)
+    expect(await tool.execute({ title: 'Send Mira the draft', due: '2026-10-01T17:00:00+02:00', promiseId: 'commitment:promise:x' })).toEqual({ created: true, reminderId: 'R1', due: '2026-10-01T15:00:00.000Z' })
+    expect(asked[0]).toEqual(['--create-reminder', '--title', 'Send Mira the draft', '--due', '2026-10-01T17:00:00+02:00'])
+    expect(sent).toEqual([{ type: 'action:performed', payload: { tool: 'reminder_create', reminderId: 'R1', title: 'Send Mira the draft', due: '2026-10-01T15:00:00.000Z', promiseId: 'commitment:promise:x' } }])
+    const denied = reminderCreateTool(async () => {}, '/helper', (_p, _a, _o, cb) => cb(null, JSON.stringify({ created: null, accessGranted: false })))
+    expect((await denied.execute({ title: 'x' })).error).toContain('Reminders access')
+  })
+})

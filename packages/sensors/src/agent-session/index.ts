@@ -2,6 +2,7 @@ import { readAgentSession } from './agent-session-capture.js';
 
 export * from './agent-session-capture.js';
 export * from './agent-fleet.js';
+export * from './claude-hooks.js';
 
 export interface AgentSessionEvent {
   type: 'agent:session';

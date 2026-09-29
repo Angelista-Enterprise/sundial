@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createInitialState } from '@sundial/kernel/initial-state.js';
 import type { SanitizedEvent } from '@sundial/kernel/types.js';
-import { contradictionCheck, touchFactCursor } from './contradiction-check.js';
+import { contradictionCheck, oneValueRepair, touchFactCursor } from './contradiction-check.js';
 import type { FactCandidate } from './entity-extract.js';
 
 function candidateEvent(candidate: FactCandidate, ts = '2026-01-01T10:00:00.000Z', id = 'e1'): SanitizedEvent {
@@ -32,9 +32,9 @@ describe('contradictionCheck', () => {
 
   it('C13: promotes a `task` candidate to an entity fact on the second observation — the tier is not allowlisted away', () => {
     const TASK: FactCandidate = {
-      entityId: 'task:redesign-and-ios',
+      entityId: 'task:redesign-and-tablet',
       entityKind: 'task',
-      canonicalName: 'redesign-and-ios',
+      canonicalName: 'redesign-and-tablet',
       predicate: 'relatesToProject',
       object: 'gnomon',
       confidence: 75,
@@ -46,7 +46,7 @@ describe('contradictionCheck', () => {
     state = contradictionCheck(state, candidateEvent(TASK, '2026-01-01T10:00:00.000Z', 'e1')).state; // first: pending only
     const { effects } = contradictionCheck(state, candidateEvent(TASK, '2026-01-01T11:00:00.000Z', 'e2'));
     const upsert = effects.find((e) => e.type === 'UpsertEntityFact');
-    expect(upsert).toMatchObject({ type: 'UpsertEntityFact', entityKind: 'task', canonicalName: 'redesign-and-ios', predicate: 'relatesToProject', object: 'gnomon' });
+    expect(upsert).toMatchObject({ type: 'UpsertEntityFact', entityKind: 'task', canonicalName: 'redesign-and-tablet', predicate: 'relatesToProject', object: 'gnomon' });
   });
 
   it('inserts (and embeds) a brand-new fact once the same candidate recurs across MIN_OBSERVATIONS_FOR_NEW_FACT distinct moments', () => {
@@ -381,7 +381,7 @@ describe('contradictionCheck — topic corroboration bar', () => {
 
   /**
    * The bar is on inference, not on the owner. An assertion promotes on one
-   * observation regardless of kind (enhancements/assertions-versus-observations).
+   * observation regardless of kind (concepts/entity-facts-and-belief).
    */
   it('still promotes a topic asserted by the owner on one observation', () => {
     const state = createInitialState('d1');
@@ -483,5 +483,73 @@ describe('single-observation predicates (attendedMeetingWith)', () => {
     });
     const { effects } = contradictionCheck(state, conflicting);
     expect(effects.find((e: any) => e.type === 'SupersedeFact')).toBeUndefined();
+  });
+});
+
+describe('lane Q (Q6)', () => {
+  it('reinforces a confirmed fact at most once a local day, however often it is re-seen', () => {
+    const tool: FactCandidate = { ...BASE_CANDIDATE, predicate: 'usesTool', object: 'Warp' };
+    let state = createInitialState('d1');
+    state.config.timezone = 'Europe/Amsterdam';
+    state = contradictionCheck(state, candidateEvent(tool, '2026-09-28T08:00:00.000Z', 'a')).state;
+    state = contradictionCheck(state, candidateEvent(tool, '2026-09-28T08:05:00.000Z', 'b')).state;
+    const reinforced: string[] = [];
+    for (const [i, ts] of ['2026-09-28T09:00:00.000Z', '2026-09-28T12:00:00.000Z', '2026-09-28T21:59:00.000Z', '2026-09-28T22:01:00.000Z', '2026-09-29T15:00:00.000Z'].entries()) {
+      const out = contradictionCheck(state, candidateEvent(tool, ts, `r${i}`));
+      state = out.state;
+      if (out.effects.some((e) => e.type === 'ReinforceFact')) reinforced.push(ts);
+    }
+    // 22:01Z is past midnight in Amsterdam: a new local day.
+    expect(reinforced).toEqual(['2026-09-28T09:00:00.000Z', '2026-09-28T22:01:00.000Z']);
+  });
+
+  it("a task's project is one value: a second project supersedes after three in a row, never sits beside it", () => {
+    const task: FactCandidate = { ...BASE_CANDIDATE, entityId: 'task:box-484', entityKind: 'task', canonicalName: 'BOX-484', predicate: 'relatesToProject', object: 'puzzlebox-studio' };
+    let state = createInitialState('d1');
+    state = contradictionCheck(state, candidateEvent(task, '2026-09-28T08:00:00.000Z', 'a')).state;
+    state = contradictionCheck(state, candidateEvent(task, '2026-09-28T08:05:00.000Z', 'b')).state;
+    const first = state.memory.factCursor['task:box-484:relatesToProject']!.factId;
+    const other = { ...task, object: 'sundial' };
+    const effects = [];
+    for (const [i, ts] of ['2026-09-28T09:00:00.000Z', '2026-09-28T09:05:00.000Z', '2026-09-28T09:10:00.000Z'].entries()) {
+      const out = contradictionCheck(state, candidateEvent(other, ts, `o${i}`));
+      state = out.state;
+      effects.push(...out.effects);
+    }
+    expect(effects.map((e) => e.type)).toEqual(['SupersedeFact', 'UpsertEntityFact', 'Embed']);
+    expect(effects[0]).toMatchObject({ factId: first });
+    // A person's projects stay a set.
+    expect(Object.keys(state.memory.factCursor).filter((k) => k.startsWith('task:'))).toEqual(['task:box-484:relatesToProject']);
+  });
+});
+
+describe('oneValueRepair (Q6 boot repair)', () => {
+  const fact = (id: string, entityId: string, object: string, alpha: number, validFrom: string) => ({ id, entityId, object, confidence: 80, alpha, validFrom });
+  const facts = [
+    fact('f1', 'task:box-484', 'puzzlebox-studio', 83.2, '2026-09-01T10:00:00.000Z'),
+    fact('f2', 'task:box-484', 'sundial', 4.3, '2026-09-10T10:00:00.000Z'),
+    fact('f3', 'task:box-484', 'lab', 18.8, '2026-09-12T10:00:00.000Z'),
+    fact('f4', 'task:box-513', 'sundial', 9, '2026-09-02T10:00:00.000Z'),
+    fact('f5', 'task:box-513', 'puzzlebox-studio', 9, '2026-09-20T10:00:00.000Z'),
+    fact('f6', 'task:box-600', 'sundial', 5, '2026-09-03T10:00:00.000Z'),
+  ];
+
+  it('keeps the best-evidenced fact per task (then the newest), supersedes the rest by it, and points the cursor at it', () => {
+    const s = createInitialState('d1');
+    s.memory.factCursor = { 'task:box-484:relatesToProject:sundial': { object: 'sundial', factId: 'f2', confidence: 70, pendingObject: null, pendingCount: 0, projectId: null }, 'project:gnomon:primaryTool': { object: 'Code', factId: 'x', confidence: 70, pendingObject: null, pendingCount: 0, projectId: null } };
+    const out = oneValueRepair(s, 'relatesToProject', facts, '2026-09-29T08:00:00.000Z');
+    expect(out.effects).toEqual([
+      { type: 'SupersedeFact', factId: 'f3', supersededByFactId: 'f1', ts: '2026-09-29T08:00:00.000Z' },
+      { type: 'SupersedeFact', factId: 'f2', supersededByFactId: 'f1', ts: '2026-09-29T08:00:00.000Z' },
+      { type: 'SupersedeFact', factId: 'f4', supersededByFactId: 'f5', ts: '2026-09-29T08:00:00.000Z' },
+    ]);
+    expect([out.superseded, out.entities]).toEqual([3, 2]);
+    expect(Object.keys(out.state.memory.factCursor).sort()).toEqual(['project:gnomon:primaryTool', 'task:box-484:relatesToProject', 'task:box-513:relatesToProject', 'task:box-600:relatesToProject']);
+    expect(out.state.memory.factCursor['task:box-484:relatesToProject']).toMatchObject({ object: 'puzzlebox-studio', factId: 'f1' });
+
+    // A second boot: one fact per task, the slots in place — nothing to do.
+    const kept = facts.filter((f) => ['f1', 'f5', 'f6'].includes(f.id));
+    const again = oneValueRepair(out.state, 'relatesToProject', kept, '2026-09-29T09:00:00.000Z');
+    expect([again.effects, again.state === out.state]).toEqual([[], true]);
   });
 });

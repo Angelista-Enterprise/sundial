@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { isLocalUrl, parseProviders, providerKeyEnv, providerLabel, setEnvValues } from './llm-providers.js';
+import { isLocalUrl, ledgerModel, parseProviders, providerKeyEnv, providerLabel, setEnvValues } from './llm-providers.js';
 
 describe('llm providers', () => {
   it('names a provider the way a person would', () => {
@@ -12,6 +12,15 @@ describe('llm providers', () => {
     expect(providerLabel('https://llm.example.org/v1')).toBe('llm.example.org');
     expect(isLocalUrl('http://localhost:1234/v1')).toBe(true);
     expect(isLocalUrl('https://api.openai.com/v1')).toBe(false);
+  });
+
+  it('records a bare hosted model id under its route, so the Ledger prices it as remote', () => {
+    expect(ledgerModel('gpt-5', 'openai', 'https://api.openai.com/v1')).toBe('openai/gpt-5');
+    expect(ledgerModel('deepseek-chat', 'deepseek', 'https://api.deepseek.com/v1')).toBe('deepseek/deepseek-chat');
+    // Already namespaced, on this Mac, or an address nobody knows: unchanged.
+    expect(ledgerModel('qwen/qwen3.8-flash-next', 'openai', 'https://api.tensorx.ai/v1')).toBe('qwen/qwen3.8-flash-next');
+    expect(ledgerModel('qwen3.8:27b-mlx', 'openai', 'http://127.0.0.1:11434/v1')).toBe('qwen3.8:27b-mlx');
+    expect(ledgerModel('gpt-5', 'groq', undefined)).toBe('gpt-5');
   });
 
   it('keeps well-formed providers only, and never lets one take the default route', () => {

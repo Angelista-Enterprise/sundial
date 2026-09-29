@@ -1,4 +1,4 @@
-// sundial-sensors: Gnomon's 20 sensors, re-attached to the dsh process
+// sundial-sensors: Gnomon's 28 capture sources, re-attached to the dsh process
 // (Phase 3 of PLAN.md).
 //
 // Thin adapter over @sundial/harness-runtime's SensorRuntime (ported from
@@ -9,22 +9,21 @@
 //
 // INVARIANT (PLAN.md #6): this process NEVER spawns TCC-gated subprocesses.
 // The macOS-permission-gated sensors read sidecar JSON files written by the
-// Swift launcher's children (~/.sundial/Sundial.app — started separately
-// via `node apps/harness/bin/sundial-sidecars.js start`, direct spawn, never
-// `open -a`). Sidecar staleness is surfaced by the provided service's
+// Swift launcher's children. Sundial.app starts that launcher as its own
+// child; a --no-app install's LaunchAgent runs
+// `node apps/harness/bin/sundial-sidecars.js start` (direct spawn) instead. Sidecar staleness is surfaced by the provided service's
 // getSensorHealth(); nothing is EVER respawned from here.
 //
 // SANCTIONED EXCEPTION — calendar (grandfathered, Phase 3 decision): the
 // calendar sensor still exec's `sundial-calendar-helper` from the app bundle
 // on demand, exactly as the daemon did. EventKit answers a query rather than
 // streaming state, so it has no sidecar-file shape, and the helper carries
-// the bundle's code identity. NOTE: the TCC responsibility chain now bottoms
-// out at whatever starts dsh (your terminal or launchd), so Calendar consent
-// may need re-granting after the cutover.
+// the bundle's code identity. The TCC responsibility chain bottoms out at
+// whatever starts dsh: Sundial.app, or launchd for a --no-app install.
 //
 // Phone ingest (decision: loopback HTTP listener, port 8767): the paired iOS
 // app's write path, replacing the old daemon's POST /ingest/phone on 8765
-// (that port is now the legacy-daemon liveness probe and must stay dark).
+// (the old daemon's port; keep it dark).
 // Same bearer-token file (~/.sundial/.daemon/api-token), same phone:*-only
 // guard; see plugins/sundial-sensors/README.md for the iOS app change.
 //

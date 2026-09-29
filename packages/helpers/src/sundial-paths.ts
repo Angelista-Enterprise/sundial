@@ -7,28 +7,12 @@ export function getSundialRuntimeDir(): string {
   return path.join(getSundialHome(), '.daemon');
 }
 
-export function getDaemonPidPath(): string {
-  return path.join(getSundialRuntimeDir(), 'daemon.pid');
-}
-
-export function getDaemonStartedAtPath(): string {
-  return path.join(getSundialRuntimeDir(), 'started-at');
-}
-
-export function getDaemonLogPath(): string {
-  return path.join(getSundialRuntimeDir(), 'daemon.log');
-}
-
 /**
- * D4 (docs/audit/production-proposal-and-enhancements.md, fixes A§5.1's
- * "daemon read API") — the daemon generates and writes this once at
- * startup (`apps/daemon/src/daemon/daemon-runtime.ts`'s
- * `loadOrGenerateApiToken`); the CLI reads it to authenticate against the
- * loopback HTTP API (`apps/cli/src/cli/daemon-api-client.ts`). Lives in
- * `@sundial/helpers` (not `@sundial/daemon`) for the same reason
- * `getDaemonPidPath` does — both the daemon (writer) and the CLI (reader)
- * need the same path without the CLI depending on the daemon app's
- * internal modules.
+ * The bearer token for the phone ingest listener: generated once by
+ * `loadOrGenerateIngestToken` (`packages/harness-runtime/src/phone-ingest.ts`)
+ * and read by `sundial-proactive` to sign a notice's verdict actions. It began
+ * as the retired daemon's HTTP API token, read by the retired CLI. Lives in
+ * `@sundial/helpers` so writer and readers share one path.
  */
 export function getApiTokenPath(): string {
   return path.join(getSundialRuntimeDir(), 'api-token');
@@ -42,7 +26,17 @@ export function getApiTokenPath(): string {
  */
 // Not SUNDIAL_APP: the app sets that to "1" to tell the web process it runs under the app.
 export function getSundialAppDir(): string {
-  return process.env.SUNDIAL_APP_PATH || path.join(getSundialHome(), 'Sundial.app');
+  return process.env.SUNDIAL_APP_PATH || appEnvAppPath() || path.join(getSundialHome(), 'Sundial.app');
+}
+
+/** lane H (H7): `SUNDIAL_APP_PATH` from the install's app.env, for a process the app did not start (`sundial mcp`). */
+function appEnvAppPath(): string {
+  try {
+    const line = fs.readFileSync(path.join(getSundialHome(), 'app.env'), 'utf8').split('\n').reverse().find((l) => l.startsWith('SUNDIAL_APP_PATH='));
+    return line ? line.slice('SUNDIAL_APP_PATH='.length).trim() : '';
+  } catch {
+    return '';
+  }
 }
 
 /** Sidecar JSON written by the Swift window-helper. */
@@ -107,31 +101,6 @@ export function getInputActivityJsonPath(): string {
 export function getNotificationBadgesJsonPath(): string {
   return path.join(getSundialRuntimeDir(), 'notification-badges.json');
 }
-
-/**
- * The ONE file that flows node → Swift: a phasic notice the launcher's
- * NoticePresenter should post as a native banner. Every other sidecar file goes
- * the other way (Swift writes, node reads), which is why this one is named for
- * its direction rather than for a helper.
- *
- * Written by `plugins/sundial-proactive/native-notify.js`, consumed and DELETED
- * by the launcher — a request that survives its own delivery would be re-posted
- * on the next poll.
- */
-export function getNoticeRequestJsonPath(): string {
-  return path.join(getSundialRuntimeDir(), 'notice-request.json');
-}
-
-/**
- * Filename prefix for verdict drops written by the NoticePresenter's
- * notification delegate — one file per button press
- * (`notice-verdict-<uuid>.json`), never an appended log.
- *
- * One-file-per-verdict because the alternative (appending to a single file)
- * needs offset bookkeeping across two processes that never handshake; a
- * whole-file write the reader deletes is atomic without any.
- */
-export const NOTICE_VERDICT_PREFIX = 'notice-verdict-';
 
 /** Path to the on-demand calendar-helper CLI binary, invoked via execFile (not a persistent sidecar). */
 export function getCalendarHelperPath(): string {

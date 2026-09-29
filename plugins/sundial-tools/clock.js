@@ -1,8 +1,8 @@
 // The dsh agent's clock.
 //
-// A model has no clock, and `/ask` has always said so outright: `nowLine`
-// spells out the date, yesterday's date, the weekday and the timezone in the
-// context block `askContextBlock` builds. The measured failure it fixes is on
+// A model has no clock, and the retired `/ask` said so outright: `nowLine`
+// spelled out the date, yesterday's date, the weekday and the timezone in the
+// context block the since-deleted `askContextBlock` built. The measured failure it fixes is on
 // record — asked about "yesterday", a model with no stated date guessed
 // 2026-07-29 on a day that was 2026-08-02, passed the guess to
 // `gnomon_today_summary`, got nothing back, and truthfully reported that
@@ -43,5 +43,42 @@ export function clockContext({ now } = {}) {
     name: CLOCK_CONTEXT_NAME,
     order: CLOCK_CONTEXT_ORDER,
     text: () => gnomonClockLine(now === undefined ? {} : { now }),
+  };
+}
+
+/**
+ * lane Q (Q12): one text per context per turn.
+ *
+ * dsh re-resolves every runtime context at each step and, when the joined text
+ * differs from the last snapshot, appends the whole of it again as a user
+ * message that stays in the history. The clock line changes every minute and
+ * the ambient slice with it, so a turn of three tool steps that crossed a
+ * minute carried two or three copies of the whole context. Frozen at the
+ * turn's first step, a turn adds at most one; the next turn reads the clock
+ * again.
+ *
+ * The turn is read off the agent dsh hands the resolver (`phase.turn` while it
+ * runs). Anything else — no agent, an idle one, a shape this does not know —
+ * resolves live, as before. Bounded: one entry per agent, the oldest dropped
+ * past `MAX_FROZEN_AGENTS`.
+ */
+export const MAX_FROZEN_AGENTS = 64;
+export function frozenPerTurn(context) {
+  const frozen = new Map();
+  const live = (assembly) => (typeof context.text === 'function' ? context.text(assembly) : context.text);
+  return {
+    ...context,
+    text: (assembly) => {
+      const agent = assembly?.agent;
+      const turn = agent?.phase?.kind === 'running' ? agent.phase.turn : undefined;
+      if (agent?.id === undefined || typeof turn !== 'number') return live(assembly);
+      const held = frozen.get(agent.id);
+      if (held?.turn === turn) return held.text;
+      const text = live(assembly);
+      frozen.delete(agent.id);
+      frozen.set(agent.id, { turn, text });
+      if (frozen.size > MAX_FROZEN_AGENTS) frozen.delete(frozen.keys().next().value);
+      return text;
+    },
   };
 }

@@ -11,6 +11,9 @@ describe('predicateCardinality', () => {
   it('classifies explicit set-valued predicates', () => {
     expect(predicateCardinality('collaboratesOn')).toBe('set');
     expect(predicateCardinality('relatesToProject')).toBe('set');
+    expect(predicateCardinality('relatesToProject', 'person')).toBe('set');
+    // lane Q: a task belongs to one project.
+    expect(predicateCardinality('relatesToProject', 'task')).toBe('functional');
     expect(predicateCardinality('deployedVia')).toBe('set');
     expect(predicateCardinality('usesTool')).toBe('set');
   });

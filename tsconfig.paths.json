@@ -8,9 +8,7 @@
       "@sundial/rules/*": ["./packages/rules/src/*"],
       "@sundial/sensors/*": ["./packages/sensors/src/*"],
       "@sundial/llm/*": ["./packages/llm/src/*"],
-      "@sundial/memory/*": ["./packages/memory/src/*"],
-      "@sundial/daemon/*": ["./apps/daemon/src/*"],
-      "@sundial/cli/*": ["./apps/cli/src/*"]
+      "@sundial/memory/*": ["./packages/memory/src/*"]
     }
   }
 }

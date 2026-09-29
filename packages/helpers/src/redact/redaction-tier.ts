@@ -17,7 +17,6 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { DEFAULT_SENSITIVE_APPS, STRICT_SENSITIVE_APPS, privacyConfig } from '../privacy-config.js';
 import { getSundialHome } from '../config.js';
-import { recordRedaction } from './redaction-telemetry.js';
 
 export type RedactionTier = 1 | 2 | 3;
 
@@ -39,7 +38,7 @@ const SENSITIVE_NAME_HINTS = [
   'tax', 'insurance',
 ];
 
-let learnedFile = path.join(getSundialHome(), '.daemon', 'learned-sensitive-apps.json');
+const learnedFile = path.join(getSundialHome(), '.daemon', 'learned-sensitive-apps.json');
 let learnedCache: Set<string> | null = null;
 
 function loadLearned(): Set<string> {
@@ -65,10 +64,6 @@ function persistLearned(apps: Set<string>): void {
   }
 }
 
-export function getLearnedSensitiveApps(): string[] {
-  return [...loadLearned()];
-}
-
 /**
  * Tier-3 auto-grow: if `processName` looks sensitive by name, record it in
  * the learned list (persisted) and report it as sensitive.
@@ -81,7 +76,6 @@ export function detectAndLearnSensitiveApp(processName: string): boolean {
   if (!learned.has(name)) {
     learned.add(name);
     persistLearned(learned);
-    recordRedaction('ingest', 'sensitive-app-learned');
   }
   return true;
 }
@@ -104,10 +98,4 @@ export function effectiveSensitiveApps(tier: RedactionTier = getRedactionTier())
     return [...new Set([...configured, ...loadLearned()])];
   }
   return configured;
-}
-
-/** Test hook: point the learned-apps store at a scratch file and reset the cache. */
-export function __setLearnedSensitiveAppsFileForTests(filePath: string): void {
-  learnedFile = filePath;
-  learnedCache = null;
 }

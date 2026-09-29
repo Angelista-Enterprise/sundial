@@ -483,7 +483,7 @@ export const entityFacts = sqliteTable(
     supersededBy: text('superseded_by'),
     sourceEventId: text('source_event_id'),
     createdAt: text('created_at').notNull(),
-    // assertions-versus-observations — where this fact came from: 'inference'
+    // Provenance (`almanac/concepts/entity-facts-and-belief.md`) — where this fact came from: 'inference'
     // (heuristic/LLM guess, the only thing that ever wrote this column before
     // this field existed, hence the default), 'assertion' (owner-authored,
     // superseded a confirmed fact on a single observation instead of waiting
@@ -545,7 +545,7 @@ export const commitments = sqliteTable(
   'commitments',
   {
     id: text('id').primaryKey(),
-    /** `BOX-508`, or `redesign-and-ios`. */
+    /** `BOX-508`, or `redesign-and-tablet`. */
     name: text('name').notNull(),
     /** Only `git-branch` is wired. A column rather than an assumption, so a second source needs no migration. */
     source: text('source').notNull(),
@@ -559,8 +559,14 @@ export const commitments = sqliteTable(
     /** Distinct LOCAL days seen — the measure of "spanning", as opposed to elapsed clock time. */
     activeDays: integer('active_days').notNull().default(1),
     closedAt: text('closed_at'),
-    /** Why it closed. `went-quiet` is the only value: nothing observable tells Gnomon a branch was merged. */
+    /** Why it closed: `went-quiet`, `seen-done`, `owner`, and (UC1) `kept`, `broken`, `dropped`. */
     closedBecause: text('closed_because'),
+    /**
+     * UC1: a promise's terms as JSON (`PromiseTerms`: direction, counterparty,
+     * due and its kind, deliverable and key nouns, quote, evidence). NULL on a
+     * branch thread, and on every row from before the column.
+     */
+    promise: text('promise'),
   },
   (table) => [index('idx_commitments_open').on(table.closedAt, table.lastTouchedAt), index('idx_commitments_project').on(table.projectId)],
 );
@@ -618,8 +624,8 @@ export const predictions = sqliteTable(
 );
 
 /**
- * Every gate verdict, with its arithmetic — the durable half of
- * `almanac/enhancements/unsaid-room-gate-decision-persistence.md`.
+ * Every gate verdict, with its arithmetic — the durable half of the gate's
+ * decision record (`almanac/architecture/rules/noticing-and-expectations.md`).
  *
  * The candidates themselves are already on disk (`signals` rows with
  * `signal_type='notice'`, `event_type='candidate'`); what was missing was the
@@ -640,7 +646,7 @@ export const gateDecisions = sqliteTable(
     kind: text('kind').notNull(),
     /** tonic | phasic | suppressed | deferred. */
     channel: text('channel').notNull(),
-    /** admitted | below-threshold | habituated | budget-spent | too-costly-now | owner-silent. */
+    /** admitted | below-threshold | habituated | budget-spent | too-costly-now | owner-silent | owner-away | expired. */
     reason: text('reason').notNull(),
     weight: real('weight').notNull(),
     utility: real('utility').notNull(),

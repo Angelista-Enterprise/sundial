@@ -14,7 +14,7 @@ interface InputActivityPayload {
   scrollCount?: number;
 }
 
-function isZeroActivity(payload: InputActivityPayload): boolean {
+export function isZeroActivity(payload: InputActivityPayload): boolean {
   return (payload.keyDownCount ?? 0) === 0 && (payload.mouseClickCount ?? 0) === 0 && (payload.mouseMoveCount ?? 0) === 0 && (payload.scrollCount ?? 0) === 0;
 }
 
@@ -37,7 +37,8 @@ export const idleTrack: Rule = (state, event) => {
   const consecutiveZeroWindows = zero ? state.lifeEvent.idle.consecutiveZeroWindows + 1 : 0;
   const isIdle = consecutiveZeroWindows >= IDLE_THRESHOLD_WINDOWS;
 
-  const nextState = { ...state, lifeEvent: { ...state.lifeEvent, idle: { consecutiveZeroWindows, isIdle } } };
+  const lastActiveAt = zero ? (state.lifeEvent.idle.lastActiveAt ?? null) : event.ts;
+  const nextState = { ...state, lifeEvent: { ...state.lifeEvent, idle: { consecutiveZeroWindows, isIdle, lastActiveAt } } };
 
   if (isIdle && !wasIdle) {
     return {

@@ -55,8 +55,8 @@ async function persistJournalEntry(opts: {
 
 /**
  * P5/P6 (docs/design/07) — write one `kind:'daily'` knowledge entry + its
- * embedding, called by BOTH the daemon's `performDailyJournalCall` and the
- * CLI's `gnomon journal`. Idempotent via `dedupeKey: daily:<date>` — one entry
+ * embedding, called by the kernel runtime's `performDailyJournalCall` (the
+ * retired CLI's `gnomon journal` was the other caller). Idempotent via `dedupeKey: daily:<date>` — one entry
  * per day, re-runnable; a re-run of an existing day inserts nothing (returns
  * `inserted: false`), matching the reflection pattern.
  */

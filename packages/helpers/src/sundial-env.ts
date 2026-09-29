@@ -29,10 +29,5 @@ function warnIfLegacyRepoEnv(): void {
   console.warn(`[sundial] Found a repo-root .env — Sundial only loads ${SUNDIAL_ENV_FILE}. Move secrets there.`);
 }
 
-/** Reset loader state (tests). */
-export function resetSundialEnvForTests(): void {
-  loaded = false;
-}
-
 // Eager load so importers of @sundial/helpers/config see env before config parse.
 loadSundialEnv();

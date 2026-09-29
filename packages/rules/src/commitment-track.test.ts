@@ -45,20 +45,20 @@ const rowOf = (effects: Effect[]): CommitmentRow | undefined =>
 
 describe('commitmentTrack', () => {
   it('opens a thread from the branch a closing moment carried, named the way entityExtract names the task entity', () => {
-    const state = withMoment(createInitialState('d1'), 'feat/redesign-and-ios');
+    const state = withMoment(createInitialState('d1'), 'feat/redesign-and-tablet');
 
     const { state: next, effects } = commitmentTrack(state, windowChanged(localTs(2026, 8, 1, 10), 'e1'));
 
     expect(next.commitments.open).toHaveLength(1);
     expect(next.commitments.open[0]).toMatchObject({
-      id: 'commitment:redesign-and-ios',
-      name: 'redesign-and-ios',
+      id: 'commitment:redesign-and-tablet',
+      name: 'redesign-and-tablet',
       source: 'git-branch',
-      branch: 'feat/redesign-and-ios',
+      branch: 'feat/redesign-and-tablet',
       touches: 1,
       activeDays: ['2026-08-01'],
     });
-    expect(rowOf(effects)).toMatchObject({ id: 'commitment:redesign-and-ios', activeDays: 1, closedAt: null });
+    expect(rowOf(effects)).toMatchObject({ id: 'commitment:redesign-and-tablet', activeDays: 1, closedAt: null });
   });
 
   it('prefers a ticket id over the branch text, so the ledger and the task entity agree', () => {
@@ -176,7 +176,7 @@ describe('commitmentTrack', () => {
    */
   it('attributes a thread to the closing moment, not to the frozen ambient pointer', () => {
     const base = createInitialState('d1');
-    let state = withMoment(base, 'ledger-failure-views', { project: { id: '~/Projects/acme/puzzlebox-studio', name: 'puzzlebox-studio' } });
+    let state = withMoment(base, 'ledger-retry-views', { project: { id: '~/Projects/acme/puzzlebox-studio', name: 'puzzlebox-studio' } });
     state = {
       ...state,
       project: { ...state.project, known: { '~/Projects/sundial': { name: 'sundial', org: 'Acme', remote: null, branch: null } } },
@@ -190,11 +190,11 @@ describe('commitmentTrack', () => {
   });
 
   it('lets a later resolved moment correct an attribution the ambient pointer got wrong', () => {
-    let state = withMoment(createInitialState('d1'), 'ledger-failure-views', { project: { id: 'p1', name: 'puzzlebox-studio' } });
+    let state = withMoment(createInitialState('d1'), 'ledger-retry-views', { project: { id: 'p1', name: 'puzzlebox-studio' } });
     state = commitmentTrack(state, windowChanged(localTs(2026, 8, 1, 10), 'e1')).state;
     expect(state.commitments.open[0]).toMatchObject({ projectName: 'puzzlebox-studio' });
 
-    state = withMoment(state, 'ledger-failure-views', { project: { id: 'p1', name: 'puzzlebox-studio' } });
+    state = withMoment(state, 'ledger-retry-views', { project: { id: 'p1', name: 'puzzlebox-studio' } });
     state = {
       ...state,
       project: { ...state.project, known: { '~/Projects/sundial': { name: 'sundial', org: 'Acme', remote: null, branch: null } } },
@@ -206,10 +206,10 @@ describe('commitmentTrack', () => {
   });
 
   it('touches the same thread rather than opening a second one', () => {
-    let state = withMoment(createInitialState('d1'), 'feat/redesign-and-ios');
+    let state = withMoment(createInitialState('d1'), 'feat/redesign-and-tablet');
     state = commitmentTrack(state, windowChanged(localTs(2026, 8, 1, 10), 'e1')).state;
 
-    state = withMoment(state, 'feat/redesign-and-ios');
+    state = withMoment(state, 'feat/redesign-and-tablet');
     const { state: next, effects } = commitmentTrack(state, windowChanged(localTs(2026, 8, 1, 11), 'e2'));
 
     expect(next.commitments.open).toHaveLength(1);
@@ -224,14 +224,14 @@ describe('commitmentTrack', () => {
    * "one touch, quiet since" its first commit.
    */
   it('writes the running totals on every touch, not once a day', () => {
-    let state = withMoment(createInitialState('d1'), 'feat/redesign-and-ios');
+    let state = withMoment(createInitialState('d1'), 'feat/redesign-and-tablet');
     state = commitmentTrack(state, windowChanged(localTs(2026, 8, 1, 10), 'e1')).state;
 
-    state = withMoment(state, 'feat/redesign-and-ios');
+    state = withMoment(state, 'feat/redesign-and-tablet');
     const sameDay = commitmentTrack(state, windowChanged(localTs(2026, 8, 1, 16), 'e2'));
     expect(rowOf(sameDay.effects)).toMatchObject({ touches: 2, lastTouchedAt: localTs(2026, 8, 1, 16) });
 
-    state = withMoment(sameDay.state, 'feat/redesign-and-ios');
+    state = withMoment(sameDay.state, 'feat/redesign-and-tablet');
     const nextDay = commitmentTrack(state, windowChanged(localTs(2026, 8, 2, 9), 'e3'));
 
     expect(nextDay.state.commitments.open[0]?.activeDays).toEqual(['2026-08-01', '2026-08-02']);
@@ -252,7 +252,7 @@ describe('commitmentTrack', () => {
   });
 
   it('closes a thread that has gone quiet, and writes the closure', () => {
-    let state = withMoment(createInitialState('d1'), 'feat/redesign-and-ios');
+    let state = withMoment(createInitialState('d1'), 'feat/redesign-and-tablet');
     state = commitmentTrack(state, windowChanged(localTs(2026, 8, 1, 10), 'e1')).state;
 
     const later = new Date(new Date(localTs(2026, 8, 1, 10)).getTime() + COMMITMENT_STALE_AFTER_MS + 1000).toISOString();
@@ -260,7 +260,7 @@ describe('commitmentTrack', () => {
 
     expect(next.commitments.open).toHaveLength(0);
     expect(next.commitments.recentClosed).toHaveLength(1);
-    expect(next.commitments.recentClosed[0]).toMatchObject({ name: 'redesign-and-ios', closedBecause: 'went-quiet' });
+    expect(next.commitments.recentClosed[0]).toMatchObject({ name: 'redesign-and-tablet', closedBecause: 'went-quiet' });
     expect(rowOf(effects)).toMatchObject({ closedAt: later, closedBecause: 'went-quiet' });
   });
 
@@ -270,7 +270,7 @@ describe('commitmentTrack', () => {
    * exists to hold, and closing at seven would call it abandoned.
    */
   it('leaves a thread open across a week-long gap', () => {
-    let state = withMoment(createInitialState('d1'), 'feat/redesign-and-ios');
+    let state = withMoment(createInitialState('d1'), 'feat/redesign-and-tablet');
     state = commitmentTrack(state, windowChanged(localTs(2026, 8, 1, 10), 'e1')).state;
 
     const { state: next, effects } = commitmentTrack(state, tick(localTs(2026, 8, 9, 10), 't1'));
@@ -295,7 +295,7 @@ describe('commitmentTrack', () => {
 
   /** A same-process title change appends to the open moment; counting it would inflate `touches` by every window retitle. */
   it('does not count a title change within the same process as a touch', () => {
-    const state = withMoment(createInitialState('d1'), 'feat/redesign-and-ios');
+    const state = withMoment(createInitialState('d1'), 'feat/redesign-and-tablet');
     // The moment's own process, so this is not a closing boundary.
     const { state: next, effects } = commitmentTrack(state, windowChanged(localTs(2026, 8, 1, 10), 'e1', 'Terminal'));
 
@@ -313,11 +313,11 @@ describe('commitmentTrack', () => {
   describe('a thread fading is mentioned once, before the ledger closes it', () => {
     const DAY = 24 * 60 * 60 * 1000;
     /** Touch `branch` in `touches` sessions over two days, then tick `daysLater` after the last touch. */
-    function fadeAfter(daysLater: number, opts: { unpushed?: number; merged?: boolean; touches?: number; pr?: { number: number; state: string; reviewState: string | null } | null } = {}) {
+    function fadeAfter(daysLater: number, opts: { unpushed?: number; merged?: boolean; touches?: number; branch?: string; pr?: { number: number; state: string; reviewState: string | null } | null } = {}) {
       let state: KernelState = createInitialState('d1');
       const touches = opts.touches ?? 6;
       for (let i = 0; i < touches; i++) {
-        state = withMoment(state, 'feat/payment-retry', opts);
+        state = withMoment(state, opts.branch ?? 'feat/payment-retry', opts);
         state = commitmentTrack(state, windowChanged(localTs(2026, 8, 1 + (i % 2), 9 + i), `e${i}`)).state;
       }
       const last = state.commitments.open[0]?.lastTouchedAt ?? localTs(2026, 8, 2, 10);
@@ -365,6 +365,14 @@ describe('commitmentTrack', () => {
 
     it('leaves the fourteen-day close to say its own thing', () => {
       expect(kinds(fadeAfter(15, { unpushed: 2 }).effects)).toEqual(['commitment-quiet']);
+    });
+
+    it('says nothing about a branch a Claude session made for its worktree (Q5)', () => {
+      for (const branch of ['claude/fix-hint-borders', 'claude-2026-09-28-a1b2']) {
+        expect(kinds(fadeAfter(3, { unpushed: 2, branch }).effects)).toEqual([]);
+        expect(kinds(fadeAfter(15, { unpushed: 2, branch }).effects)).toEqual([]);
+      }
+      expect(kinds(fadeAfter(3, { unpushed: 2, branch: 'feat/claude-hooks' }).effects)).toEqual(['commitment-fading']);
     });
   });
 
@@ -436,29 +444,5 @@ describe('commitmentTrack', () => {
     expect(state.commitments.open).toHaveLength(20);
     // Oldest evicted, newest kept.
     expect(state.commitments.open.at(-1)?.name).toBe('dune');
-  });
-
-  describe('J4.4 promises heard aloud', () => {
-    const heard = (momentId: string, text = 'dan zal ik Marco jouw feedback zetten erin'): SanitizedEvent => ({ id: `h-${momentId}`, type: 'commitment:heard', ts: localTs(2026, 9, 22, 10), payload: { momentId, text, p: 0.9, projectId: 'p1', projectName: 'puzzles' }, sanitized: true });
-
-    it('opens a speech thread named by the words, keyed by the moment, once', () => {
-      const first = commitmentTrack(createInitialState('d1'), heard('m1'));
-      expect(first.state.commitments.open[0]).toMatchObject({ id: 'commitment:speech:m1', source: 'speech', branch: '', name: 'dan zal ik Marco jouw feedback zetten erin', projectName: 'puzzles', heardIn: { momentId: 'm1', p: 0.9 } });
-      expect(rowOf(first.effects)).toMatchObject({ id: 'commitment:speech:m1', source: 'speech', closedAt: null });
-      const again = commitmentTrack(first.state, heard('m1'));
-      expect(again.state).toBe(first.state);
-      expect(again.effects).toEqual([]);
-    });
-
-    it('a later moment resolving it closes it as seen-done; the owner closes it as owner; an unknown id does nothing', () => {
-      const opened = commitmentTrack(createInitialState('d1'), heard('m1')).state;
-      const resolved = commitmentTrack(opened, { id: 'r1', type: 'commitment:resolved', ts: localTs(2026, 9, 23, 10), payload: { id: 'commitment:speech:m1', momentId: 'm2', p: 0.8 }, sanitized: true });
-      expect(resolved.state.commitments.open).toHaveLength(0);
-      expect(resolved.state.commitments.recentClosed[0]).toMatchObject({ id: 'commitment:speech:m1', closedBecause: 'seen-done' });
-      expect(rowOf(resolved.effects)).toMatchObject({ id: 'commitment:speech:m1', closedBecause: 'seen-done' });
-      const owner = commitmentTrack(opened, { id: 'c1', type: 'commitment:closed', ts: localTs(2026, 9, 23, 10), payload: { id: 'commitment:speech:m1', by: 'owner' }, sanitized: true });
-      expect(owner.state.commitments.recentClosed[0]).toMatchObject({ closedBecause: 'owner' });
-      expect(commitmentTrack(opened, { id: 'c2', type: 'commitment:closed', ts: localTs(2026, 9, 23, 10), payload: { id: 'nope' }, sanitized: true }).effects).toEqual([]);
-    });
   });
 });

@@ -168,6 +168,20 @@ describe('owner-requested jobs', () => {
     expect(effects).toEqual([{ type: 'Notify', channel: WORK_JOB_CHANNEL, payload: expect.objectContaining({ kind: 'owner-request' }) }]);
   });
 
+  it('a watch rule\'s job spends the day\'s job budget, and past it is dropped (U4-F19)', () => {
+    const state = away();
+    state.workbench.day = null;
+    state.workbench.countToday = 0;
+    let s = state;
+    const opened: string[] = [];
+    for (let i = 0; i < MAX_JOBS_PER_DAY + 1; i++) {
+      s = workbench(s, ev('work:requested', { subject: `R${i}`, brief: 'b', by: 'rule', rule: 'ci-failed' }, plus(i * 1000))).state;
+      opened.push(...[s.workbench.open, ...(s.workbench.queue ?? [])].filter(Boolean).map((j) => j!.subject));
+    }
+    expect([...new Set(opened)]).toEqual(['R0', 'R1', 'R2']);
+    expect(s.workbench.open).toMatchObject({ reason: 'a rule you adopted fired' });
+  });
+
   it('queues behind an open job and opens on its close, stamping openedAt then', () => {
     const { state: busy } = workbench(withThread(away()), ev('clock:tick'));
     const { state: queued, effects } = workbench(busy, ev('work:requested', { subject: 'A', brief: 'b' }, plus(1000)));

@@ -1,0 +1,12 @@
+-- UC1: a promise's terms, beside the thread they belong to.
+--
+-- JSON (`PromiseTerms` in @sundial/kernel): direction, counterparty, the due
+-- date and where it came from (said, the next meeting with that person, or the
+-- three-working-day default), the deliverable and its key nouns, the quote,
+-- and the evidence seen since. One column rather than eleven: every field is
+-- written together by one rule, and read together by the Today row and the
+-- reliability count, which reads it with json_extract.
+--
+-- NULL on a branch thread, and on every row from before this column. A speech
+-- thread opened before it keeps NULL too: it had no terms to record.
+ALTER TABLE `commitments` ADD `promise` text;

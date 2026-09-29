@@ -1,7 +1,5 @@
 import { type AvProcessUsage, type AvSnapshot, readAvSnapshot } from './audio-context-capture.js';
 
-export type MediaKind = 'audio-output' | 'audio-input' | 'camera';
-
 export interface AudioContextEvent {
   type: 'media:state';
   payload: Record<string, unknown>;

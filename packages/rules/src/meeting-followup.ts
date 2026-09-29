@@ -3,10 +3,13 @@ import { deriveId } from '@sundial/helpers/derive-id.js';
 import { namedAttendees } from './people-ask.js';
 import { formatClock } from '@sundial/helpers/local-day.js';
 import { meetingJobKey } from './workbench.js';
+import { directionOf, meetingPromiseId, promiseLine } from './promise-track.js';
 
 /** The window after a meeting's end in which the question is worth asking. */
 export const FOLLOWUP_MIN_AFTER_MS = 2 * 60 * 1000;
 export const FOLLOWUP_MAX_AFTER_MS = 20 * 60 * 1000;
+/** UC1-X3: how long the question waits for the meeting's promise pass before asking without it. */
+export const EXTRACT_WAIT_MS = 8 * 60 * 1000;
 /** Seen meetings older than this are forgotten. */
 export const SEEN_HORIZON_MS = 2 * 24 * 60 * 60 * 1000;
 /** A work call shorter than this is a quick sync, not something to debrief. */
@@ -56,15 +59,31 @@ function isOwner(name: string, aliases: readonly string[]): boolean {
  */
 export const meetingFollowup: Rule = (state, event) => {
   if (event.type === 'audio:transcript') {
-    const spoken = (event.payload as { spokenText?: unknown }).spokenText;
+    const { spokenText: spoken, channel } = event.payload as { spokenText?: unknown; channel?: unknown };
     if (typeof spoken !== 'string' || spoken.trim() === '') return { state, effects: [] };
+    // The far side of a call (the Mac's own output, `channel: system`) is heard
+    // whether or not the owner is at the desk: a call left running in an empty
+    // room would otherwise read as attended. Only the microphone counts as
+    // `heard`; both streams count as `voices`, what the promise pass can read.
     let seen: KernelState['meetings']['seen'] | null = null;
     for (const [key, meeting] of Object.entries(state.meetings.seen)) {
       if (event.ts < meeting.start || event.ts > meeting.end) continue;
       seen ??= { ...state.meetings.seen };
-      seen[key] = { ...meeting, heard: (meeting.heard ?? 0) + 1 };
+      seen[key] = { ...meeting, voices: (meeting.voices ?? 0) + 1, ...(channel === 'system' ? {} : { heard: (meeting.heard ?? 0) + 1 }) };
     }
     return seen ? { state: { ...state, meetings: { seen } }, effects: [] } : { state, effects: [] };
+  }
+  // UC1: the promise pass answered. Its promises open in `promiseTrack`; the
+  // meeting keeps their ids and one line each, for the question at its end.
+  if (event.type === 'meeting:promises') {
+    const p = event.payload as { meetingKey?: unknown; start?: unknown; promises?: unknown };
+    const key = typeof p.meetingKey === 'string' ? p.meetingKey : '';
+    const meeting = state.meetings.seen[key];
+    if (!meeting || meeting.promised || !Array.isArray(p.promises) || typeof p.start !== 'string') return { state, effects: [] };
+    const found = (p.promises as { who?: unknown; kind?: unknown; to?: unknown; what?: unknown; due?: unknown }[]).map((mp, i) => ({ mp, id: meetingPromiseId(p.start as string, key, i) }));
+    const owed = found.filter(({ mp }) => typeof mp?.what === 'string' && directionOf({ who: mp.who === 'other' ? 'other' : 'owner', kind: mp.kind === 'request' ? 'request' : 'promise' }) !== 'awaiting');
+    const promised = { ids: owed.map((f) => f.id), lines: [] as string[] };
+    return { state: { ...state, meetings: { seen: { ...state.meetings.seen, [key]: { ...meeting, promised } } } }, effects: [] };
   }
   if (event.type !== 'clock:tick') return { state, effects: [] };
   const now = Date.parse(event.ts);
@@ -128,10 +147,36 @@ export const meetingFollowup: Rule = (state, event) => {
   }
 
   const effects: ReturnType<Rule>['effects'] = [];
-  if (state.ownerAsk.open === null) {
+  // UC1 (U1-F2): one promise pass per meeting, once it is over and while the
+  // question about it is still ahead. Only a meeting something was heard in —
+  // or an unscheduled call, whose words were counted before it had a key.
+  // Overlapping entries (a meeting and its room booking) heard the same words:
+  // one pass for them, the entry with the most attendees first.
+  const span = (m: { start: string; end: string }) => [Date.parse(m.start), Date.parse(m.end)] as const;
+  const passed = Object.values(seen).filter((m) => m.extractAt).map(span);
+  for (const [key, meeting] of Object.entries(seen).sort(([, a], [, b]) => b.attendees.length - a.attendees.length)) {
+    const since = now - Date.parse(meeting.end);
+    if (meeting.extractAt || since < 0 || since > FOLLOWUP_MAX_AFTER_MS || wasAbsent(meeting)) continue;
+    const isCall = key.startsWith('call|');
+    if (!isCall && (meeting.voices ?? 0) === 0) continue;
+    if (!changed) {
+      seen = { ...seen };
+      changed = true;
+    }
+    seen[key] = { ...meeting, extractAt: event.ts };
+    const [start, end] = span(meeting);
+    const twin = passed.some(([s, e]) => start < e && s < end);
+    passed.push([start, end]);
+    if (twin) continue;
+    effects.push({ type: 'RunMeetingPromises', meetingKey: key, title: meeting.title, start: meeting.start, end: meeting.end, attendees: meeting.attendees, ts: event.ts });
+  }
+  if (state.ownerAsk.open === null && state.commitments.promiseAsk === null) {
     const due = Object.entries(seen).find(([, meeting]) => {
       if (meeting.askedAt !== null || wasAbsent(meeting)) return false;
       const since = now - Date.parse(meeting.end);
+      // UC1-X3: while the promise pass is out, wait for it (a few minutes at
+      // most), so the one question can show what it found.
+      if (meeting.extractAt && !meeting.promised && now - Date.parse(meeting.extractAt) < EXTRACT_WAIT_MS && since < FOLLOWUP_MAX_AFTER_MS - 60_000) return false;
       return since >= FOLLOWUP_MIN_AFTER_MS && since <= FOLLOWUP_MAX_AFTER_MS;
     });
     if (due) {
@@ -149,7 +194,19 @@ export const meetingFollowup: Rule = (state, event) => {
       // answer. Two fixed choices plus at most two points keeps it under the
       // four-button ceiling `ownerAsk` enforces.
       const points = state.workbench.briefPoints?.[meetingJobKey(meeting.title, meeting.start)] ?? [];
-      const choices = ['Fine, nothing to keep', 'Let me tell you', ...points.map((point) => `Mostly: ${point}`.slice(0, 48))];
+      // UC1-X3: one question, and it asks about promises. When the promise
+      // pass found some, it shows them for confirmation instead of asking.
+      const found = (meeting.promised?.ids ?? []).map((id) => state.commitments.promises.find((c) => c.id === id)).filter((c): c is NonNullable<typeof c> => c !== undefined);
+      const lines = found.map((c) => promiseLine(state, c));
+      const label = meeting.attendees.length === 0 ? meeting.title : `"${meeting.title}"`;
+      const question =
+        found.length > 0
+          ? `How did ${label} go? I heard you promise: ${lines.join('; ')}. Keep track of ${found.length === 1 ? 'it' : 'them'}?`
+          : meeting.attendees.length === 0
+            ? `How did ${label} go? Who was it with — and did you promise anything?`
+            : `How did ${label} go — did you promise anything?`;
+      const choices =
+        found.length === 0 ? ['No', 'Yes — tell me', ...points.slice(0, 2).map((point) => `Mostly: ${point}`.slice(0, 48))] : found.length === 1 ? ['Track it', 'Not a promise'] : ['Track them', 'Only the first', 'Not promises'];
       effects.push({
         type: 'EmitEvent',
         event: {
@@ -158,9 +215,10 @@ export const meetingFollowup: Rule = (state, event) => {
           ts: event.ts,
           payload: {
             askId: `owner-ask:meeting-${deriveId(meeting.start, 'meeting-followup', key).slice(0, 12)}`,
-            question: meeting.attendees.length === 0 ? `How did ${meeting.title} go? Who was it with, and anything worth remembering?` : `How did "${meeting.title}" go? Anything worth remembering — decisions, who said what, follow-ups?`,
+            question,
             reason: `ended ${formatClock(meeting.end, state.config.timezone)} with ${who}`,
             choices,
+            promiseAsk: { kind: 'meeting', ids: found.map((c) => c.id), attendees: meeting.attendees, meeting: { title: meeting.title, start: meeting.start } },
           },
         },
       });

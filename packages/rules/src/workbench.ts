@@ -1,5 +1,7 @@
 import type { Effect, KernelState, Rule, WorkJob, WorkJobRecord } from '@sundial/kernel/types.js';
 import { deriveId } from '@sundial/helpers/derive-id.js';
+import { promiseLine } from './promise-track.js';
+import { samePerson } from './promise-terms.js';
 import { localDate } from '@sundial/helpers/local-day.js';
 import { lastOccurrence, parseRepeat, repeatKey } from '@sundial/helpers/repeat-schedule.js';
 
@@ -35,6 +37,9 @@ interface RequestedPayload {
   stepId?: string;
   /** A schedule in plain words; the job is kept and run on it instead of once now. */
   repeat?: string;
+  /** `rule`: a watch rule's action (UC4 F19), not the owner's own ask. */
+  by?: string;
+  rule?: string;
 }
 
 interface ShelvedPayload {
@@ -109,7 +114,8 @@ export function pickJob(state: KernelState, nowIso: string): WorkJob | null {
       key,
       subject: meeting.title,
       reason: `starts in ${Math.round(lead / 60_000)} min with ${others.length} other${others.length === 1 ? '' : 's'}`,
-      detail: { start: meeting.start, end: meeting.end, attendees: others },
+      // U1-F33: what is owed between the owner and the people in the room, so the brief leads with it.
+      detail: { start: meeting.start, end: meeting.end, attendees: others, promises: state.commitments.promises.filter((c) => others.some((a) => samePerson(a, c.promise?.counterparty))).map((c) => promiseLine(state, c)) },
       openedAt: nowIso,
     };
   }
@@ -273,7 +279,8 @@ export const workbench: Rule = (state, event) => {
         // The owner is TOLD, through the gate like everything else Gnomon says.
         // A job they asked for clears the phasic bar (they are waiting on it);
         // one Gnomon picked for itself is context for the next conversation.
-        ...(matches
+        // Lane B: not a meeting brief — the meeting's prep (`briefClock`) is its one notice, and points here.
+        ...(matches && open.kind !== 'meeting-brief'
           ? [
               {
                 type: 'EmitEvent' as const,
@@ -374,10 +381,16 @@ export const workbench: Rule = (state, event) => {
     }
     const queue = state.workbench.queue ?? [];
     if (queue.length >= MAX_QUEUED_JOBS) return { state, effects: [] };
+    // A rule's job was not asked for in the moment: it spends the day's job budget like Gnomon's own.
+    const byRule = payload.by === 'rule';
+    const today = localDate(event.ts, state.config.timezone);
+    const spent = state.workbench.day === today ? state.workbench.countToday : 0;
+    if (byRule && spent >= MAX_JOBS_PER_DAY) return { state, effects: [] };
     const key = `owner:${subject.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48)}:${event.ts.slice(0, 10)}`;
     const forGoal = typeof payload.goalId === 'string' && typeof payload.stepId === 'string';
-    const job: WorkJob = { id: deriveId(event.ts, event.id, 'workbench', key), kind: 'owner-request', key, subject, reason: forGoal ? 'a step toward a goal you marked active' : 'you asked', detail: { brief, ...(forGoal ? { goalId: payload.goalId!, stepId: payload.stepId! } : {}) }, openedAt: event.ts };
-    return drain({ ...state, workbench: { ...state.workbench, queue: [...queue, job] } }, event.ts);
+    const job: WorkJob = { id: deriveId(event.ts, event.id, 'workbench', key), kind: 'owner-request', key, subject, reason: forGoal ? 'a step toward a goal you marked active' : byRule ? 'a rule you adopted fired' : 'you asked', detail: { brief, ...(forGoal ? { goalId: payload.goalId!, stepId: payload.stepId! } : {}) }, openedAt: event.ts };
+    const counted = byRule ? { day: today, countToday: spent + 1 } : {};
+    return drain({ ...state, workbench: { ...state.workbench, ...counted, queue: [...queue, job] } }, event.ts);
   }
 
   if (event.type === 'work:repeat-stopped') {

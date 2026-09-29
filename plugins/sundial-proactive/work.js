@@ -122,15 +122,15 @@ const KIND_BRIEFS = {
   'rule-idea': () =>
     [
       'Find ONE thing the owner would want you to notice on your own from now on, and write it as a watch rule.',
-      'Look at their record for a pattern with a clear moment to speak: gnomon_routines, gnomon_anomalies, gnomon_open_commitments, gnomon_tickets, gnomon_current_context, and the corrections below. Good rules are specific to them: an app held too long in working hours, a ticket that finally gets a branch, a repo whose commands keep failing, a meeting title that needs prep. Never a rule that restates what Gnomon already says (agents waiting, failing streaks, shared checkouts).',
-      'Test it with gnomon_test_rule over 14 days. Tune it until it would have fired between 1 and 10 times in those 14 days, and read the examples: each must be worth an interruption. A rule that fires zero times or more than three times a day is not ready; if nothing is ready, shelve nothing.',
-      'Shelve it with the tested spec as `rule`: a title "Rule idea: <its title>", and a body of at most 120 words — what it watches and why in one line, how often it would have spoken (fired N times in 14 days) with two or three of its example sentences and their dates, and the line "Keep turns it on; Wrong throws it away."',
+      'Start with gnomon_mine_rules: candidates enumerated from their record, each already replayed on both halves of 30 days and cleared of what Gnomon already says. Pick the one the owner would most want, and write its title and its sentence in their words (the tool\'s are placeholders); keep its conditions and trigger unless the examples show a reason. If it returns nothing, you may look yourself (gnomon_routines, gnomon_open_commitments, gnomon_tickets and the corrections below) for a rule specific to them, never one that restates what Gnomon already says (agents waiting, failing streaks, shared checkouts).',
+      'Test the worded rule with gnomon_test_rule over 30 days and read the examples: each must be worth an interruption, and `holdout` must show fires in both halves. A rule that fires zero times or more than three times a day is not ready; if nothing is ready, shelve nothing.',
+      'Shelve it with the tested spec as `rule`: a title "Rule idea: <its title>", and a body of at most 120 words — what it watches and why in one line, how often it would have spoken (fired N times in 30 days, and in each half) with two or three of its example sentences and their dates, and the line "Keep turns it on; Wrong throws it away."',
     ].join(' '),
   'meeting-brief': (job) =>
     [
       `Prepare the owner for "${job.subject}" starting ${job.detail?.start ?? 'soon'}, with ${Array.isArray(job.detail?.attendees) ? job.detail.attendees.join(', ') : 'others'}.`,
       'For each person: gnomon_entity_history and gnomon_semantic_search for what the record holds on them and on the meeting title. If Obsidian or another connected service exposes READ tools, search them for the title too.',
-      'Shelve at most 150 words: who is in the room and how the owner knows them, the last time this topic came up, and open threads that touch it. If the record holds nothing on anyone, say that in one line and shelve nothing.',
+      'Shelve at most 150 words: who is in the room and how the owner knows them, the last time this topic came up, and open threads that touch it. When the job lists promises, lead with them as they are written there — what the owner owes these people and what they owe the owner. If the record holds nothing on anyone and there are no promises, say that in one line and shelve nothing.',
     ].join(' '),
 }
 
@@ -485,7 +485,7 @@ export function installWorkLoop(ctx, { home, cwd, isDisposed = () => false, onSh
     // Abort every child before dropping the parent reference. Without this a
     // reload left orphaned children spending budget against a plugin that no
     // longer exists to receive their results.
-    for (const [jobId, { controller }] of inFlight) controller.abort(`gnomon-proactive disposed while job ${jobId} was running`)
+    for (const [jobId, { controller }] of inFlight) controller.abort(`sundial-proactive disposed while job ${jobId} was running`)
     inFlight.clear()
     worker = null
   }

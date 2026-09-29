@@ -2,7 +2,7 @@
 //
 // The kernel's effect calls go through `@sundial/llm`'s `runAuditedLlmCall`,
 // which is record-then-patch against `llm_audit`. dsh's own model calls never
-// touch that transport — they go adapter-direct (gnomon-llm-tensorx) — so
+// touch that transport — they go adapter-direct (sundial-llm-openai) — so
 // until this module they left no ledger row at all, and the Ledger page's
 // claim that it holds "every call Gnomon makes" was false for the one call
 // the owner actually watches happen.
@@ -26,6 +26,7 @@
 import { createEventId } from '@sundial/helpers/event-id.js';
 import { classifyLlmError } from '@sundial/helpers/llm-error-class.js';
 import { estimateBilledPromptTokens } from '@sundial/helpers/llm-billed-tokens.js';
+import { ledgerModel } from '@sundial/helpers/llm-providers.js';
 
 /** dsh's ordinary conversation turn carries no `purpose`; it is the seat /ask held. */
 export const DEFAULT_AUDIT_PURPOSE = 'ask';
@@ -76,6 +77,20 @@ export function serializePrompt(options) {
   const parts = [];
   if (typeof options?.system === 'string' && options.system.length > 0) {
     parts.push(`[system] ${options.system}`);
+  }
+  // The tool schemas ride on every step and are invisible in the messages: name
+  // them, count them, and size them, so the ledger can say what they cost.
+  const tools = Array.isArray(options?.tools) ? options.tools : [];
+  if (tools.length > 0) {
+    const size = (tool) => {
+      try {
+        return JSON.stringify(tool).length;
+      } catch {
+        return String(tool?.name ?? '?').length; // a cyclic or BigInt schema must not fail the audit row
+      }
+    };
+    const chars = tools.reduce((sum, tool) => sum + size(tool), 0);
+    parts.push(`[tools] ${tools.length} · ${chars} chars: ${tools.map((tool) => tool?.name ?? '?').join(', ')}`);
   }
   for (const message of options?.messages ?? []) {
     parts.push(`[${message.role}] ${(message.content ?? []).map(renderBlock).join('')}`);
@@ -159,11 +174,12 @@ function readFinish(reason) {
  *
  * @param options.queries `@sundial/db`'s query module (recordLlmAudit/updateLlmAudit)
  * @param options.getMomentId () => the open moment's id or null — the one correlation id Gnomon has
+ * @param options.routeBaseUrl (routeId) => that route's base URL, so a hosted model with a bare id is recorded as remote (see `ledgerModel`)
  * @param options.newId id factory, overridable in tests
  * @param options.clock () => epoch ms, overridable in tests
  * @returns `begin(options)` → a per-call collector, or null when the row could not be opened
  */
-export function createLlmAuditRecorder({ queries, getMomentId, newId = createEventId, clock = () => Date.now() }) {
+export function createLlmAuditRecorder({ queries, getMomentId, routeBaseUrl = () => undefined, newId = createEventId, clock = () => Date.now() }) {
   return async function begin(options) {
     const id = newId();
     const startedAt = clock();
@@ -176,7 +192,7 @@ export function createLlmAuditRecorder({ queries, getMomentId, newId = createEve
         purpose: auditPurpose(options),
         // `model` is NOT NULL on the row and is the whole point of the chat
         // half of the ledger — it is how the owner sees which model answered.
-        model: options?.model ?? 'unknown',
+        model: ledgerModel(options?.model ?? 'unknown', options?.provider, routeBaseUrl(options?.provider)),
         prompt,
         requestedAt: new Date(startedAt).toISOString(),
       });

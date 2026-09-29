@@ -6,13 +6,14 @@
 // the parts of a developer's screen worth having — and capped at 40 lines with
 // no record of what fell off (17% of captures hit the cap). Nothing downstream
 // could measure any of that because the discarded lines never existed
-// (`enhancements/auditable-ocr-extraction`).
+// (`enhancements/auditable-ocr-extraction`, retired from the almanac once built).
 //
 // The helper now writes what Vision read. The signal holds that, sanitized
 // (`screenText`), under its own short retention; THIS decides what reaches the
 // moment. A filter change is a TypeScript edit; a filter variant can be tested
 // against recorded captures; and the application's identity is consulted,
-// which is what `enhancements/per-app-visual-context-extraction` asked for:
+// which is what `enhancements/per-app-visual-context-extraction` (also retired
+// once built) asked for:
 //
 //  1. what to DROP — box glyphs, log timestamps in a console (but not in a
 //     chat, where the timestamp IS the content), line-number gutters in an

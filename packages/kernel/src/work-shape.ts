@@ -275,11 +275,15 @@ function projectOf(key: string | null): string | null {
   return at === -1 ? key : key.slice(0, at);
 }
 
-/** A move between two branches of one project rather than between two projects. */
+/**
+ * A move between two branches of one project rather than between two projects.
+ * Rows before 2026-09-28 carry `name@branch` on both sides; later rows carry the
+ * project's id on both sides (the branches ride as `fromBranch`/`toBranch`), and
+ * a switch between projects never has the same project on both sides.
+ */
 function isBranchSwitch(row: ContextSwitchRow): boolean {
   const from = projectOf(row.fromProject);
-  const to = projectOf(row.toProject);
-  return from !== null && to !== null && from === to && row.fromProject !== row.toProject;
+  return from !== null && from === projectOf(row.toProject);
 }
 
 /** Round to `places`, returning a number rather than a string so the wire type stays numeric. */

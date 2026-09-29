@@ -23,7 +23,7 @@ case "$APP" in "$SUNDIAL_HOME"/*) echo "refusing to build into the data folder $
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-swiftc -O -o "$APP/Contents/MacOS/Sundial" "$REPO/apps/macos/Sundial.swift" -framework AppKit -framework WebKit -framework ServiceManagement
+swiftc -O -swift-version 5 -o "$APP/Contents/MacOS/Sundial" "$REPO/apps/macos/Sundial.swift" -framework AppKit -framework WebKit -framework ServiceManagement
 printf '%s\n' "$DSH_REPO" > "$APP/Contents/Resources/repo-path"
 printf '%s\n' "$NODE_BIN" > "$APP/Contents/Resources/node-path"
 

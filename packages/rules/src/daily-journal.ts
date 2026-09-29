@@ -17,7 +17,8 @@ interface DayBoundaryPayload {
  * Pure like its siblings: it just names the day; `performDailyJournalCall`
  * builds the context, calls the LLM (purpose `journal`), and writes the
  * `kind: 'daily'` knowledge entry. No retry on the background job — a missed
- * midnight run is recoverable via an on-demand regenerate (`gnomon journal`).
+ * midnight run was recoverable via the `gnomon journal` CLI regenerate; the CLI is
+ * gone and nothing emits the effect's `overwrite` any more.
  */
 export const dailyJournal: Rule = (state, event) => {
   if (event.type !== 'day:boundary') return { state, effects: [] };

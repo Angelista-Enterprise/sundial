@@ -1,4 +1,5 @@
 import type { FactProvenance } from '@sundial/kernel/types.js';
+import { isMeetingRoom } from '@sundial/helpers/person-name.js';
 
 /**
  * Whether a candidate's `canonicalName` is shaped like a name at all.
@@ -13,7 +14,7 @@ import type { FactProvenance } from '@sundial/kernel/types.js';
  * and the ambient-pointer producer removed, then the first full recompute
  * (`scripts/recompute-derived.ts`) resurrected all of it from the 17,234
  * historical candidate events, including a bare `)` as a topic, whole window
- * titles as topics, a meeting room (`RTM-1-08 (12)`) as a person, and the
+ * titles as topics, a meeting room (`HQ-2-14 (8)`) as a person, and the
  * redaction alias `person-0a1b2c3d4e` as a person.
  *
  * So "purge the rows, fix the producer" is not a durable remedy in an
@@ -26,7 +27,7 @@ import type { FactProvenance } from '@sundial/kernel/types.js';
  *
  * The two failure directions are not symmetric. A false REJECT costs one
  * candidate that will be re-observed on the next sighting, or can be stated
- * outright with `gnomon assert`. A false ACCEPT writes a durable belief into core
+ * outright with `gnomon_assert`. A false ACCEPT writes a durable belief into core
  * memory that decays but never disappears, and that an LLM will later read back
  * as fact. Given that asymmetry the heuristics below err toward rejecting, which
  * is the same reasoning `decisions/fact-lifecycle-policy` applies to promotion
@@ -38,7 +39,7 @@ import type { FactProvenance } from '@sundial/kernel/types.js';
  * tell so — distinguishing a team name from a personal name needs knowledge this
  * function does not have, and guessing would reject real names like
  * `Jean-Luc Picard`. Only SHAPE is checked. Semantic misclassification is a
- * separate problem, correctable by the owner through `gnomon assert`.
+ * separate problem, correctable by the owner through `gnomon_assert`.
  */
 
 /** Longer than any real person, project, tool or topic name; short enough to exclude window titles. */
@@ -145,7 +146,7 @@ function hardRejection(_kind: string, name: string): EntityNameRejection | null 
   if (trimmed.length === 0) return { reason: 'empty' };
   if (!/[a-z0-9]/i.test(trimmed)) return { reason: 'no alphanumeric characters' };
   // A `person-<hash>` alias is admitted as a person (decision 2026-09-04, closing
-  // `issues/attendees-with-no-display-name-cannot-become-people` with its option
+  // the attendees-with-no-display-name issue (now `decisions/derive-colleague-names-from-address`) with its option
   // 2): `sanitizeAtIngest` derives it deterministically from the address so the
   // same invitee is one entity across every meeting, and a stable, unreadable
   // name still accumulates `collaboratesOn` / `attendedMeetingWith` evidence. A
@@ -187,7 +188,7 @@ function shapeRejection(kind: string, name: string): EntityNameRejection | null 
   //
   // The accepted cost is a genuine `CI/CD`- or `TCP/IP`-shaped label being
   // rejected. That is the right side of the asymmetry — a rejected label returns
-  // on the next sighting or can be stated with `gnomon assert`, which bypasses
+  // on the next sighting or can be stated with `gnomon_assert`, which bypasses
   // this rule, whereas an accepted URL fragment is a permanent entity.
   if (trimmed.includes('/')) return { reason: 'contains a path separator — looks like a URL or path fragment' };
 
@@ -197,9 +198,11 @@ function shapeRejection(kind: string, name: string): EntityNameRejection | null 
   const closers = (trimmed.match(/[)\]]/g) ?? []).length;
   if (closers > openers) return { reason: 'unbalanced bracket — looks like a fragment' };
 
-  // A person's canonical name does not carry parenthetical qualifiers. This is
-  // what excludes the meeting room `RTM-1-08 (12)` without needing to know it is
-  // a room.
+  // A meeting room on an attendee list (`HQ-2-14 (8)`, `HQ-2-14`): the one
+  // room test every reader shares.
+  if (kind === 'person' && isMeetingRoom(trimmed)) return { reason: 'a meeting room, not a person' };
+
+  // A person's canonical name does not carry parenthetical qualifiers either.
   if (kind === 'person' && /[()[\]]/.test(trimmed)) return { reason: 'person name contains brackets' };
 
   if (kind === 'topic' || kind === 'tool') {

@@ -22,4 +22,12 @@ describe('mailTrack (J3.6)', () => {
     const [sample] = momentFanout.samples()[0];
     expect(momentFanout.build({ ...sample, mailSubjects: ['Standup notes'] }).state.mail_subjects_recent).toEqual(['Standup notes']);
   });
+
+  it('keeps what the owner sent: recipients and subject, bounded (UC1)', () => {
+    let state = createInitialState('d1');
+    state = mailTrack(state, ev('mail:sent', { recipients: [{ to: 'Mira Bakker' }, { to: 'person-ab12cd34ef' }], subject: 'The draft', timestamp: '2026-09-22T09:00:00.000Z' })).state;
+    expect(state.mail.sent).toEqual([{ to: ['Mira Bakker', 'person-ab12cd34ef'], subject: 'The draft', at: '2026-09-22T09:00:00.000Z' }]);
+    for (let i = 0; i < 30; i += 1) state = mailTrack(state, ev('mail:sent', { recipients: [], subject: `s${i}` }, `2026-09-22T10:${String(i).padStart(2, '0')}:00.000Z`)).state;
+    expect(state.mail.sent).toHaveLength(20);
+  });
 });

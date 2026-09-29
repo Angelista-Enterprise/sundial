@@ -117,7 +117,7 @@ export function reciprocalRankFusion(rankings: Array<Map<string, number>>, k = 6
 
   for (const [index, ranking] of rankings.entries()) {
     // A retriever's vote can be scaled: measured on the live corpus
-    // (`lab/measure-retrieval.mjs`, 2026-09-05), equal votes let the lexical
+    // (`lab/measure-retrieval.mjs`, 2026-09-05; removed in 9a6988c), equal votes let the lexical
     // pass overturn an exact semantic match — hit@1 on title queries fell from
     // 0.80 to 0.40 — so the semantic ranking carries the full vote and the
     // others a fraction, enough to lift a rare token the embedding cannot place.
@@ -137,7 +137,8 @@ export function reciprocalRankFusion(rankings: Array<Map<string, number>>, k = 6
 /**
  * How much the lexical retriever's vote should count for THIS query.
  *
- * Measured on the live corpus (`lab/measure-retrieval.mjs`, 2026-09-05): a
+ * Measured on the live corpus (`lab/measure-retrieval.mjs`, 2026-09-05; removed
+ * in 9a6988c, recoverable with `git show 9a6988c^:lab/measure-retrieval.mjs`): a
  * fixed lexical weight cannot serve both kinds of query. At equal votes,
  * rare-token queries (a ticket id, a branch slug) went from MRR 0.05 to 0.40
  * while exact prose queries (a title) fell from hit@1 0.80 to 0.40; at 0.3 the

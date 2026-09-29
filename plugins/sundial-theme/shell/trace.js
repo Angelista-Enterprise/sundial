@@ -86,6 +86,7 @@ export const DOING = {
   RunReflection: 'reflected on the day',
   RunFactExtraction: 'looked for facts',
   RunConversationExtraction: 'looked for facts in a conversation',
+  RunMeetingPromises: 'looked for promises in a meeting',
   RunRefutation: 'tried to disprove itself',
   RunBeliefAudit: 'audited its beliefs',
   RunAliasAlignment: 'looked for people it had counted twice',

@@ -14,6 +14,15 @@ describe('settingsTrack', () => {
     expect(s.settings.updatedAt).toBe('2026-09-12T10:00:00.000Z');
   });
 
+  it('keeps only known notice groups as quiet, in catalogue order, and leaves them when not named', () => {
+    let s = fold(createInitialState('d1'), ev({ quiet: ['promises', 'nonsense', 'agents', 'agents'] }));
+    expect(s.settings.quiet).toEqual(['agents', 'promises']);
+    s = fold(s, ev({ paper: 'dark' }, '2026-09-12T10:01:00.000Z'));
+    expect(s.settings.quiet).toEqual(['agents', 'promises']);
+    s = fold(s, ev({ quiet: [] }, '2026-09-12T10:02:00.000Z'));
+    expect(s.settings.quiet).toEqual([]);
+  });
+
   it('refuses a value outside the set, keeping what stood', () => {
     let s = fold(createInitialState('d1'), ev({ autonomy: 'notice', paper: 'dark' }));
     s = fold(s, ev({ autonomy: 'loud', paper: 'neon' }, '2026-09-12T10:01:00.000Z'));

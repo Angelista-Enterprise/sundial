@@ -28,10 +28,10 @@ describe('nightlyAliasAlignment — the exact leg', () => {
 
   it('J2.4 open half: a hashed person whose knownAs names a person exactly is a MergeEntity; a name with no slug, or the hash itself, is not', () => {
     const base = createInitialState('d1');
-    const state: KernelState = { ...base, memory: { ...base.memory, aliasNames: { 'person-cc88838ae5': 'Eva', 'person-c205ca11f2': 'Alex Morgan', 'person-000000': '', tomas: 'Thomas' } } };
+    const state: KernelState = { ...base, memory: { ...base.memory, aliasNames: { 'person-e5a0c1d2b3': 'Eva', 'person-c205ca11f2': 'Alex Morgan', 'person-000000': '', tomas: 'Thomas' } } };
     const { effects } = nightlyAliasAlignment(state, ev('day:boundary'));
     expect(effects.filter((e) => e.type === 'MergeEntity')).toEqual([
-      { type: 'MergeEntity', from: 'person:person-cc88838ae5', into: 'person:eva', alias: 'person-cc88838ae5', ts: TS },
+      { type: 'MergeEntity', from: 'person:person-e5a0c1d2b3', into: 'person:eva', alias: 'person-e5a0c1d2b3', ts: TS },
       { type: 'MergeEntity', from: 'person:person-c205ca11f2', into: 'person:alex-morgan', alias: 'person-c205ca11f2', ts: TS },
     ]);
   });

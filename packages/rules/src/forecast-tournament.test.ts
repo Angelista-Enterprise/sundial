@@ -10,6 +10,15 @@ const judges = (effects: Effect[]) => effects.filter((e) => e.type === 'Judge') 
 const records = (effects: Effect[]) => effects.filter((e) => e.type === 'RecordPrediction') as Extract<Effect, { type: 'RecordPrediction' }>[];
 
 describe('forecastTournament — return-today', () => {
+  it('the incumbent follows the live rate within a few cases, not the bench prior', () => {
+    const base = createInitialState('d1');
+    const lived = { ...base, predictions: { ...base.predictions, calibration: { ...base.predictions.calibration, 'return-today/base-rate': { n: 10, hits: 1, brierSum: 0 } } } };
+    // (1 + 0.5·2) / (10 + 2) — a live rate of 0.1 reads as 0.17, where the bench prior held it at 0.38.
+    expect(baseRateFor(lived, 'return-today')).toBeCloseTo(2 / 12, 3);
+    // The other targets keep their bench prior.
+    expect(baseRateFor(base, 'hour-fragmented')).toBeCloseTo(0.14, 3);
+  });
+
   it('leaving a project opens one bet with base-rate set and Jev asked; coming back resolves both as a hit', () => {
     const base = createInitialState('d1');
     const { state, effects } = forecastTournament(base, ev('event:context-switch', { fromProject: '~/p/a', toProject: '~/p/b', fromProcess: 'Code', toProcess: 'Arc' }));
@@ -18,7 +27,8 @@ describe('forecastTournament — return-today', () => {
     expect(bet.features).toMatchObject({ minutes_on_project_today: 0, sessions_on_project_today: 0, days_project_touched_last_14: 0 });
     const [judge] = judges(effects);
     expect(judge).toMatchObject({ purpose: 'forecast', questionSetId: 'forecast-return-today', metadata: { predictionId: bet.id } });
-    expect((judge.state as { historically_true_this_often: number }).historically_true_this_often).toBeCloseTo(0.853, 2);
+    // F1 — neutral before any live case, not the bench's 0.853.
+    expect((judge.state as { historically_true_this_often: number }).historically_true_this_often).toBeCloseTo(0.5, 2);
 
     const answered = forecastTournament(state, ev('judgement:result', { purpose: 'forecast', questionSetId: 'forecast-return-today', momentId: null, answers: { yes: { type: 'noul', noul: 0.91 } }, model: 'typesafe/jev-latest', latencyMs: 250, metadata: { predictionId: bet.id } })).state;
     expect(twins(answered)[0].forecasters.jev).toBe(0.91);

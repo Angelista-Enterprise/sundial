@@ -30,17 +30,15 @@ export interface GnomonTool<S extends z.ZodRawShape = z.ZodRawShape> {
   /**
    * Whether this tool is a pure read.
    *
-   * Declared rather than assumed because the boundary would matter eventually,
-   * and now does: `gnomon_show_view` (2026-08-15) is the first `false` — it
-   * moves the app the owner is looking at. The point of the flag is that the
-   * loop, the audit trail and any future confirmation gate can tell an action
-   * from a query mechanically, rather than by reading a name prefix and failing
-   * the first time someone names a tool badly.
+   * Declared rather than assumed so the loop, the audit trail and any future
+   * confirmation gate can tell an action from a query mechanically, rather
+   * than by reading a name prefix and failing the first time someone names a
+   * tool badly. Every kernel tool is `true` today; the one `false`
+   * (`gnomon_show_view`, which moved the app window) was deleted 2026-09-28.
    *
    * A `false` here is not a licence to reach outside the window.
    * `almanac/decisions/assistant-as-an-event-source` still holds: this
-   * assistant may speak, propose and claim, and the one sanctioned exception
-   * stops at this app's own edge. See `view-tools.ts`.
+   * assistant may speak, propose and claim.
    */
   readOnly: boolean;
   handler: (args: z.infer<z.ZodObject<S>>) => Promise<unknown>;

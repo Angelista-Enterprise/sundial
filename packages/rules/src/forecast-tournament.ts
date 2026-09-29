@@ -1,4 +1,5 @@
 import { deriveId } from '@sundial/helpers/derive-id.js';
+import { localDate as localDay, localHour, localWeekday as weekday } from '@sundial/helpers/local-day.js';
 import type { Effect, HourFragmentedPrediction, JudgementResultPayload, KernelState, ResolvedPrediction, Rule, TournamentPrediction } from '@sundial/kernel/types.js';
 import { bumpCalibration, clampProb, pastRate } from './forward-model.js';
 import { FORECAST_NOTE, forecastMeetingOverrun, forecastReturnToday } from './questions/forecast-targets.js';
@@ -43,18 +44,19 @@ const UTTERANCE_RING_MS = 20 * 60_000;
 const UTTERANCE_RING_MAX = 600;
 const TOUCHED_DAYS = 14;
 
-/** The bench's base rates, the prior each running rate is smoothed toward until it has its own thirty. */
-const BENCH_PRIOR: Record<string, number> = { 'return-today': 0.853, 'meeting-overrun': 0.576, 'hour-fragmented': 0.14 };
+/**
+ * The bench's base rates, the prior each running rate is smoothed toward until it has its own thirty.
+ * Except `return-today`: its bench rate (0.853) was nowhere near the live one
+ * (0.15, n=27), and at full weight it lost to a constant (Brier 0.325 vs 0.126).
+ * It starts at a neutral 0.5 with the weight of two cases (`PRIOR_WEIGHT`), so
+ * a handful of live resolutions set it.
+ */
+const BENCH_PRIOR: Record<string, number> = { 'return-today': 0.5, 'meeting-overrun': 0.576, 'hour-fragmented': 0.14 };
+const PRIOR_WEIGHT: Record<string, number> = { 'return-today': 2 };
 const SET_BY_TARGET = { 'return-today': forecastReturnToday, 'meeting-overrun': forecastMeetingOverrun } as const;
 /** The existing target's question for Jev; its set lives here because the rule that owns the target predates the registry. */
 export const HOUR_FRAGMENTED_QUESTION = 'Will the coming hour be fragmented — ten or more context switches rather than sustained work?';
 
-const localDay = (ts: string): string => {
-  const d = new Date(ts);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-};
-const localHour = (ts: string): number => new Date(ts).getHours();
-const weekday = (ts: string): number => new Date(ts).getDay();
 const isTwin = (p: KernelState['predictions']['open'][number]): p is TournamentPrediction => typeof p.kind === 'string' && p.kind.startsWith('tournament:');
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() !== '' ? v.trim() : null);
 
@@ -62,7 +64,8 @@ const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() !=
 export function baseRateFor(state: KernelState, target: string): number {
   const c = state.predictions.calibration[`${target}/base-rate`];
   const prior = BENCH_PRIOR[target] ?? 0.5;
-  return clampProb(((c?.hits ?? 0) + prior * SMOOTHING) / ((c?.n ?? 0) + SMOOTHING));
+  const weight = PRIOR_WEIGHT[target] ?? SMOOTHING;
+  return clampProb(((c?.hits ?? 0) + prior * weight) / ((c?.n ?? 0) + weight));
 }
 
 function judgeFor(state: KernelState, bet: TournamentPrediction, base: number): Effect[] {
@@ -131,7 +134,7 @@ export const forecastTournament: Rule = (state, event) => {
   let s = state;
   const effects: Effect[] = [];
   const t = s.predictions.tournament;
-  const day = localDay(event.ts);
+  const day = localDay(event.ts, state.config.timezone);
   const now = Date.parse(event.ts);
   const apply = (r: { state: KernelState; effects: Effect[] }) => {
     s = r.state;
@@ -203,7 +206,7 @@ export const forecastTournament: Rule = (state, event) => {
             createdAt: event.ts,
             resolveBy: null,
             about: `${from.split('/').pop()} · ${day}`,
-            features: { local_hour: localHour(event.ts), weekday: weekday(event.ts), minutes_on_project_today: Math.round(tally.minutes), sessions_on_project_today: tally.sessions, days_project_touched_last_14: (tt.touchedDays[from] ?? []).length },
+            features: { local_hour: localHour(event.ts, state.config.timezone), weekday: weekday(event.ts, state.config.timezone), minutes_on_project_today: Math.round(tally.minutes), sessions_on_project_today: tally.sessions, days_project_touched_last_14: (tt.touchedDays[from] ?? []).length },
           }),
         );
       }
@@ -232,7 +235,7 @@ export const forecastTournament: Rule = (state, event) => {
           createdAt: event.ts,
           resolveBy: new Date(end + OVERRUN_GRACE_MS).toISOString(),
           about: meeting.title,
-          features: { scheduled_minutes: Math.round((end - Date.parse(meeting.start)) / 60_000), local_hour_end: localHour(meeting.end), weekday: weekday(meeting.end), attendee_count: meeting.attendees.length, utterances_last_10_min: during.filter((u) => end - Date.parse(u) <= 10 * 60_000).length },
+          features: { scheduled_minutes: Math.round((end - Date.parse(meeting.start)) / 60_000), local_hour_end: localHour(meeting.end, state.config.timezone), weekday: weekday(meeting.end, state.config.timezone), attendee_count: meeting.attendees.length, utterances_last_10_min: during.filter((u) => end - Date.parse(u) <= 10 * 60_000).length },
         }),
       );
     }
@@ -250,7 +253,7 @@ export const forecastTournament: Rule = (state, event) => {
         createdAt: original.createdAt,
         resolveBy: null,
         about: `${original.day} ${String(original.hour).padStart(2, '0')}:00`,
-        features: { local_hour: original.hour, weekday: weekday(original.createdAt), previous_hour_fragmented: original.prevState === 'prev-frag' },
+        features: { local_hour: original.hour, weekday: weekday(original.createdAt, state.config.timezone), previous_hour_fragmented: original.prevState === 'prev-frag' },
       }),
     );
   }

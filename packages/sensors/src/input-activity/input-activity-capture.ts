@@ -7,6 +7,10 @@ export interface InputActivitySnapshot {
   mouseClickCount: number;
   mouseMoveCount: number;
   scrollCount: number;
+  /** `CGPreflightListenEventAccess()`: the Input Monitoring grant. Absent from an older helper. */
+  listenAccessGranted?: boolean;
+  /** The event tap is installed and enabled. Absent from an older helper. */
+  tapActive?: boolean;
 }
 
 const STALE_MS = 5000;
@@ -24,6 +28,8 @@ export function readInputActivitySidecar(): InputActivitySnapshot | null {
       mouseClickCount: parsed.mouseClickCount ?? 0,
       mouseMoveCount: parsed.mouseMoveCount ?? 0,
       scrollCount: parsed.scrollCount ?? 0,
+      ...(typeof parsed.listenAccessGranted === 'boolean' ? { listenAccessGranted: parsed.listenAccessGranted } : {}),
+      ...(typeof parsed.tapActive === 'boolean' ? { tapActive: parsed.tapActive } : {}),
     };
   } catch {
     return null;

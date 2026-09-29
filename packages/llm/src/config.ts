@@ -1,9 +1,11 @@
+import { loadSundialConfig } from '@sundial/helpers/sundial-config.js';
+import { DEFAULT_PROVIDER, providerKeyEnv } from '@sundial/helpers/llm-providers.js';
 import type { LlmPurpose } from './types.js';
 
 /**
- * Deliberately simplified vs WCS's `@wcs/llm`: no multi-endpoint fallback or
- * task-routing config (`aiConfig`/`resolveTaskEndpoints`). Gnomon has one
- * configured ENDPOINT and one MODEL on it, full stop.
+ * Deliberately simplified vs WCS's `@wcs/llm`: no multi-endpoint fallback.
+ * The `.env` endpoint is the default; `config.json` `llm.use` can send a
+ * purpose, or all of them, to one of the `llm.providers` instead.
  *
  * Between 2026-09-06 and 2026-09-09 there were two: `intent` was routed to
  * `deepseek/deepseek-v4-flash-0731` on the grounds that the most frequent call
@@ -22,6 +24,8 @@ import type { LlmPurpose } from './types.js';
  * there.
  */
 export interface LlmConfig {
+  /** The route that serves it: `openai` (the `.env` model) or a `config.json` provider id. */
+  route: string;
   baseUrl: string;
   apiKey: string | null;
   /** The model every purpose runs on. */
@@ -34,7 +38,19 @@ export const DEFAULT_MODEL = 'qwen/qwen3.8-flash-next';
 /** The hosted endpoint the two defaults below are model ids FOR. */
 const DEFAULT_MODEL_HOST = 'api.tensorx.ai';
 
-export function getLlmConfig(): LlmConfig | null {
+// config.json is read once: a change to it waits for a restart, like every other setting.
+let llmFile: ReturnType<typeof loadSundialConfig>['llm'] | null = null;
+
+/**
+ * The endpoint and model for one purpose: `llm.use[purpose]`, else
+ * `llm.use.default`, else the `.env` model. A route id that names no saved
+ * provider falls through to the `.env` model rather than stopping the call.
+ */
+export function getLlmConfig(purpose?: LlmPurpose): LlmConfig | null {
+  llmFile ??= loadSundialConfig().llm;
+  const id = (purpose && llmFile.use[purpose]) || llmFile.use.default;
+  const provider = llmFile.providers.find((p) => p.id === id);
+  if (provider) return { route: provider.id, baseUrl: provider.baseUrl, apiKey: process.env[providerKeyEnv(provider.id)] || null, model: provider.model };
   const baseUrl = process.env.SUNDIAL_LLM_BASE_URL;
   if (!baseUrl) return null;
   const model = process.env.SUNDIAL_LLM_MODEL;
@@ -45,6 +61,7 @@ export function getLlmConfig(): LlmConfig | null {
   // reported the LLM as configured and the journal silently produced nothing.
   if (!model && !baseUrl.includes(DEFAULT_MODEL_HOST)) return null;
   return {
+    route: DEFAULT_PROVIDER,
     baseUrl,
     apiKey: process.env.SUNDIAL_LLM_API_KEY ?? null,
     model: model || DEFAULT_MODEL,
@@ -56,16 +73,12 @@ export function isLlmConfigured(): boolean {
 }
 
 /**
- * Which model a purpose runs on. `null` when no endpoint is configured.
- *
- * Every purpose gets the same answer, by decision (owner, 2026-09-22, J1.10):
- * `qwen3.8-flash-next` for every kernel purpose, no per-purpose routing. The
- * one place a different model runs is a chat THREAD the owner switched by
- * hand (the model chip in the shell), and the Ledger prices that call by the
- * id that served it. The seam is kept rather than inlined: every caller
- * already asks this question, and the `null` an unconfigured endpoint returns
+ * Which model a purpose runs on. `null` when no endpoint is configured, which
  * is what stops a `ScheduleLLM` from dispatching.
+ *
+ * One model for every purpose was the owner's decision on 2026-09-22; since
+ * 2026-09-29 the owner can mix providers per purpose (`llm.use`, set on /setup).
  */
-export function modelForPurpose(_purpose: LlmPurpose): string | null {
-  return getLlmConfig()?.model ?? null;
+export function modelForPurpose(purpose: LlmPurpose): string | null {
+  return getLlmConfig(purpose)?.model ?? null;
 }

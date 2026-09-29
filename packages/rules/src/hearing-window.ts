@@ -1,3 +1,4 @@
+import { NOT_A_CALL_APPS } from '@sundial/kernel/watch.js';
 import type { HearingReason, HearingWindow, Rule } from '@sundial/kernel/types.js';
 
 /**
@@ -43,7 +44,7 @@ const CALL_GRACE_MS = 2 * 60_000;
  * for the separate reason the AV sensor's own notes give: system audio plumbing
  * holds the device without anyone being in a conversation.
  */
-const NOT_A_CALL = ['sundial', 'gnomon', 'coreaudiod'];
+const NOT_A_CALL = NOT_A_CALL_APPS;
 
 /** How long a manual START listens for, when the owner names no length. */
 const MANUAL_MS = 60 * 60_000;
@@ -119,6 +120,10 @@ function open(state: Parameters<Rule>[0], reason: HearingReason, untilMs: number
  *   This is the case the calendar cannot see: an unscheduled huddle, someone
  *   ringing, a call that runs long past its slot.
  *
+ * Both are OFF unless `audio.autoMeetings` (`state.config.autoHearMeetings`):
+ * nobody else in the room is told, so by default only the owner's Listen opens
+ * the microphone. The window still closes on its own below.
+ *
  * The window CLOSES on a clock tick rather than on an event, because "nothing
  * is happening" produces no events by definition — that is what the old
  * always-on design got wrong in the other direction.
@@ -140,6 +145,9 @@ export const hearingWindow: Rule = (state, event) => {
     }
     return { state: { ...state, hearing: { ...ASLEEP, mutedUntil: new Date(now + MUTE_MS).toISOString() } }, effects: [] };
   }
+
+  const inferred = event.type === 'calendar:active' || event.type === 'calendar:upcoming' || event.type === 'media:state';
+  if (inferred && state.config.autoHearMeetings !== true) return { state, effects: [] };
 
   if (event.type === 'calendar:active') {
     const meeting = (event.payload as { event?: CalendarEvent }).event;

@@ -172,6 +172,10 @@ describe('Claude hands', () => {
     expect(flag('--setting-sources')).toBe('project')
     expect(flag('--max-budget-usd')).toBe('0.5')
     expect(opts.cwd).toBe(`${home}/.daemon/hands`)
+    // The child gets no install variables (hardening S1): its MCP server has its home in --mcp-config.
+    expect(opts.env.SUNDIAL_HOME).toBeUndefined()
+    expect(opts.env.DSH_HOME).toBeUndefined()
+    expect(opts.env.PATH).toBe(process.env.PATH)
     expect(flag('-p')).toContain('Job id: job-1')
     // Not the dsh child.
     expect(subagents.calls).toHaveLength(0)

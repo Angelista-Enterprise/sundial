@@ -148,7 +148,7 @@ describe('gnomon_call (dispatch)', () => {
   });
 
   /**
-   * The safety property. `gnomon-actions` gates its write tools BY NAME at the
+   * The safety property. `sundial-actions` gates its write tools BY NAME at the
    * tools seam. A dispatcher that could invoke one of those by name would be a
    * hole straight through the permission gate, so the deferred set must never
    * contain a gated tool — today it cannot, because the gated tools live in a
@@ -164,11 +164,8 @@ describe('gnomon_call (dispatch)', () => {
     }
   });
 
-  it('is never dispatched in parallel, because the deferred set is not all read-only', () => {
-    // gnomon_show_view is deferred and is not readOnly. One flag covers the
-    // whole door, so the door is closed.
-    const { cold, dispatch } = build();
-    expect(cold.some((t) => t.readOnly === false)).toBe(true);
+  it('is never dispatched in parallel: one flag covers whatever comes through the door', () => {
+    const { dispatch } = build();
     expect(dispatch.isConcurrencySafe()).toBe(false);
   });
 });

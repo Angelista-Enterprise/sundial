@@ -137,6 +137,10 @@ export function factEvidence(fact) {
   else out.push('inferred')
   if (provenance !== 'inference' && seen >= 1) out.push(`seen ${seen} time${seen === 1 ? '' : 's'}`)
   if (typeof fact?.confidence === 'number') out.push(`${Math.round(fact.confidence)}% sure`)
+  // How the belief has done against what the owner then did — the server's
+  // line ("right 12 of 13", "right 3 of 4, gathering" under twenty outcomes),
+  // so the threshold lives in one place (`fact-tests.ts`).
+  if (typeof fact?.record?.line === 'string') out.push(fact.record.line)
   const from = day(fact?.validFrom ?? fact?.createdAt)
   if (fact?.validTo) out.push(`held ${from ? `${from} ` : ''}until ${day(fact.validTo)}`)
   else if (from) out.push(`since ${from}`)

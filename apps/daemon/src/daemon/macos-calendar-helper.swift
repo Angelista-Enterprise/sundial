@@ -6,6 +6,14 @@
 // Usage: sundial-calendar-helper [--hours N] [--past-days D]  (default: 24 hours lookahead, 12 hours back)
 //        sundial-calendar-helper --create --title T --start ISO8601 --end ISO8601
 //                               [--calendar NAME] [--location L] [--notes N]
+//        sundial-calendar-helper --reminders
+//        sundial-calendar-helper --create-reminder --title T [--due ISO8601] [--notes N]
+//
+// `--reminders` (UC1) lists the owner's open reminders and the ones completed
+// in the last fortnight: title, due date, whether and when it was completed.
+// Never notes, never a location. It asks for Reminders access, a grant of its
+// own, separate from Calendars. `--create-reminder` is the second write, and
+// like `--create` it is reached only through a gated outward tool.
 //
 // `--create` is the one WRITE this helper performs. It saves a single event to
 // the named calendar (or the default one) and prints the saved event as JSON.
@@ -28,7 +36,7 @@ import Foundation
 /// side receives a bare address, `sanitizeAtIngest` hashes it to a
 /// `person-<hash>` alias, and the owner's own record cannot say who they met —
 /// 25 aliases on the live record, and seven unanswerable "who is
-/// person-c7e3af19c4?" questions put to the owner on 2026-09-09 as a result.
+/// person-9f8e7d6c5b?" questions put to the owner on 2026-09-09 as a result.
 ///
 /// A denial is not an error. This helper's job is the calendar; Contacts is an
 /// improvement on the names it reports, so every failure path returns nil and
@@ -273,10 +281,124 @@ func create(store: EKEventStore, args: [String]) {
     }
 }
 
+// MARK: - Reminders (UC1)
+
+struct ReminderItem: Codable {
+    let id: String
+    let title: String
+    let due: String?
+    let completed: Bool
+    let completedAt: String?
+    let list: String
+}
+
+struct RemindersOutput: Codable {
+    let reminders: [ReminderItem]
+    let created: ReminderItem?
+    let error: String?
+    let timestamp: String
+    let accessGranted: Bool
+}
+
+func printReminders(_ value: RemindersOutput) {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    if let data = try? encoder.encode(value), let str = String(data: data, encoding: .utf8) { print(str) }
+}
+
+/// Reminders access, asked once and bounded for the same reason Calendars is:
+/// a background poll has nobody to answer the prompt.
+func requestRemindersAccess(_ store: EKEventStore) -> Bool {
+    let gate = DispatchSemaphore(value: 0)
+    var granted = false
+    if #available(macOS 14.0, *) {
+        store.requestFullAccessToReminders { ok, _ in
+            granted = ok
+            gate.signal()
+        }
+    } else {
+        store.requestAccess(to: .reminder) { ok, _ in
+            granted = ok
+            gate.signal()
+        }
+    }
+    return gate.wait(timeout: .now() + 20) == .success && granted
+}
+
+func encodeReminder(_ r: EKReminder) -> ReminderItem {
+    let due = r.dueDateComponents.flatMap { Calendar.current.date(from: $0) }
+    return ReminderItem(
+        id: r.calendarItemIdentifier,
+        title: r.title ?? "",
+        due: due.map { isoFormatter.string(from: $0) },
+        completed: r.isCompleted,
+        completedAt: r.completionDate.map { isoFormatter.string(from: $0) },
+        list: r.calendar?.title ?? "Reminders"
+    )
+}
+
+/// The reminders EventKit returns for one predicate, bounded — `fetchReminders` is callback-only.
+func fetch(_ store: EKEventStore, _ predicate: NSPredicate, limit: Int) -> [ReminderItem] {
+    let gate = DispatchSemaphore(value: 0)
+    var out: [ReminderItem] = []
+    store.fetchReminders(matching: predicate) { found in
+        out = (found ?? []).prefix(limit).map(encodeReminder)
+        gate.signal()
+    }
+    _ = gate.wait(timeout: .now() + 15)
+    return out
+}
+
+func listReminders(store: EKEventStore) {
+    let now = Date()
+    let open = fetch(store, store.predicateForIncompleteReminders(withDueDateStarting: nil, ending: nil, calendars: nil), limit: 100)
+    let since = Calendar.current.date(byAdding: .day, value: -14, to: now)!
+    let done = fetch(store, store.predicateForCompletedReminders(withCompletionDateStarting: since, ending: now, calendars: nil), limit: 100)
+    printReminders(RemindersOutput(reminders: open + done, created: nil, error: nil, timestamp: isoFormatter.string(from: now), accessGranted: true))
+}
+
+func createReminder(store: EKEventStore, args: [String]) {
+    let now = isoFormatter.string(from: Date())
+    guard let title = option("--title", in: args), !title.isEmpty else {
+        printReminders(RemindersOutput(reminders: [], created: nil, error: "--title is required", timestamp: now, accessGranted: true)); return
+    }
+    guard let list = store.defaultCalendarForNewReminders() else {
+        printReminders(RemindersOutput(reminders: [], created: nil, error: "no default Reminders list", timestamp: now, accessGranted: true)); return
+    }
+    let reminder = EKReminder(eventStore: store)
+    reminder.calendar = list
+    reminder.title = title
+    reminder.notes = option("--notes", in: args)
+    if let dueText = option("--due", in: args) {
+        guard let due = parseDate(dueText) else {
+            printReminders(RemindersOutput(reminders: [], created: nil, error: "--due must be an ISO-8601 date", timestamp: now, accessGranted: true)); return
+        }
+        reminder.dueDateComponents = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: due)
+        reminder.addAlarm(EKAlarm(absoluteDate: due))
+    }
+    do {
+        try store.save(reminder, commit: true)
+        printReminders(RemindersOutput(reminders: [], created: encodeReminder(reminder), error: nil, timestamp: now, accessGranted: true))
+    } catch {
+        printReminders(RemindersOutput(reminders: [], created: nil, error: "EventKit refused: \(error.localizedDescription)", timestamp: now, accessGranted: true))
+    }
+}
+
 func main() {
     // Before touching EventKit: make sure the process asking is this helper,
     // not whatever started it. Returns immediately in the disclaimed copy.
     reexecDisclaimed()
+
+    // UC1: Reminders is its own grant and its own output; it never asks for Calendars.
+    if CommandLine.arguments.contains("--reminders") || CommandLine.arguments.contains("--create-reminder") {
+        let store = EKEventStore()
+        guard requestRemindersAccess(store) else {
+            printReminders(RemindersOutput(reminders: [], created: nil, error: "Reminders access not granted", timestamp: isoFormatter.string(from: Date()), accessGranted: false))
+            return
+        }
+        if CommandLine.arguments.contains("--create-reminder") { createReminder(store: store, args: CommandLine.arguments) } else { listReminders(store: store) }
+        return
+    }
 
     var lookaheadHours = 24
     let args = CommandLine.arguments

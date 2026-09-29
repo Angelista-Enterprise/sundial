@@ -21,13 +21,51 @@ export type EffectJournalStatus = 'started' | 'completed' | 'indeterminate' | 'f
  * row written after it (outcome known). See `kernel/effect-delivery.ts`.
  */
 export async function getEffectJournalStatus(eventId: string, effectIndex: number): Promise<EffectJournalStatus | null> {
+  return (await getEffectJournalEntry(eventId, effectIndex))?.status ?? null;
+}
+
+/**
+ * The journal row for one effect: its status and the rule that asked for it
+ * (`null` on rows from before attribution). The row is keyed by position only,
+ * so a deploy that changes which effects an event yields (a rule added,
+ * removed or reordered) puts a different effect at the same index: the rule
+ * name is how the executor tells a replay of the same effect from a shift.
+ */
+export async function getEffectJournalEntry(eventId: string, effectIndex: number): Promise<{ status: EffectJournalStatus; ruleName: string | null } | null> {
+  const db = getDb();
+  const rows = await db
+    .select({ status: appliedEffects.status, ruleName: appliedEffects.ruleName })
+    .from(appliedEffects)
+    .where(and(eq(appliedEffects.eventId, eventId), eq(appliedEffects.effectIndex, effectIndex)))
+    .limit(1);
+  return rows.length > 0 ? { status: rows[0].status as EffectJournalStatus, ruleName: rows[0].ruleName ?? null } : null;
+}
+
+/**
+ * Whether this event already completed the same effect (same rule, same
+ * detail) at any index. After a shift, the effect's own completed row sits at
+ * a neighbouring index; this is how a replay tells "moved" from "never run".
+ */
+export async function effectCompletedElsewhere(eventId: string, ruleName: string, effectDetail: string): Promise<boolean> {
   const db = getDb();
   const rows = await db
     .select({ status: appliedEffects.status })
     .from(appliedEffects)
-    .where(and(eq(appliedEffects.eventId, eventId), eq(appliedEffects.effectIndex, effectIndex)))
+    .where(and(eq(appliedEffects.eventId, eventId), eq(appliedEffects.ruleName, ruleName), eq(appliedEffects.effectDetail, effectDetail), eq(appliedEffects.status, 'completed')))
     .limit(1);
-  return rows.length > 0 ? (rows[0].status as EffectJournalStatus) : null;
+  return rows.length > 0;
+}
+
+/**
+ * A shifted row (see `getEffectJournalEntry`) now belongs to another effect:
+ * start it over under the new attribution, its old failure count with it.
+ */
+export async function restartShiftedEffect(eventId: string, effectIndex: number, trigger: MarkEffectAppliedTrigger): Promise<void> {
+  const db = getDb();
+  await db
+    .update(appliedEffects)
+    .set({ status: 'started', appliedAt: new Date().toISOString(), ruleName: trigger.ruleName, eventType: trigger.eventType, effectDetail: trigger.effectDetail, failures: 0, lastError: null, emittedEventId: null })
+    .where(and(eq(appliedEffects.eventId, eventId), eq(appliedEffects.effectIndex, effectIndex)));
 }
 
 export interface MarkEffectAppliedTrigger {

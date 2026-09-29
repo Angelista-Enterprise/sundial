@@ -67,4 +67,13 @@ describe('idleTrack', () => {
     expect(next).toBe(state);
     expect(effects).toEqual([]);
   });
+
+  it('keeps the last window with real input, for the wall-clock break (U2-F1)', () => {
+    let state = createInitialState('d1');
+    state = idleTrack(state, activityEvent('e0', tsAt(0), { keyDownCount: 2 })).state;
+    for (let i = 1; i < 40; i++) state = idleTrack(state, activityEvent(`e${i}`, tsAt(i))).state;
+    expect(state.lifeEvent.idle.lastActiveAt).toBe(tsAt(0));
+    state = idleTrack(state, activityEvent('e40', tsAt(40), { mouseMoveCount: 1 })).state;
+    expect(state.lifeEvent.idle.lastActiveAt).toBe(tsAt(40));
+  });
 });

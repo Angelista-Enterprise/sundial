@@ -66,8 +66,8 @@ export function momentFanoutState(input: MomentFanoutInput): Record<string, unkn
     typing_events: r.typingEventCount ?? 0,
     input_events: r.inputEventCount ?? 0,
   };
-  // First-party evidence, and the one sentence-shaped field: the owner said
-  // what they were doing. Dutch stays Dutch (O1: same pick 26/30, no translation).
+  // The one sentence-shaped field: speech heard near the Mac, by anyone, or
+  // noise whisper transcribed. Dutch stays Dutch (O1: same pick 26/30, no translation).
   if (r.spokenExcerpt) state.heard_aloud = clip(r.spokenExcerpt);
   // J3.5: the notes the owner edited today, as names. Evidence only — adding a
   // `note` option to `subject` would be a new question id (law 4) and needs its bench.

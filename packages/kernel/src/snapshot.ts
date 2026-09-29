@@ -27,9 +27,8 @@ export interface LoadedSnapshot {
  * KernelState` cast — found missing during Phase 6 live verification: a
  * snapshot written before a phase adds a new top-level `KernelState` field
  * (here, Phase 5's `retention`) genuinely lacks that key, and every caller
- * of this function (not just the daemon's own boot path, which already
- * called `hydrateSnapshot` separately) needs the same backfill, including
- * CLI commands like `gnomon status` that read a snapshot without ever
+ * of this function (not just the kernel runtime's boot path) needs the same
+ * backfill, including the read tools that read a snapshot without ever
  * folding it through `reduce()`. `device.id` comes from the persisted
  * state itself — a snapshot always has one, from whatever process wrote it.
  */

@@ -101,7 +101,7 @@ describe('the backfill skips a question the owner called wrong', () => {
 
   // If the question was wrong, its answer is unlikely to hold a fact, and
   // asking a model to find one is spending a call to argue with them. The live
-  // case: `owner-ask:who-person-35941f3bc4`, answered "I dont know, we need to
+  // case: `owner-ask:who-person-4b3c2d1e0f`, answered "I dont know, we need to
   // handle this in code so you you ask me".
   it('passes over a `wrong` ask and takes the next one', async () => {
     await upsertOwnerAsk(ask({ id: 'bad', answeredAt: '2026-09-09T14:22:00.000Z' }));

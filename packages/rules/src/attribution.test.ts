@@ -146,7 +146,7 @@ describe('resolveAttribution — P1 project rules', () => {
 
   it('honors a rule confidence override and titleContains', () => {
     const state = withRules(withKnown(), [{ titleContains: 'atlassian.net', project: 'jira', confidence: 'certain' }]);
-    const a = resolveAttribution(state, { processName: 'Google Chrome', windowTitle: 'PL-403 - studio-nl.atlassian.net', documentPath: null });
+    const a = resolveAttribution(state, { processName: 'Google Chrome', windowTitle: 'KIT-403 - studio-nl.atlassian.net', documentPath: null });
     expect(a).toEqual({ projectId: 'named:jira', source: 'rule-match', confidence: 'certain' });
   });
 

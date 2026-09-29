@@ -13,7 +13,8 @@ import { noticeContext, wakeupPrompt } from './notice-message.js'
  * @param notifyNative - posts a native OS banner. PHASIC ONLY, and a no-op
  *   unless the owner enabled it. A tonic notice is ambient context by
  *   definition; a banner for one would be an interruption the gate never
- *   priced.
+ *   priced. Only when the payload's `route` is not `phone`.
+ * @param notifyPhone - posts to ntfy. PHASIC ONLY, on every route; on `mac` only while `pushAtMac`.
  * @param log / warn - injected for assertion in tests.
  */
 /**
@@ -31,7 +32,7 @@ import { noticeContext, wakeupPrompt } from './notice-message.js'
  */
 const NOTICE_CHANNELS = new Set(['phasic-notice', 'tonic-notice'])
 
-export function createDelivery({ getCompanion, onDropCompanion, isDisposed = () => false, notifyNative, log = console.log, warn = console.warn }) {
+export function createDelivery({ getCompanion, onDropCompanion, isDisposed = () => false, notifyNative, notifyPhone, pushAtMac = true, log = console.log, warn = console.warn }) {
   // One promise chain. Two notices admitted in the same tick would otherwise
   // race to create the companion, producing two agents over one session id.
   let queue = Promise.resolve()
@@ -61,12 +62,18 @@ export function createDelivery({ getCompanion, onDropCompanion, isDisposed = () 
     const phasic = channel === 'phasic-notice'
     companion.inject(noticeContext(payload, phasic ? 'phasic' : 'tonic'))
     if (phasic) {
-      companion.followup(wakeupPrompt(payload))
+      // A plain notice (a watch rule marked plain, UC4 §10) is its own sentence: banner and push, no model turn.
+      if (payload.plain !== true) companion.followup(wakeupPrompt(payload))
       // Second channel, not a second decision. The turn above already happened;
       // the banner only makes it visible when no chat window is open. A
       // notifier that throws must not cost the owner the turn they were owed.
+      // lane D — #6: the gate's route says where. ntfy is the owner's voice, so
+      // every route pushes unless the owner chose banner-only at the Mac
+      // (`notifications.pushAtMac: false`); `phone` (away) skips the banner.
+      const route = payload.route
+      if (route !== 'mac' || pushAtMac) notifyPhone?.(payload)
       try {
-        notifyNative?.(payload)
+        if (route !== 'phone') notifyNative?.(payload)
       } catch (error) {
         warn(`[sundial-proactive] native notify failed: ${error instanceof Error ? error.message : String(error)}`)
       }

@@ -31,7 +31,7 @@ export function tabKey(snapshot: BrowserSnapshot): string {
  * Reads the helper's snapshot file each poll (the helper is kept alive by the
  * supervisor and spawned on the first poll). Emits `browser:tab` on a change of
  * (browser, origin+path) and `browser:status` when authorization flips, so
- * `gnomon doctor` can tell "no browser open" from "the owner never clicked
+ * the sensor health check can tell "no browser open" from "the owner never clicked
  * Allow". The URL is stripped of its query TWICE — the helper never writes one,
  * and `stripUrlQuery` applies the owner's redaction tier on top (tier 3 keeps
  * the origin alone). A sensitive process (the redaction policy's list) is

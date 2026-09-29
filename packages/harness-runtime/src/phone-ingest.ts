@@ -2,8 +2,8 @@
  * Phone ingest — a loopback-only HTTP listener replacing the daemon's
  * `POST /ingest/phone` route (apps/daemon/src/daemon/api/routes/ingest.ts)
  * for the harness era. Decision (PLAN.md Phase 3): a dedicated node:http
- * server on port 8767 (the old daemon owned 8765; that port is now the
- * legacy-daemon liveness probe in sundial-db, so it must stay dark), bound
+ * server on port 8767 (the old daemon owned 8765, and sundial-db probed it as
+ * the legacy daemon's signature until 9a6988c; keep it dark), bound
  * STRICTLY to 127.0.0.1 — the phone reaches it via Tailscale Serve →
  * loopback, never a LAN bind.
  *

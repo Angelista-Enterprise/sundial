@@ -9,7 +9,8 @@ vi.mock('@sundial/db/index.js', () => ({
 
 const callChatCompletion = vi.fn();
 vi.mock('./transport.js', () => ({ callChatCompletion: (...args: unknown[]) => callChatCompletion(...args) }));
-vi.mock('./config.js', () => ({ modelForPurpose: () => 'qwen/qwen3.8-flash-next' }));
+let configured = { model: 'qwen/qwen3.8-flash-next', baseUrl: 'https://api.tensorx.ai/v1' };
+vi.mock('./config.js', () => ({ modelForPurpose: () => configured.model, getLlmConfig: () => configured }));
 
 const { runAuditedLlmCall } = await import('./audited-call.js');
 const { auditIdOf } = await import('./types.js');
@@ -65,5 +66,42 @@ describe('retry lineage', () => {
     expect(second.attempt).toBe(2);
     expect(second.parentCallId).toBe(first.id);
     expect(second.id).not.toBe(first.id);
+  });
+});
+
+describe('the model the ledger records', () => {
+  it('namespaces a bare hosted id by its route, so it is priced as remote', async () => {
+    configured = { model: 'gpt-5', baseUrl: 'https://api.openai.com/v1' };
+    callChatCompletion.mockResolvedValueOnce({ content: 'hi', statusCode: 200, promptTokens: 9, completionTokens: 1, totalTokens: 10, toolCalls: [], finishReason: 'stop' });
+    await runAuditedLlmCall(options);
+    expect(recordLlmAudit.mock.calls[0][0].model).toBe('openai/gpt-5');
+    // What is sent to the provider is still its own id.
+    expect(callChatCompletion.mock.calls[0][1].model).toBe('gpt-5');
+    configured = { model: 'qwen/qwen3.8-flash-next', baseUrl: 'https://api.tensorx.ai/v1' };
+  });
+});
+
+// lane H (H3)
+describe('a refused call keeps its status', () => {
+  it('writes the HTTP status on the failed row and reports the refusal once', async () => {
+    const { setLlmOutcomeListener } = await import('./outcome.js');
+    const seen: unknown[] = [];
+    setLlmOutcomeListener((o) => seen.push(o));
+    callChatCompletion.mockRejectedValueOnce(Object.assign(new Error('LLM endpoint returned 401: no'), { status: 401 }));
+
+    await runAuditedLlmCall(options).catch(() => undefined);
+    setLlmOutcomeListener(null);
+
+    const [, patch] = updateLlmAudit.mock.calls[0];
+    expect(patch.statusCode).toBe(401);
+    expect(patch.errorClass).toBe('http-4xx');
+    expect(seen).toEqual([{ provider: 'openai', label: 'TensorX', ok: false, statusCode: 401 }]);
+  });
+
+  it('a network failure has no status', async () => {
+    callChatCompletion.mockRejectedValueOnce(new TypeError('fetch failed'));
+    await runAuditedLlmCall(options).catch(() => undefined);
+    const [, patch] = updateLlmAudit.mock.calls[0];
+    expect(patch.statusCode).toBeUndefined();
   });
 });

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { getDb, resetDb } from '../db-client.js';
-import { getEffectJournalStatus, markEffectStarted, markEffectCompleted, markEffectIndeterminate, markEffectFailed, markEffectEmitted, getRecentRuleTriggers } from './applied-effects.js';
+import { getEffectJournalEntry, getEffectJournalStatus, restartShiftedEffect, markEffectStarted, markEffectCompleted, markEffectIndeterminate, markEffectFailed, markEffectEmitted, getRecentRuleTriggers } from './applied-effects.js';
 
 async function setupTestDb() {
   resetDb();
@@ -206,5 +206,25 @@ describe('a failure, and the emit edge (K0.5)', () => {
     await markEffectCompleted('e3', 0);
     const [row] = await getRecentRuleTriggers(1);
     expect(row.emittedEventId).toBe('child-1');
+  });
+});
+
+describe('a journal shift (hardening S6)', () => {
+  beforeEach(setupTestDb);
+
+  it('reads the rule beside the status, and a shifted row starts over under its new rule', async () => {
+    await markEffectStarted('e1', 0, { ruleName: 'oldRule', eventType: 'x', effectDetail: 'EmitEvent a:b' });
+    await markEffectFailed('e1', 0, 'boom');
+    await markEffectEmitted('e1', 0, 'child-1');
+    await markEffectCompleted('e1', 0);
+    expect(await getEffectJournalEntry('e1', 0)).toEqual({ status: 'completed', ruleName: 'oldRule' });
+    expect(await getEffectJournalEntry('e1', 1)).toBeNull();
+
+    await restartShiftedEffect('e1', 0, { ruleName: 'newRule', eventType: 'x', effectDetail: 'WriteDB projects' });
+    expect(await getEffectJournalEntry('e1', 0)).toEqual({ status: 'started', ruleName: 'newRule' });
+    const [row] = await getRecentRuleTriggers(1);
+    expect(row.failures, 'the old effect\'s failures are not the new one\'s').toBe(0);
+    expect(row.lastError).toBeNull();
+    expect(row.emittedEventId).toBeNull();
   });
 });

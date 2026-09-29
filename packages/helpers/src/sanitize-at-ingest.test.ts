@@ -309,6 +309,26 @@ describe('attendee addresses become names (owner decision 2026-09-07)', () => {
 
 // Release audit S13/S14: one row per sensor text field that used to reach the
 // log raw. Each carries a secret; none may survive ingest.
+describe('a mail display name is the sender (M4)', () => {
+  const mail = (payload: Record<string, unknown>) => sanitizeAtIngest({ id: 'm', type: 'mail:received', ts: '2026-01-01T00:00:00.000Z', payload }).payload;
+  it('keeps a name-shaped display name instead of a hash, and never the address', () => {
+    expect(mail({ from: 'x7@example.com', fromName: 'Mira Bakker', subject: 'hi' })).toEqual({ from: 'Mira Bakker', subject: 'hi' });
+  });
+  it('falls back to the alias when the display name is not a name', () => {
+    expect(mail({ from: 'x7@example.com', fromName: 'x7@example.com', subject: 'hi' }).from).toMatch(/^person-[0-9a-f]{10}$/);
+    expect(mail({ from: 'x7@example.com', fromName: 'Who is this?', subject: 'hi' }).from).toMatch(/^person-[0-9a-f]{10}$/);
+  });
+});
+
+describe('a sent mail keeps its recipients the way it keeps a sender (UC1)', () => {
+  it('names a recipient Mail names, hashes one it does not, and never keeps an address', () => {
+    const out = sanitizeAtIngest({ id: 's', type: 'mail:sent', ts: '2026-01-01T00:00:00.000Z', payload: { subject: 'The draft', recipients: [{ to: 'x7@example.com', toName: 'Mira Bakker' }, { to: 'y8@example.com' }] } }).payload as { recipients: { to: string }[] };
+    expect(out.recipients[0]).toEqual({ to: 'Mira Bakker' });
+    expect(out.recipients[1]!.to).toMatch(/^person-[0-9a-f]{10}$/);
+    expect(JSON.stringify(out)).not.toContain('@');
+  });
+});
+
 describe('every sensor text field gets the secret pass (release audit)', () => {
   const SECRET = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789';
   const cases: [string, Record<string, unknown>, (p: Record<string, unknown>) => unknown][] = [
@@ -320,6 +340,7 @@ describe('every sensor text field gets the secret pass (release audit)', () => {
     ['work:shelved', { body: `found ${SECRET}` }, (p) => p.body],
     ['shell:command', { command: `export GITHUB_TOKEN=${SECRET}` }, (p) => p.command],
     ['calendar:context-event', { event: { title: `sync ${SECRET}`, attendees: [] } }, (p) => (p.event as { title: string }).title],
+    ['agent:fleet', { sessions: [{ title: `fix ${SECRET}`, lastPrompt: `use ${SECRET}` }] }, (p) => JSON.stringify(p.sessions)],
   ];
   it.each(cases)('%s', (type, payload, pick) => {
     const out = sanitizeAtIngest({ id: 'e', type, ts: '2026-01-01T00:00:00.000Z', payload } as never);

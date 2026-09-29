@@ -13,7 +13,7 @@
 // read side folds the wreckage back together by the same rule, and so the next
 // caller has something to import instead of a regex to retype.
 
-/** `Ledger failure views (L1–L7)` → `ledger-failure-views-l1-l7`. */
+/** `Ledger retry views (L1–L7)` → `ledger-retry-views-l1-l7`. */
 export const entitySlug = (name) =>
   String(name ?? '')
     .toLowerCase()

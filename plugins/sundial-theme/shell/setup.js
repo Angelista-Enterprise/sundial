@@ -79,7 +79,21 @@ const PRESETS = [
   { name: 'Other', baseUrl: '' },
 ]
 
-let models = { default: null, providers: [], restartNeeded: false }
+let models = { default: null, providers: [], use: {}, restartNeeded: false }
+/** The chat's default model (/gnomon/api/models), or null until read. */
+let chat = null
+
+/** The background work /setup can route, in the order a person meets it. Mirrors USE_PURPOSES in server.js. */
+const WORK = [
+  ['intent', 'Naming each moment'],
+  ['companion', 'The note on something it tells you'],
+  ['extract', 'Facts and promises from your day'],
+  ['journal', 'The journal and project status'],
+  ['reflect', 'Reflection on your days'],
+  ['refute', 'Checking what it believes'],
+  ['goal', 'Plans for your goals'],
+  ['transcript', 'Cleaning up what it heard'],
+]
 /** The one open form: `{ target, row }`, or null. */
 let editing = null
 
@@ -213,7 +227,7 @@ function drawModels() {
     nodes.push(
       el('div', { class: 'model-row' },
         el('div', {},
-          el('p', { class: 'setup-prose' }, 'Gnomon thinks with ', el('strong', { text: d.model || 'no model named' }), ` on ${d.label}. It answers the chat and writes the summaries and the journal.`),
+          el('p', { class: 'setup-prose' }, 'Gnomon’s own model is ', el('strong', { text: d.model || 'no model named' }), ` on ${d.label}. Below, choose which model does what.`),
           el('p', { class: 'fill-note', text: privacyLine(d) }),
         ),
         rowActs('default', d)),
@@ -234,7 +248,7 @@ function drawModels() {
 
   if (d && (models.providers.length > 0 || editing?.target !== 'default')) {
     const others = el('div', { class: 'model-others' }, el('h3', { class: 'model-sub', text: 'More providers' }))
-    if (models.providers.length === 0) others.append(el('p', { class: 'fill-note', text: 'Add another provider to pick it for one conversation, in the chat’s model picker.' }))
+    if (models.providers.length === 0) others.append(el('p', { class: 'fill-note', text: 'Add another provider to give it some of the work, or all of it.' }))
     const ul = el('ul', { class: 'model-list' })
     for (const p of models.providers) {
       ul.append(el('li', { class: 'model-row' },
@@ -254,6 +268,8 @@ function drawModels() {
     }
     nodes.push(others)
   }
+
+  if (models.providers.length > 0 && editing === null) nodes.push(whoDoesWhat())
 
   if (models.restartNeeded) {
     const restart = el('button', { type: 'button', class: 'setup-button', 'data-primary': '', text: 'Restart Sundial' })
@@ -284,6 +300,65 @@ function drawModels() {
   box.replaceChildren(...nodes)
   box.querySelector('.model-form input')?.focus({ preventScroll: true })
 }
+
+/** One select per kind of work: the chat (live), the background default, and each purpose (after a restart). */
+function whoDoesWhat() {
+  const routes = [...(models.default ? [models.default] : []), ...models.providers]
+  const option = (r) => el('option', { value: r.id, text: `${r.label} · ${r.model}` })
+  const pick = (id, label, value, options, onChange) => {
+    const select = el('select', { class: 'model-input use-select', id: `use-${id}` }, ...options)
+    select.value = value
+    select.addEventListener('change', async () => {
+      select.disabled = true
+      try {
+        await onChange(select.value)
+      } catch (error) {
+        note.dataset.state = 'error'
+        note.textContent = error.message
+      } finally {
+        select.disabled = false
+      }
+    })
+    return el('li', { class: 'use-row' }, el('label', { class: 'use-label', for: select.id, text: label }), select)
+  }
+  const note = el('p', { class: 'fill-note model-out', role: 'status', 'aria-live': 'polite' })
+  const save = async (purpose, target) => {
+    models = await providersPost({ op: 'use', purpose, target })
+    drawModels()
+  }
+  const ul = el('ul', { class: 'model-list use-list' })
+  const chatRoute = routes.find((r) => r.id === chat?.provider)
+  ul.append(pick('chat', 'The chat', chatRoute?.id ?? '', [...(chatRoute ? [] : [el('option', { value: '', text: chat ? `${chat.provider} · ${chat.model}` : 'Reading…' })]), ...routes.map(option)], async (id) => {
+    const r = routes.find((x) => x.id === id)
+    const res = await fetch('/gnomon/api/model', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: r.id, model: r.model }) })
+    if (!res.ok) throw new Error(`Sundial answered ${res.status}.`)
+    chat = (await res.json()).current
+    note.dataset.state = 'ok'
+    note.textContent = `New chats use ${r.label}. A chat that is open keeps its model; switch it in its model picker.`
+  }))
+  const fallback = models.use.default ?? 'openai'
+  const same = routes.find((r) => r.id === fallback)
+  ul.append(pick('default', 'Everything else, unless set below', same?.id ?? '', [...(same ? [] : [el('option', { value: '', text: 'Nothing chosen yet' })]), ...routes.map(option)], (id) => save('default', id === 'openai' ? '' : id)))
+  for (const [purpose, label] of WORK) {
+    const own = models.use[purpose]
+    ul.append(pick(purpose, label, routes.some((r) => r.id === own) ? own : '', [el('option', { value: '', text: 'Same as above' }), ...routes.map(option)], (id) => save(purpose, id)))
+  }
+  const remote = routes.filter((r) => !r.local).map((r) => r.label)
+  return el('div', { class: 'model-others' },
+    el('h3', { class: 'model-sub', text: 'Who does what' }),
+    el('p', { class: 'fill-note use-intro', text: remote.length > 0 ? `Work you give to ${remote.join(' or ')} sends sanitized text there. Every call is listed in the Ledger, with its price.` : 'Every model here runs on this Mac, so nothing leaves it.' }),
+    ul,
+    note)
+}
+
+fetch('/gnomon/api/models', { headers: { accept: 'application/json' } })
+  .then((res) => (res.ok ? res.json() : null))
+  .then((data) => {
+    if (!data?.current) return
+    chat = data.current
+    if (editing === null && models.providers.length > 0) drawModels()
+  })
+  .catch(() => {})
 
 fetch('/gnomon/api/providers', { headers: { accept: 'application/json' } })
   .then((res) => (res.ok ? res.json() : null))

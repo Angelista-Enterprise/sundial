@@ -33,19 +33,11 @@ export async function insertSignal(input: InsertSignalInput): Promise<void> {
   });
 }
 
-export async function insertSignalBatch(inputs: InsertSignalInput[]): Promise<void> {
-  if (inputs.length === 0) return;
+/** Whether the log already holds this id. An `EmitEvent` re-run by boot replay asks first: its child may already be logged. */
+export async function signalExists(id: string): Promise<boolean> {
   const db = getDb();
-  await db.insert(signals).values(
-    inputs.map((input) => ({
-      id: input.id,
-      signalType: input.signalType,
-      eventType: input.eventType,
-      sessionId: input.sessionId ?? null,
-      data: JSON.stringify(input.data),
-      capturedAt: input.capturedAt,
-    })),
-  );
+  const rows = await db.select({ id: signals.id }).from(signals).where(eq(signals.id, id)).limit(1);
+  return rows.length > 0;
 }
 
 /**
@@ -131,9 +123,19 @@ const ofTypes = (list?: string[]) =>
 export async function getSignalsInRange(from: string, to: string, limit = 200, signalTypes?: string[], offset = 0, contains?: string): Promise<StoredSignal[]> {
   const db = getDb();
   const where = and(gte(signals.capturedAt, from), lt(signals.capturedAt, to), containing(contains), ofTypes(signalTypes));
-  const base = db.select().from(signals).where(where).orderBy(asc(signals.capturedAt)).limit(limit);
+  const base = db.select().from(signals).where(where).orderBy(asc(signals.capturedAt), asc(signals.id)).limit(limit);
   const rows = await (offset > 0 ? base.offset(offset) : base);
   return rows.map((row) => ({ ...row, data: JSON.parse(row.data) as Record<string, unknown> }));
+}
+
+/** Every row in the range, read in pages, so a long window never silently drops its newest rows at a cap. */
+export async function getAllSignalsInRange(from: string, to: string, signalTypes?: string[], contains?: string, page = 20_000): Promise<StoredSignal[]> {
+  const out: StoredSignal[] = [];
+  for (;;) {
+    const rows = await getSignalsInRange(from, to, page, signalTypes, out.length, contains);
+    out.push(...rows);
+    if (rows.length < page) return out;
+  }
 }
 
 /**
@@ -197,9 +199,9 @@ export interface RedactionSummary {
 /**
  * The read surface for the `privacy:redacted` trail (P4) — aggregates every
  * `privacy` signal in `[from, to]` into per-property and per-source-type
- * redaction counts. This is what `gnomon privacy` renders: the transparency
- * view the trail was captured for but that nothing read until now
- * (almanac/enhancements/privacy-redacted-signal-has-no-read-surface). Reads
+ * redaction counts. The retired CLI's `gnomon privacy` rendered it; since that
+ * CLI was deleted (9a6988c) nothing calls it, so the trail has no read surface
+ * again (almanac/concepts/sanitize-at-ingest). Reads
  * rows and folds in JS rather than json_extract-ing in SQL — the payload's
  * `properties` is a variable-keyed map, not a fixed column set.
  */
@@ -232,14 +234,19 @@ export async function getRedactionSummary(from: string, to: string): Promise<Red
 }
 
 /**
- * Rows strictly after `signalId` (lexical ULID order), ascending — Phase 2's
+ * Rows written after `signalId`, in insertion order — Phase 2's
  * boot replay: fold these through reduce() to fast-forward state from the
  * last snapshot. `signalId` null means "replay everything" (no snapshot yet).
  */
 export async function getSignalsAfter(signalId: string | null): Promise<StoredSignal[]> {
   const db = getDb();
   const query = db.select().from(signals);
-  const rows = await (signalId ? query.where(gt(signals.id, signalId)) : query).orderBy(asc(signals.id));
+  // Insertion order, which is the fold order. Ids do not sort that way: a
+  // derived child's id carries its parent's millisecond, and plain ulid() is
+  // random within one, so `id > offset` skipped rows written after a snapshot.
+  // An offset row no longer in the log falls back to the id order.
+  const [at] = signalId ? await db.select({ rowid: sql<number>`rowid` }).from(signals).where(eq(signals.id, signalId)) : [];
+  const rows = await (at ? query.where(sql`rowid > ${at.rowid}`).orderBy(sql`rowid`) : signalId ? query.where(gt(signals.id, signalId)).orderBy(asc(signals.id)) : query.orderBy(sql`rowid`));
   return rows.map((row) => ({
     ...row,
     data: JSON.parse(row.data) as Record<string, unknown>,

@@ -4,7 +4,7 @@ import { bySeen, daysSince, displayName, foldPeople, isGroup, isHash, isOwner, i
 describe('what is not a person', () => {
   // Every string here is one the live calendar actually sent.
   it('knows a meeting room by its capacity or its site code', () => {
-    for (const room of ['RTM-1-08 (12)', 'AMS-1-07 - The Board Room (14)', 'GTP-5-04-INTERNAL (4)', 'RTM-1-05 (4)']) expect(isRoom(room), room).toBe(true)
+    for (const room of ['HQ-2-14 (12)', 'HQ-3-02 - The Board Room (14)', 'LAB-5-04-INTERNAL (4)', 'HQ-2-09 (4)']) expect(isRoom(room), room).toBe(true)
     for (const human of ['Alex Morgan', 'Thomas', 'person-c205ca11f2']) expect(isRoom(human), human).toBe(false)
   })
 
@@ -24,7 +24,7 @@ describe('what is not a person', () => {
 
   it('says WHY, because a row that vanishes is a row nobody can question', () => {
     expect(notAPerson('Acme Office', [])).toBe('a group')
-    expect(notAPerson('RTM-1-05 (4)', [])).toBe('a room')
+    expect(notAPerson('HQ-2-09 (4)', [])).toBe('a room')
     expect(notAPerson('Pat Doe', ['Pat Doe'])).toBe('you')
     expect(notAPerson('Mira Bakker', [])).toBe(null)
   })
@@ -61,10 +61,10 @@ describe('folding many rows into one human', () => {
   it('merges two ids that resolve to the same words', () => {
     const folded = foldPeople([
       row('Mira Bakker', 'Mira Bakker', [['e1', { at: '2026-09-17T20:00:00.000Z', title: 'Weekly' }]]),
-      row('person-f288735ee8', 'Mira Bakker', [['e2', { at: '2026-09-04T09:00:00.000Z', title: 'Kickoff' }]]),
+      row('person-d1d2d3d4d5', 'Mira Bakker', [['e2', { at: '2026-09-04T09:00:00.000Z', title: 'Kickoff' }]]),
     ])
     expect(folded).toHaveLength(1)
-    expect(folded[0].aliases).toEqual(['Mira Bakker', 'person-f288735ee8'])
+    expect(folded[0].aliases).toEqual(['Mira Bakker', 'person-d1d2d3d4d5'])
     expect(folded[0].meetings).toBe(2)
     expect(folded[0].lastSeen).toBe('2026-09-17T20:00:00.000Z')
   })

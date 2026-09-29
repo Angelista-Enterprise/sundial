@@ -3,7 +3,7 @@
 // tool-class cell of the table, the bash destructive-deny, and that
 // config.actions can tighten but never loosen.
 import { describe, it, expect } from 'vitest'
-import { decideAction, escalate, GNOMON_TOOLS, judgedAction, openedByOwner, parseMcpToolName, unverifiedNotice } from './gate.js'
+import { callRecord, decideAction, escalate, GNOMON_TOOLS, judgedAction, openedByOwner, outwardCall, parseMcpToolName, shellWrite, unverifiedNotice } from './gate.js'
 import { resolveActionPolicy } from '@sundial/helpers/sundial-config.js'
 
 // A resolved actions config, defaults matching @sundial/helpers (internal auto,
@@ -256,10 +256,32 @@ describe('J4.1 escalate — the judge as the second key, tightening only', () =>
     expect(judgedAction('read')).toBe(false)
     expect(judgedAction('gnomon_today_summary')).toBe(false)
   })
-  it('J4.2: a failed verification is one self-report notice keyed by tool', () => {
-    const n = unverifiedNotice('gnomon_run_shell', { command: 'npx vitest run' }, 0.12, '2026-09-22T10:00:00.000Z')
+  it('J4.2: a failed verification is one self-report notice keyed by tool, in words, never the arguments', () => {
+    const what = outwardCall('gnomon_run_shell', { command: 'cd ~/Projects/puzzlebox-studio && git push origin main' })
+    const n = unverifiedNotice('gnomon_run_shell', what, 0.12, '2026-09-22T10:00:00.000Z')
     expect(n).toMatchObject({ shape: 'self-report', kind: 'action-unverified', key: 'action-unverified:gnomon_run_shell', precision: 0.7 })
-    expect(n.observation).toContain('npx vitest run')
+    expect(n.observation).toBe('The command Gnomon ran (git push) may not have worked: its result does not show that it happened.')
+    expect(n.observation).not.toContain('puzzlebox')
+  })
+
+  it('Q4: only an outward or irreversible call is verified; reads and Gnomon\'s own memory writes are not', () => {
+    expect(outwardCall('gnomon_owner_answer', { answer: 'Mira Bakker is the studio lead' })).toBeNull()
+    expect(outwardCall('gnomon_assert', { fact: 'x' })).toBeNull()
+    expect(outwardCall('gnomon_calendar_create', { title: 'x' })).toBe('The calendar event Gnomon made')
+    expect(outwardCall('web_act', {})).toBe('What Gnomon did on a web page')
+    expect(outwardCall('mcp__obsidian__search_vault_simple', {})).toBeNull()
+    expect(outwardCall('mcp__obsidian__create_vault_file', {})).toBe("Gnomon's call to obsidian (create vault file)")
+    // The owner's config wins over the verb.
+    expect(outwardCall('mcp__notes__get_or_create', {}, () => false)).toBe("Gnomon's call to notes (get or create)")
+    expect(outwardCall('mcp__notes__append', {}, () => true)).toBeNull()
+    expect(outwardCall('bash', { command: 'ls -la ~/Projects 2>&1 | head -50' })).toBeNull()
+  })
+
+  it('Q4: a shell command is a read only when every part is a known read; anything else is checked', () => {
+    const reads = ['pwd', 'sleep 60 && echo done', 'cd ~/Projects/x && git log --since="2026-09-20" --oneline', 'for d in ~/Projects/*; do git -C "$d" branch --show-current 2>/dev/null; done', 'grep -rn foo . > /dev/null', 'git status 2>&1', 'git branch --list', "sqlite3 db \"select 1 where at >= '2026-09-01'\""]
+    const writes = { 'git commit -m x': 'git commit', 'cd a && git push': 'git push', 'echo hi > notes.txt': '>', 'rm build.log': 'rm', 'pnpm install': 'pnpm install', 'curl -X POST https://example.com': 'curl -X POST', 'sed -i "" s/a/b/ f': 'sed -i', 'git branch -D old': 'git branch -D', 'gh pr create -t x': 'gh', 'ssh host "rm -rf x"': 'ssh', 'rsync -a a b': 'rsync', 'make deploy': 'make', 'python3 x.py': 'python3', 'node -e "[1].map((x) => x)"': 'node', 'sqlite3 db "delete from t"': 'sqlite3', 'find . -name x -delete': 'find' }
+    expect(reads.map(shellWrite)).toEqual(reads.map(() => null))
+    expect(Object.keys(writes).map(shellWrite)).toEqual(Object.values(writes))
   })
 })
 
@@ -301,5 +323,13 @@ describe('S10 — a turn the owner did not open', () => {
 
   it('leaves the other internal writes alone', () => {
     expect(decide({ toolName: 'gnomon_propose', preset: 'danger-full-access', ownerTurn: false }).kind).toBe('allow')
+  })
+})
+
+describe('callRecord (X2)', () => {
+  it('names the deferred tool that went through gnomon_call, and never the arguments', () => {
+    expect(callRecord({ name: 'gnomon_call', args: { name: 'gnomon_routines', args: { days: 7 } } }, 'ok')).toEqual({ tool: 'gnomon_call', server: null, action: 'gnomon_routines', inner: 'gnomon_routines', outcome: 'ok' })
+    expect(callRecord({ name: 'mcp__obsidian__search_notes', args: { query: 'x' } }, 'refused', 'no')).toEqual({ tool: 'mcp__obsidian__search_notes', server: 'obsidian', action: 'search_notes', outcome: 'refused', reason: 'no' })
+    expect(callRecord({ name: 'gnomon_call', args: {} }, 'failed')).toEqual({ tool: 'gnomon_call', server: null, action: 'gnomon_call', outcome: 'failed' })
   })
 })

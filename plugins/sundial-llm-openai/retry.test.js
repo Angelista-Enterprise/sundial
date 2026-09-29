@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { OpenAICompatAdapter } from './index.js'
 
 /**
@@ -28,20 +28,33 @@ const drain = async (stream) => {
   return seen
 }
 
-afterEach(() => vi.restoreAllMocks())
+// The backoff is real time (0.7 s, then 1.4 s); only setTimeout is faked, so fetch and the streams run as they are.
+beforeEach(() => vi.useFakeTimers({ toFake: ['setTimeout'] }))
+afterEach(() => {
+  vi.useRealTimers()
+  vi.restoreAllMocks()
+})
+
+/** Drains with the clock run forward, so each backoff sleep ends at once. */
+const drainFast = async (stream) => {
+  const done = drain(stream)
+  done.catch(() => {})
+  await vi.runAllTimersAsync()
+  return done
+}
 
 describe('stream retries', () => {
   it('retries a 503 and succeeds', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(unavailable()).mockResolvedValueOnce(sse())
     vi.stubGlobal('fetch', fetchMock)
-    await drain(adapter().stream({ messages: [] }))
+    await drainFast(adapter().stream({ messages: [] }))
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('gives up after three tries and says what the route said', async () => {
     const fetchMock = vi.fn().mockResolvedValue(unavailable())
     vi.stubGlobal('fetch', fetchMock)
-    await expect(drain(adapter().stream({ messages: [] }))).rejects.toThrow(/temporarily unavailable/)
+    await expect(drainFast(adapter().stream({ messages: [] }))).rejects.toThrow(/temporarily unavailable/)
     expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 

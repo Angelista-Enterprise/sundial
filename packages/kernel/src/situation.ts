@@ -1,5 +1,6 @@
-import type { KernelState } from './types.js';
+import type { KernelState, ResumeLine, ResumePieces } from './types.js';
 import { localHour } from '@sundial/helpers/local-day.js';
+import { isMeetingRoom } from '@sundial/helpers/person-name.js';
 
 /**
  * S1 — what is true right now, in one object (docs/jarvis/09).
@@ -80,9 +81,52 @@ export interface Situation {
   /** The last thing done on each recent project, newest first — "where did I leave X". */
   leftOff: LeftOff[];
   waitingForYou: { question: string | null; shelf: number };
+  /** "Where was I" (UC2): the line built at the last return, while it is worth reading, and a way back into each piece. */
+  resume: (ResumeLine & { links: RestoreLink[] }) | null;
+  /** The next step the owner wrote for their return, not yet shown (U2-F35). */
+  note: { text: string; at: string } | null;
+  /** Which pieces of the line get used, with their counts (U2-F36 F37). */
+  resumeUse: NonNullable<KernelState['resume']>['learn'] | null;
 }
 
+/**
+ * One way back into a piece of the line (U2-F30–F34). `href` is a plain link,
+ * the owner's own click. `ask` is a request loaded into the composer: sent, it
+ * goes through `gnomon_run_shell` and the action gate asks first. Nothing here
+ * runs by itself, and nothing closes or moves what the owner left (U2-F41).
+ */
+export interface RestoreLink {
+  piece: 'file' | 'tab' | 'tabs' | 'agent' | 'failure';
+  label: string;
+  href?: string;
+  ask?: string;
+}
+
+/** Editors with a URL scheme that opens a file. */
+const EDITOR_SCHEMES: Record<string, string> = { Code: 'vscode', 'Visual Studio Code': 'vscode', Cursor: 'cursor' };
+
+export function restoreLinks(pieces: ResumePieces, home: string | null): RestoreLink[] {
+  const links: RestoreLink[] = [];
+  const abs = (p: string) => (p.startsWith('~/') ? (home ? `${home}${p.slice(1)}` : null) : p);
+  const file = pieces.file;
+  const scheme = file ? EDITOR_SCHEMES[file.app] : undefined;
+  const path = file ? abs(file.path) : null;
+  if (file && scheme && path) links.push({ piece: 'file', label: `Open ${file.path.split('/').pop()}`, href: `${scheme}://file${encodeURI(path)}` });
+  if (pieces.tab) links.push({ piece: 'tab', label: pieces.tab.title ? `Open “${pieces.tab.title}”` : `Open ${pieces.tab.url.replace(/^https:\/\//, '')}`, href: pieces.tab.url });
+  // The space's tabs, each its own link: opening adds a tab, it never replaces the ones open.
+  for (const t of pieces.tabs?.tabs.filter((t) => t.url !== pieces.tab?.url).slice(0, 8) ?? []) links.push({ piece: 'tabs', label: `${pieces.tabs?.space ? `${pieces.tabs.space}: ` : ''}${t.title ?? t.url.replace(/^https?:\/\//, '')}`, href: t.url });
+  const agent = pieces.agent;
+  if (agent?.sid) links.push({ piece: 'agent', label: `Resume the Claude session${agent.title ? ` “${agent.title}”` : ''}`, ask: `Open a terminal in ${agent.cwd} and run: claude --resume ${agent.sid}` });
+  if (pieces.failure) links.push({ piece: 'failure', label: `Re-run \`${pieces.failure.command}\``, ask: `Re-run \`${pieces.failure.command}\` in ${pieces.failure.cwd} and tell me if it passes.` });
+  return links;
+}
+
+/** A return line is worth reading for this long after the return. */
+export const RESUME_FRESH_MIN = 60;
+
 export interface SituationExtras {
+  /** The owner's home folder, to turn a `~/` path into a link an editor can open. */
+  home?: string;
   leftOff?: LeftOff[];
   shelfWaiting?: number;
 }
@@ -125,7 +169,9 @@ export function buildSituation(state: KernelState, extras: SituationExtras = {},
         .sort((a, b) => b.lastTouchedAt.localeCompare(a.lastTouchedAt))
         .map((c) => ({ id: c.id, name: c.name, quietDays: Math.floor((minutesBetween(c.lastTouchedAt, nowMs) ?? 0) / 1440) }))
     : [];
-  const ahead = project ? state.git?.unpushed?.[project.id] : undefined;
+  // Unpushed only when recent and plausible (U2-F20): weeks-old entries and runaway counts were noise.
+  const raw = project ? state.git?.unpushed?.[project.id] : undefined;
+  const ahead = raw && raw.ahead < 200 && nowMs - Date.parse(raw.since) <= 7 * 86_400_000 ? raw : undefined;
   const hotFiles = project
     ? Object.values(state.files?.hot ?? {})
         .filter((f) => f.projectRoot === project.id)
@@ -150,13 +196,22 @@ export function buildSituation(state: KernelState, extras: SituationExtras = {},
     },
     you,
     // Who is in it: not the owner (their own name is on their own invites) and
-    // not the room ("RTM-1-01 - Aquarium (12)" — every room ends in its size).
-    next: nextEvent ? { title: nextEvent.title, startsInMin: minutesBetween(new Date(nowMs).toISOString(), Date.parse(nextEvent.start)) ?? 0, with: (nextEvent.attendees ?? []).filter((a) => !/\(\d+\)\s*$/.test(a) && !(state.config?.ownerAliases ?? []).some((o) => o.trim().toLowerCase() === a.trim().toLowerCase())) } : null,
+    // not the room ("HQ-2-14 - Aquarium (8)", `isMeetingRoom`).
+    next: nextEvent ? { title: nextEvent.title, startsInMin: minutesBetween(new Date(nowMs).toISOString(), Date.parse(nextEvent.start)) ?? 0, with: (nextEvent.attendees ?? []).filter((a) => !isMeetingRoom(a) && !(state.config?.ownerAliases ?? []).some((o) => o.trim().toLowerCase() === a.trim().toLowerCase())) } : null,
     todayAllDay,
     openHere: { commitments, unpushed: ahead ? { branch: ahead.branch, ahead: ahead.ahead } : null, hotFiles },
     leftOff: extras.leftOff ?? [],
     waitingForYou: { question: state.ownerAsk?.open?.question ?? null, shelf: extras.shelfWaiting ?? 0 },
+    resume: freshResume(state, nowMs, extras.home ?? null),
+    note: state.resume?.note ?? null,
+    resumeUse: state.resume?.learn ?? null,
   };
+}
+
+function freshResume(state: KernelState, nowMs: number, home: string | null): Situation['resume'] {
+  const last = state.resume?.last ?? null;
+  const age = last ? minutesBetween(last.at, nowMs) : null;
+  return last && age !== null && age <= RESUME_FRESH_MIN ? { ...last, links: restoreLinks(last.pieces, home) } : null;
 }
 
 /**
@@ -192,3 +247,29 @@ export function phaseOf(state: KernelState, calendar: { inMeeting: boolean; next
   if (hour >= 18 || hour < 4) return 'evening';
   return 'working';
 }
+
+/** How far before the break the edit trail reaches (U2-F40). */
+export const TRAIL_BEFORE_MIN = 60;
+
+/**
+ * The edit trail before a break (U2-F14 F40): `symbol:edited` rows on the
+ * line's project, oldest first, one row per file with the symbols touched
+ * there. A chronological trail of code beat notes alone two to one (Parnin &
+ * DeLine 2010). Pure over the rows the route read.
+ */
+export function editTrail(rows: { capturedAt: string; data: Record<string, unknown> }[], projectId: string | null, limit = 8): { at: string; file: string; symbols: string[] }[] {
+  const byFile = new Map<string, { at: string; file: string; symbols: string[] }>();
+  for (const row of rows) {
+    if (projectId && row.data.projectRoot !== projectId) continue;
+    for (const e of Array.isArray(row.data.edits) ? row.data.edits : []) {
+      const file = typeof e?.file === 'string' ? e.file : null;
+      if (!file) continue;
+      const prior = byFile.get(file);
+      const symbols = [...new Set([...(prior?.symbols ?? []), ...(Array.isArray(e.symbols) ? e.symbols.filter((x: unknown): x is string => typeof x === 'string') : [])])];
+      byFile.delete(file);
+      byFile.set(file, { at: row.capturedAt, file, symbols });
+    }
+  }
+  return [...byFile.values()].slice(-limit);
+}
+

@@ -1,4 +1,5 @@
 import type { BetaBelief, Effect, JudgementResultPayload, KernelState, Rule } from '@sundial/kernel/types.js';
+import { selfReportDue } from '@sundial/kernel/self-report.js';
 import { PERCEIVE_QUESTIONS, perceive } from './questions/perceive.js';
 
 /** The judge's likelihood moves a belief by this much a tick (docs/jarvis/02: small, so one odd reading cannot flip it). */
@@ -10,6 +11,8 @@ const PRIOR: BetaBelief = { alpha: 1, beta: 1 };
 const MAX_INPUT_WINDOWS = 6;
 const MAX_SELF_REPORTS = 60;
 const TEN_MIN_MS = 10 * 60_000;
+/** With only the self-report chips reading it, the judge runs at most once an hour: a tap is due all waking day. */
+export const PERCEIVE_TAP_INTERVAL_MS = 60 * 60_000;
 
 export const mean = (b: BetaBelief): number => b.alpha / (b.alpha + b.beta);
 const decay = (b: BetaBelief): BetaBelief => ({ alpha: PRIOR.alpha + (b.alpha - PRIOR.alpha) * PERCEIVE_DECAY, beta: PRIOR.beta + (b.beta - PRIOR.beta) * PERCEIVE_DECAY });
@@ -19,7 +22,7 @@ function localHour(ts: string, timeZone: string): number {
   try {
     return Number(new Intl.DateTimeFormat('en-GB', { hour: '2-digit', hour12: false, timeZone }).format(new Date(ts)));
   } catch {
-    return new Date(ts).getHours();
+    return new Date(ts).getUTCHours();
   }
 }
 
@@ -58,9 +61,13 @@ export function brierOf(pFlow: number, pStuck: number, tap: 'flow' | 'meh' | 'st
 /**
  * J2.1 — the owner-state filter. Four event types:
  * - `input:activity`: keep the last minute of raw counts.
- * - `clock:tick`: decay the beliefs toward the prior, then — with a moment open
- *   and the owner not idle — put the raw rates to the judge (`perceive`, one
- *   call a tick, under its own cap).
+ * - `clock:tick`: decay the beliefs toward the prior, then — with a moment open,
+ *   the owner not idle, and something that reads the answer — put the raw
+ *   rates to the judge (`perceive`, one call a tick, under its own cap). The
+ *   readers are the gate (only behind the flag below) and a due self-report
+ *   tap, which is scored against the belief; with neither, the call fed
+ *   nothing (1,840 calls in a week, measured 2026-09-28). A tap is due all
+ *   waking day, so for the tap alone the judge runs at most once an hour.
  * - `judgement:result` for `perceive`: move each belief by the likelihood.
  * - `owner:self-report`: the owner's tap, scored against the belief it met.
  *
@@ -79,7 +86,10 @@ export const ownerPerceive: Rule = (state, event) => {
   }
   if (event.type === 'clock:tick') {
     const decayed = { ...owner, focus: decay(owner.focus), stuck: decay(owner.stuck), interruptible: decay(owner.interruptible) };
-    const input = perceiveInput(state, event.ts);
+    const lastJudged = Date.parse(owner.perception.lastJudgedAt ?? '');
+    const tapRead = selfReportDue(owner, event.ts, state.config.timezone) && !(Date.parse(event.ts) - lastJudged < PERCEIVE_TAP_INTERVAL_MS);
+    const read = state.config.experiments?.ownerStateInGateCost === true || tapRead;
+    const input = read ? perceiveInput(state, event.ts) : null;
     if (input === null) return { state: { ...state, owner: decayed }, effects: [] };
     const effects: Effect[] = [{ type: 'Judge', purpose: 'perceive', questionSetId: perceive.id, momentId: state.moment?.id ?? null, delayMs: 0, state: input, questions: PERCEIVE_QUESTIONS, metadata: { at: event.ts } }];
     return { state: { ...state, owner: { ...decayed, perception: { ...decayed.perception, lastJudgedAt: event.ts } } }, effects };

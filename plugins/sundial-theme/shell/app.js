@@ -11,19 +11,20 @@
 // canvas itself IS the state; there is no shadow copy of the transcript to keep
 // in step with it.
 import { renderMarkdown, setCardLabel } from './markdown.js'
-import { renderFigure } from './figures.js'
+import { figureStage, renderFigure } from './figures.js'
 import { el, liveFirst, renderSurface } from './surfaces.js'
 import { TODAY_PARTS, engineCard, inPlayCard, rhythmCard, todayParts, voiceCard } from './views.js'
 import { elapsed, resultGist, toolLine } from './tool-line.js'
 import { jsonNode, jsonShape, parseResult } from './json-view.js'
-import { applyBoard, dismissPane, filtersOf, fitAll, focusPane, focused, has, lensShelf, mount, notice, onChange, pane, pointAt, setResolver, titleOf, touchedSince, walkContinue } from './stage.js'
+import { applyBoard, dismissPane, filtersOf, fitAll, focusPane, focused, has, lensShelf, mount, notice, onBoard, onChange, pane, pointAt, setResolver, titleOf, touchedSince, walkContinue } from './stage.js'
 import { openPalette } from './palette.js'
 import { mascot } from './mascot.js'
 import { openEntity, openExplore, openMoment } from './explore.js'
-import { BLUR_LABEL, SETTINGS, applySettings, loadSettings, setSetting, settingsNode } from './settings.js'
+import { BLUR_LABEL, SETTINGS, applySettings, loadSettings, nextPaper, setSetting, settingsNode } from './settings.js'
 import { kanbanCard } from './sections.js'
+import { liveSpan } from './span.js'
 import { CARDS, MENU, cardOf, heirOf } from './cards.js'
-import { onReading, markStale, rereadAll } from './read.js'
+import { checkSignedIn, onReading, markStale, rereadAll } from './read.js'
 import { status } from './status.js'
 import { postVerdict, verdictActs } from './verdicts.js'
 
@@ -44,6 +45,11 @@ const modelPick = $('model-pick')
 const modelMenu = $('model-menu')
 const askSeat = $('ask')
 const strip = $('strip')
+
+// Signed out (read.js noticed a 401): one line in the foot, with what to do.
+document.addEventListener('gnomon:signed-out', () => {
+  $('signed-out').hidden = false
+})
 
 // ── What the page is reading ──────────────────────────────────────────────
 // The head's bottom rule turns ochre while a route is in flight and names the
@@ -89,6 +95,8 @@ const resolveCard = async (id, card = null) => {
     if (filters?.tab) node?.selectTab?.(filters.tab)
     return { title: part[1], node }
   }
+  // A drawn figure's card, back from the record: the replayed thread's node fills it.
+  if ((id.startsWith('surface:') || id.startsWith('figure:')) && figureSeat.relift(id)) return null
   if (id === 'kanban') return { title: 'Kanban', node: await kanbanCard(loadQuestion) }
   if (id === 'play') return { title: 'In play', node: await inPlayCard(loadQuestion, filters) }
   if (id === 'rhythm') return { title: 'Rhythm', node: await rhythmCard(filters) }
@@ -279,8 +287,6 @@ const state = {
   surfaces: new Map(),
   /** approval id → its card, so an outcome can settle the card that asked. */
   approvals: new Map(),
-  /** pane id → the figure node in the transcript that can take the stage. */
-  figures: new Map(),
   running: false,
   /** Text is arriving: the gnomon speaks rather than thinks. */
   speaking: false,
@@ -297,6 +303,10 @@ const state = {
   /** The last listing, so select mode can redraw without a fetch. */
   rows: [],
 }
+
+// A figure in the transcript that can take the stage, and the card it keeps
+// across a thread switch: see `figureStage` in figures.js.
+const figureSeat = figureStage({ onBoard, pane, focusPane, dismissPane })
 
 // ── The canvas ────────────────────────────────────────────────────────────
 
@@ -337,8 +347,8 @@ function follow(force = false) {
 
 function clearCanvas() {
   document.body.removeAttribute('data-lens')
-  for (const id of state.figures.keys()) dismissPane(id)
-  state.figures.clear()
+  // Figures on the board stay: a thread switch is not the owner removing them.
+  figureSeat.clear()
   canvas.replaceChildren()
   state.turn = null
   state.prose = null
@@ -394,7 +404,7 @@ async function showToday() {
         el('p', { class: 'empty-sub', text: 'It will say so when the record cannot answer.' }),
       ]),
   })
-  // The other four parts of the day: their own cards, beside the face. The
+  // The other parts of the day (TODAY_PARTS): their own cards, beside the face. The
   // rule finds each a free place; nothing lands on anything.
   // A part the record has set to something (a day, a tab) is drawn by the
   // resolver with its filters; today's unfiltered node must not replace it.
@@ -453,48 +463,6 @@ function collapseToday() {
   // The owner spoke: the conversation must be where they can read the answer.
   // A replayed thread at boot is not the owner speaking; the board stays first.
   if (!state.replaying) showConversation()
-}
-
-/**
- * A figure in the transcript that can take the stage.
- *
- * The node itself moves — no copy — and a stub keeps its place in the turn, so
- * dismissing the pane puts it back exactly where the record has it. Gnomon
- * lifts a surface the moment it draws one live; the owner lifts any figure,
- * new or old, with the act in its head.
- */
-function stageable(node, id) {
-  state.figures.set(id, node)
-  node.querySelector('.surface-head')?.append(
-    el('button', { type: 'button', class: 'stage-act', text: 'Stage', title: 'Bring this to the stage', onclick: () => lift(id) }),
-  )
-}
-
-function lift(id) {
-  const node = state.figures.get(id)
-  if (node === undefined) return
-  if (has(id)) return focusPane(id)
-  const title = node.querySelector('.surface-title')?.textContent || 'Figure'
-  const stub = el('div', { class: 'surface-stub' }, [
-    el('span', { text: `${title} — on the stage` }),
-    el('button', { type: 'button', class: 'link', text: 'bring back', onclick: () => dismissPane(id) }),
-  ])
-  node.replaceWith(stub)
-  // What it shows goes onto the card as its text, so `gnomon_look` reads the
-  // same thing the owner sees — it read nothing (`text: null`) before.
-  const text = node.innerText.replace(/\s+\n/g, '\n').trim().slice(0, 4000)
-  pane(id, { title, node, home: stub, text, reading: node.querySelector('.surface-because')?.textContent.replace(/^·\s*/, '') ?? '' })
-  focusPane(id)
-}
-
-/** Where `gnomon_show_view` sends the owner: the model directing the stage. */
-const ALTITUDES = {
-  today: () => focusPane('today'),
-  trend: () => openCard('rhythm'),
-  memory: () => openCard('explore'),
-  trust: () => setFilters('engine', { tab: 'trust' }).then(() => openCard('engine')),
-  unsaid: () => openCard('voice'),
-  index: () => openExplore(),
 }
 
 /** Open a new turn block. */
@@ -630,8 +598,8 @@ function workSeats() {
     const node = el('section', { class: 'work-seat', 'data-seat': name }, [label === null ? null : el('h3', { class: 'work-seat-title', text: label }), body])
     return { node, body }
   }
-  wk.seats = { now: seat('now', 'Working'), plan: seat('plan', null), info: seat('info', 'Where the work stands'), past: seat('past', 'Other jobs'), soon: seat('soon', 'Coming up'), can: seat('can', 'What Gnomon can do') }
-  wk.node.append(wk.seats.now.node, wk.seats.plan.node, wk.seats.info.node, wk.seats.past.node, wk.seats.soon.node, wk.seats.can.node)
+  wk.seats = { now: seat('now', 'Working'), plan: seat('plan', null), info: seat('info', 'Where the work stands'), past: seat('past', 'Other jobs'), soon: seat('soon', 'Coming up'), rules: seat('rules', 'Rules it watches for'), can: seat('can', 'What Gnomon can do') }
+  wk.node.append(wk.seats.now.node, wk.seats.plan.node, wk.seats.info.node, wk.seats.past.node, wk.seats.soon.node, wk.seats.rules.node, wk.seats.can.node)
   drawWorkExtras()
   wk.seats.now.node.hidden = true
   wk.seats.plan.node.hidden = true
@@ -659,6 +627,7 @@ async function drawWorkExtras() {
   const when = (iso) => new Date(iso).toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })
   wk.seats.soon.body.replaceChildren(...open.map((w) => el('div', { class: 'work-line' }, [el('span', { class: 'work-line-key', text: when(w.at) }), el('span', { class: 'work-line-text', text: w.reason })])))
   wk.seats.soon.node.hidden = open.length === 0
+  drawRules()
   const used = Object.values(reach?.ownUsed ?? {}).filter((u) => u?.calls).length
   wk.seats.can.body.replaceChildren(
     ...CAN_DO.map(([group, examples]) => el('div', { class: 'work-line' }, [el('span', { class: 'work-line-key', text: group }), el('span', { class: 'work-line-text', text: examples })])),
@@ -668,6 +637,80 @@ async function drawWorkExtras() {
           el('button', { type: 'button', class: 'board-link', text: 'Every tool, on the Engine room', onclick: () => setFilters('engine', { tab: 'reach' }).then(() => openCard('engine')) }),
         ])
       : null,
+  )
+}
+
+/**
+ * The rules Gnomon watches for (UC4 F20): one row each — its words, its
+ * version, this week against what its backtest promised, the owner's verdicts
+ * with their n, and the gate's word on its last fires. Pause, Edit and Drop sit
+ * on the row. Drop arms on the first click. Edit opens the spec; Test replays
+ * it over 30 days, and only a tested text can be saved, which the host tests
+ * once more before it becomes the next version.
+ */
+const HEARD = { phasic: 'said', tonic: 'listed', suppressed: 'held back', deferred: 'waited' }
+async function drawRules() {
+  const body = await fetch('/gnomon/api/rules').then((r) => r.json()).catch(() => null)
+  const rules = body?.rules ?? []
+  const seat = wk.seats.rules
+  seat.node.hidden = rules.length === 0
+  const post = (payload) => fetch('/gnomon/api/rules', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) }).then((r) => r.json()).catch(() => ({ valid: false, error: 'Gnomon could not answer that.' }))
+  const when = (iso) => new Date(iso).toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+  seat.body.replaceChildren(
+    el('div', { class: 'work-jobs' }, rules.map((r) => {
+      const fired = r.lastFires.length ? `Last: ${r.lastFires.map((f) => `${when(f.at)} ${HEARD[f.channel] ?? f.channel}`).join(' · ')}` : 'Not fired since it was adopted.'
+      const acts = el('span', { class: 'rule-acts' })
+      const edit = el('div', { class: 'rule-edit', hidden: true })
+      const drop = el('button', {
+        type: 'button', class: 'act act-small', text: 'Drop', title: 'Stop watching for this. Click twice.',
+        onclick: async (event) => {
+          const b = event.currentTarget
+          if (!b.hasAttribute('data-arm')) { b.setAttribute('data-arm', ''); b.textContent = 'Drop it?'; return }
+          b.disabled = true
+          await post({ op: 'drop', id: r.id })
+          drawRules()
+        },
+      })
+      acts.append(
+        el('button', { type: 'button', class: 'act act-small', text: r.paused ? 'Resume' : 'Pause', onclick: async (event) => { event.currentTarget.disabled = true; await post({ op: r.paused ? 'resume' : 'pause', id: r.id }); drawRules() } }),
+        el('button', { type: 'button', class: 'act act-small', text: 'Edit', onclick: () => { edit.hidden = !edit.hidden; if (!edit.hidden) edit.querySelector('textarea').focus() } }),
+        drop,
+      )
+      const spec = el('textarea', { class: 'rule-spec', rows: 8, spellcheck: 'false', 'aria-label': `The spec of ${r.title}` })
+      spec.value = JSON.stringify((({ id: _id, ...rest }) => rest)(r.rule), null, 2)
+      const said = el('p', { class: 'panel-note', text: 'Test replays it over the last 30 days. Only a tested spec can be saved.' })
+      let tested = null
+      const save = el('button', { type: 'button', class: 'act act-small', text: `Save as v${r.version + 1}`, disabled: true, onclick: async (event) => {
+        event.currentTarget.disabled = true
+        const out = await post({ op: 'adopt', id: r.id, rule: JSON.parse(tested) })
+        said.textContent = out.adopted ? `Saved: ${out.fired} fires in 30 days, ${out.heard} heard.` : (out.error ?? 'Not saved.')
+        if (out.adopted) drawRules()
+      } })
+      spec.addEventListener('input', () => { save.disabled = spec.value !== tested })
+      edit.append(spec, el('span', { class: 'rule-acts' }, [
+        el('button', { type: 'button', class: 'act act-small', text: 'Test', onclick: async () => {
+          let rule
+          try { rule = JSON.parse(spec.value) } catch { said.textContent = 'That is not JSON yet.'; return }
+          said.textContent = 'Replaying 30 days…'
+          const out = await post({ op: 'test', id: r.id, rule })
+          if (!out.valid) { said.textContent = out.error ?? 'Not a rule.'; tested = null; save.disabled = true; return }
+          said.textContent = `Would have fired ${out.fired} times in ${out.days} days (older half ${out.holdout.older.fired}, recent half ${out.holdout.recent.fired}); heard ${out.gate.phasic + out.gate.tonic}${r.predicted ? `, against ${r.predicted.fired} for v${r.version}` : ''}.`
+          tested = spec.value
+          save.disabled = false
+        } }),
+        save,
+      ]), said)
+      return el('div', { class: 'work-job rule-row', 'data-mark': r.paused ? 'paused' : r.week?.drifting ? 'waiting' : 'on' }, [
+        el('span', { class: 'work-job-mark' }),
+        el('span', { class: 'work-job-what' }, [
+          el('span', { class: 'work-job-title', text: r.title }),
+          el('span', { class: 'work-job-why', text: r.words, title: r.words }),
+          el('span', { class: 'work-job-why', text: `${r.line}. ${fired}` }),
+        ]),
+        acts,
+        edit,
+      ])
+    })),
   )
 }
 
@@ -795,7 +838,7 @@ function drawWorkStanding() {
  * row, is marked and scrolled to. The card stays whole — it is live, and a
  * filter that hid the running job would hide the one thing that moves.
  */
-const WORK_SEAT = { now: 'now', history: 'past', wakeups: 'soon', can: 'can' }
+const WORK_SEAT = { now: 'now', history: 'past', wakeups: 'soon', rules: 'rules', can: 'can' }
 let workAimed = ''
 function focusWork() {
   if (wk.seats === null) return
@@ -921,8 +964,8 @@ function drawWorkAsk(open) {
     el('span', { class: 'eyebrow', text: 'Gnomon asks, and waits' }),
     el('p', { class: 'work-ask-q', text: open.question }),
     el('div', { class: 'ask-choices' }, [
-      ...(open.choices ?? []).map((choice) => el('button', { type: 'button', class: 'choice', text: choice, onclick: () => answerOpenAsk(choice) })),
-      el('button', { type: 'button', class: 'choice-own', text: 'Answer in the chat', onclick: () => { showConversation(); input.focus({ preventScroll: true }) } }),
+      ...(open.choices ?? []).map((choice) => el('button', { type: 'button', class: 'choice', text: choice, onclick: () => (tellsMore(choice) ? (showConversation(), answerInComposer()) : answerOpenAsk(choice)) })),
+      el('button', { type: 'button', class: 'choice-own', text: 'Answer in the chat', onclick: () => { showConversation(); answerInComposer() } }),
     ]),
   ])
   // With the running job, not folded into the turn that raised it: a question
@@ -940,7 +983,7 @@ function drawWorkAsk(open) {
  * Counted by `updateLens` like any surface, because to the owner it IS one: the
  * lens is "show me only the things Gnomon drew", and a figure is one of them.
  */
-function drawFigure(text) {
+function drawFigure(text, callId) {
   let figure = null
   try {
     figure = JSON.parse(text ?? '')
@@ -951,9 +994,8 @@ function drawFigure(text) {
   if (node === null) return
   dropLiveLine()
   turn().append(node)
-  const id = `figure:${state.figures.size}:${Date.now()}`
-  stageable(node, id)
-  if (!state.replaying) lift(id)
+  // Named by the call, so the same figure has the same card when the thread is replayed.
+  figureSeat.add(node, `figure:${callId}`, { live: !state.replaying })
   state.prose = null
   updateLens()
   follow()
@@ -1538,8 +1580,6 @@ function apply(frame) {
       workRow(frame)
       state.speaking = false
       updateMood()
-      // The model asked for the owner to be SHOWN something: it directs the stage.
-      if (frame.name === 'gnomon_show_view' && !state.replaying) ALTITUDES[frame.args?.altitude]?.()
       // A tool call ends the current paragraph: what comes after it is a new
       // thought, informed by what came back.
       state.prose = null
@@ -1571,7 +1611,7 @@ function apply(frame) {
         state.surfaces.delete(frame.callId)
         if (frame.failed || /^Not drawn:/.test(frame.text ?? '')) {
           // A refusal is not a figure: whatever took the stage comes back down.
-          dismissPane(`surface:${frame.callId}`)
+          if (!state.replaying) dismissPane(`surface:${frame.callId}`)
           surface.setAttribute('data-refused', '')
           surface
             .querySelector('.surface-body')
@@ -1612,7 +1652,7 @@ function apply(frame) {
       // The composed figure, drawn from the result the call came back with. A
       // result that will not parse leaves the chip and its JSON exactly as they
       // were — a figure that cannot be read is not a figure to draw wrong.
-      if (row._figure === true) drawFigure(row._result)
+      if (row._figure === true) drawFigure(row._result, frame.callId)
       break
     }
 
@@ -1623,8 +1663,7 @@ function apply(frame) {
       turn().append(drawn)
       state.prose = null
       updateLens()
-      stageable(drawn, `surface:${frame.callId}`)
-      if (!state.replaying) lift(`surface:${frame.callId}`)
+      figureSeat.add(drawn, `surface:${frame.callId}`, { live: !state.replaying })
       break
     }
 
@@ -1730,7 +1769,7 @@ async function drawContextMeter() {
     companionMeter.hidden = true
     return
   }
-  const window = body.contextWindow ?? 128000
+  const window = body.contextWindow ?? 64000
   const compactAt = body.compactAt ?? Math.floor(window * 0.8)
   companionMeter.hidden = false
   companionFill.style.width = `${Math.min(100, Math.round((100 * tokens) / window))}%`
@@ -1761,7 +1800,7 @@ function drawCompanion() {
   // `ownerAsk.unanswerable` refuses to ASK a question quoting a `person-<hash>`
   // or a `[private]`/`[hidden]` placeholder; the same text must not arrive here
   // through the back door either, and the strip was showing exactly that — an
-  // "Who is person-2b5bc1dfa9?" from before that guard existed. A stale value
+  // "Who is person-f1f2f3f4f5?" from before that guard existed. A stale value
   // the seat cannot honestly render falls back to what the seat IS.
   const readable = said && !/\bperson-[0-9a-f]{6,}\b|\[(private|hidden)\]/i.test(said) ? said : null
   companionSaid.textContent = readable || row?.title || 'the ongoing conversation'
@@ -2009,7 +2048,15 @@ $('companion-compact').addEventListener('click', async () => {
   }, 2000)
 })
 
-async function openSession(id, { quiet = false } = {}) {
+/**
+ * Open a thread: replay its log into the canvas.
+ *
+ * `all` replays every turn; otherwise the server sends the recent ones and says
+ * how many came before (`earlier`), and a fold at the top brings them in. A
+ * number for `all` is how many turns the fold had held, so the page opens where
+ * the owner was reading rather than at the end.
+ */
+async function openSession(id, { quiet = false, all = false } = {}) {
   $('act-delete')?.removeAttribute('data-arm')
   state.aborter?.abort()
   state.sessionId = id
@@ -2028,23 +2075,50 @@ async function openSession(id, { quiet = false } = {}) {
 
   let body = null
   try {
-    body = await (await fetch(`/gnomon/api/session?id=${encodeURIComponent(id)}`, { headers: { accept: 'application/json' } })).json()
+    body = await (await fetch(`/gnomon/api/session?id=${encodeURIComponent(id)}${all ? '&all=1' : ''}`, { headers: { accept: 'application/json' } })).json()
   } catch {
     apply({ type: 'error', message: 'That session could not be read.' })
     return
   }
   state.replaying = true
-  for (const frame of body.frames ?? []) apply(frame)
+  // After "Earlier": a mark where the recent turns began, to open the page there.
+  let turns = 0
+  let wasFirst = null
+  for (const frame of body.frames ?? []) {
+    if (frame.type === 'turn' && typeof all === 'number' && turns++ === all) stack().append((wasFirst = el('div', { class: 'earlier-mark' })))
+    apply(frame)
+  }
   state.replaying = false
+  if (body.earlier > 0) stack().prepend(earlierFold(id, body.earlier))
   updateLens()
   // A session with nothing in it yet opens on the day, the same as a new one.
   if ((body.frames ?? []).length === 0) await showToday()
   replayUnheard()
   watchSession(id)
   // Force, not follow: opening a session should land at its end, wherever the
-  // scroll happened to be a moment ago.
-  follow(true)
+  // scroll happened to be a moment ago. After "Earlier", on the turn that had
+  // been first, with what was folded above it.
+  if (wasFirst) {
+    stickToBottom = false
+    wasFirst.scrollIntoView({ block: 'start' })
+  } else follow(true)
   input.focus({ preventScroll: true })
+}
+
+/** The top of a thread opened on its recent turns: one act that brings in the rest. */
+function earlierFold(id, count) {
+  return el('div', { class: 'earlier' }, [
+    el('button', {
+      type: 'button',
+      class: 'link',
+      text: `Show the ${count} earlier turn${count === 1 ? '' : 's'}`,
+      onclick: (event) => {
+        event.currentTarget.disabled = true
+        event.currentTarget.textContent = 'Reading the earlier turns…'
+        void openSession(id, { quiet: true, all: count })
+      },
+    }),
+  ])
 }
 
 /**
@@ -2156,7 +2230,7 @@ function watchSession(id) {
       updateMood()
     }
   }
-  watcher.onerror = () => {}
+  watcher.onerror = () => void checkSignedIn()
 }
 
 async function newSession() {
@@ -2667,14 +2741,21 @@ $('summon-instruments').addEventListener('click', () => setInstrumentsMenu(instr
 
   const DAYS_BACK = 13
   const ymd = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
-  const base = new Date()
-  base.setHours(12, 0, 0, 0)
+  // The ruler's fourteen days end on the page's today, and are drawn again when
+  // a tab left open overnight wakes on a new day (`rollDay` below).
+  let base = null
   const labels = el('div', { class: 'sd-days' })
-  for (let i = -DAYS_BACK; i <= 0; i++) {
-    const d = new Date(base)
-    d.setDate(base.getDate() + i)
-    labels.append(el('span', { class: `sd-day${i === 0 ? ' sd-day-today' : ''}`, text: d.toLocaleDateString(undefined, { weekday: 'narrow' }), title: ymd(d) }))
+  const drawRuler = () => {
+    base = new Date()
+    base.setHours(12, 0, 0, 0)
+    labels.replaceChildren()
+    for (let i = -DAYS_BACK; i <= 0; i++) {
+      const d = new Date(base)
+      d.setDate(base.getDate() + i)
+      labels.append(el('span', { class: `sd-day${i === 0 ? ' sd-day-today' : ''}`, text: d.toLocaleDateString(undefined, { weekday: 'narrow' }), title: ymd(d) }))
+    }
   }
+  drawRuler()
   const range = el('input', { class: 'sd-range', type: 'range', min: String(-DAYS_BACK), max: '0', step: '1', value: '0', 'aria-label': 'Which day the page shows' })
   $('ruler').replaceChildren(range, labels)
 
@@ -2699,12 +2780,18 @@ $('summon-instruments').addEventListener('click', () => setInstrumentsMenu(instr
   range.addEventListener('input', () => {
     const d = new Date(base)
     d.setDate(base.getDate() + Number(range.value))
-    void postSpan({ from: ymd(d) })
+    // Back to today is the preset, not a date: a date would still say today's
+    // date tomorrow morning.
+    void postSpan(Number(range.value) === 0 ? { label: 'today' } : { from: ymd(d) })
   })
 
   // The record answers. One listener for both hands and for Gnomon's.
-  document.addEventListener('gnomon:span', (event) => {
-    const { span, first } = event.detail ?? { span: null, first: false }
+  // A preset is read against today (span.js): "Today" set last night is this
+  // morning, not yesterday. Only the ruler's day and a custom range keep dates.
+  let lastSpan = null
+  const onSpan = (stored, first) => {
+    lastSpan = stored
+    const span = liveSpan(stored, ymd(base))
     const label = span?.label ?? 'today'
     for (const [name, chip] of chips) chip.setAttribute('aria-pressed', String(name === label))
     const oneDay = span !== null && span.from === span.to
@@ -2723,7 +2810,21 @@ $('summon-instruments').addEventListener('click', () => setInstrumentsMenu(instr
     if (first) return
     rereadAll()
     document.dispatchEvent(new CustomEvent('gnomon:beat'))
+  }
+  document.addEventListener('gnomon:span', (event) => {
+    const { span, first } = event.detail ?? { span: null, first: false }
+    onSpan(span ?? null, first)
   })
+  // A tab open across midnight: on the next look (or the next beat, for a tab
+  // in view), the ruler ends on the new day and every card reads it again.
+  const rollDay = () => {
+    if (document.visibilityState === 'hidden' || ymd(new Date()) === ymd(base)) return
+    drawRuler()
+    shown = null
+    onSpan(lastSpan, false)
+  }
+  document.addEventListener('visibilitychange', rollDay)
+  document.addEventListener('gnomon:beat', rollDay)
 }
 
 // ── The command bar ──────────────────────────────────────────────────────
@@ -3041,7 +3142,7 @@ function drawStrip() {
   // a warning label, not a control.
   parts.push(hearingChip(now.hearing))
   // Judgement degraded (J0.9). Silent when Jev answers; said plainly when it does not.
-  if (now.judging === 'local-fallback') parts.push(el('span', { class: 'strip-held', 'data-judging': 'local-fallback', title: 'Jev is not answering. The text model is judging in its place — slower, less calibrated; nothing above L2 acts on it.', text: 'judging on local model' }))
+  if (now.judging === 'local-fallback') parts.push(el('span', { class: 'strip-held', 'data-judging': 'local-fallback', title: 'Jev is not answering. The text model is judging in its place — slower, less calibrated; nothing above L2 acts on it.', text: 'judging on the text model' }))
   else if (now.judging === 'off') parts.push(el('span', { class: 'strip-held', 'data-judging': 'off', title: 'Nothing is judging. Rules are on their pre-Jev paths: template lines, the arithmetic gate, no rerank.', text: 'judging offline' }))
   if (!now.idle && now.flowMin >= 5) parts.push(el('span', { class: 'strip-day', text: `in focus ${dur(now.flowMin)}` }))
   if (now.switchesLastHour !== null && !now.idle) parts.push(el('span', { class: 'strip-day', text: `${now.switchesLastHour} switch${now.switchesLastHour === 1 ? '' : 'es'} this hour` }))
@@ -3067,7 +3168,7 @@ function drawStrip() {
   if (now.self?.due && !now.idle) parts.push(selfReportChips())
   else if (now.self?.lastTap && now.self.lastAt && Date.now() - Date.parse(now.self.lastAt) < 30 * 60_000) parts.push(el('span', { class: 'strip-day', title: 'Your last word on how it is going. Gnomon grades its own read against it.', text: `you said ${now.self.lastTap}` }))
   // A tendency, shown as one: faint, and honest about being a guess.
-  if (!now.idle && now.nextStep) parts.push(el('span', { class: 'strip-held', title: `Seen ${now.nextStep.support} times. About 40% reliable — a tendency, not a rule.`, text: `usually ${now.nextStep.process} next` }))
+  if (!now.idle && now.nextStep) parts.push(el('span', { class: 'strip-held', title: `Seen ${now.nextStep.support} times. About 27% reliable — a tendency, not a rule.`, text: `usually ${now.nextStep.process} next` }))
   // What it noticed today — a button, because the number is an invitation to
   // go and see what those were, and the Unsaid tab is where that is answered.
   if ((now.noticedToday ?? 0) > 0 || now.held > 0) {
@@ -3359,9 +3460,9 @@ function openLive() {
         break
     }
   }
-  // The browser reconnects an EventSource on its own; nothing to do here but
-  // not crash.
-  source.onerror = () => {}
+  // The browser reconnects an EventSource on its own after a restart. After the
+  // session cookie ran out it never will, so ask which of the two it was.
+  source.onerror = () => void checkSignedIn()
 }
 
 // ── Gnomon's own question ─────────────────────────────────────────────────
@@ -3399,6 +3500,18 @@ async function loadOpenAsk() {
  * seat clears optimistically: the fold is what makes it true, and leaving the
  * question up for twenty seconds would read as the tap not having worked.
  */
+/**
+ * UC1-X3: "Yes — tell me", "Moved — tell me when". A tap on one of these is
+ * not the answer; it opens the box for it, and the words typed there answer
+ * the same question.
+ */
+const tellsMore = (choice) => /— tell me( when)?$/i.test(choice)
+function answerInComposer() {
+  delete input.dataset.answering
+  input.focus({ preventScroll: true })
+  updateBarMode()
+}
+
 async function answerOpenAsk(text, { typed = false } = {}) {
   const ask = openAsk
   const answer = String(text ?? '').trim()
@@ -3495,7 +3608,7 @@ function drawOpenAsk() {
         'div',
         { class: 'ask-choices' },
         [
-          ...openAsk.choices.map((choice) => el('button', { type: 'button', class: 'choice', text: choice, onclick: () => answerOpenAsk(choice) })),
+          ...openAsk.choices.map((choice) => el('button', { type: 'button', class: 'choice', text: choice, onclick: () => (tellsMore(choice) ? answerInComposer() : answerOpenAsk(choice)) })),
           el('button', {
             type: 'button',
             class: 'choice-own',
@@ -3531,6 +3644,14 @@ function updateBarMode() {
   else bar.removeAttribute('data-answering')
 }
 
+// "Answer in the chat" on a Today or Left-for-you row: the conversation in
+// front, the question in its seat, the cursor in the composer beneath it.
+document.addEventListener('gnomon:answer', () => {
+  showConversation()
+  drawOpenAsk()
+  input.focus({ preventScroll: true })
+})
+
 $('bar-mode-out').addEventListener('click', () => {
   // This one message is not an answer. The question stays open.
   input.dataset.answering = '0'
@@ -3541,11 +3662,10 @@ $('bar-mode-out').addEventListener('click', () => {
 // ── Paper ─────────────────────────────────────────────────────────────────
 // The head's shortcut to one setting. It writes the same record the Settings
 // card does, so the choice reaches every tab rather than this browser only.
-const THEMES = ['system', 'light', 'dark']
 const THEME_LABEL = { system: 'Auto', light: 'Light', dark: 'Dark' }
 
 $('theme-toggle')?.addEventListener('click', () => {
-  const next = THEMES[(THEMES.indexOf(SETTINGS.paper) + 1) % THEMES.length]
+  const next = nextPaper(SETTINGS.paper)
   fetch('/gnomon/api/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ paper: next }) })
     .then((r) => (r.ok ? r.json() : null))
     .then((got) => got && applySettings(got))

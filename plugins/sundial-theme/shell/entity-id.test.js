@@ -9,8 +9,8 @@ describe('entitySlug', () => {
   })
 
   it('is idempotent, so folding an already-folded id is safe', () => {
-    const once = entitySlug('Ledger failure views (L1–L7)')
-    expect(once).toBe('ledger-failure-views-l1-l7')
+    const once = entitySlug('Ledger retry views (L1–L7)')
+    expect(once).toBe('ledger-retry-views-l1-l7')
     expect(entitySlug(once)).toBe(once)
   })
 

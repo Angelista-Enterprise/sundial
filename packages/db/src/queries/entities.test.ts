@@ -41,21 +41,21 @@ describe('mergeEntityRows / resolveEntityAlias (J2.4 MergeEntity)', () => {
 
   it('moves the facts, records the alias on the survivor, drops the hash row, and the alias resolves; a missing survivor merges nothing', async () => {
     await upsertEntity({ id: 'person:eva', kind: 'person', canonicalName: 'Eva', createdAt: '2026-01-01T00:00:00.000Z' });
-    await upsertEntity({ id: 'person:person-cc88838ae5', kind: 'person', canonicalName: 'person-cc88838ae5', createdAt: '2026-01-01T00:00:00.000Z' });
-    await insertEntityFact({ id: 'f1', entityId: 'person:person-cc88838ae5', predicate: 'knownAs', object: 'Eva', confidence: 100, validFrom: '2026-01-02T00:00:00.000Z', sourceEventId: null, createdAt: '2026-01-02T00:00:00.000Z', provenance: 'assertion' });
-    await insertEntityFact({ id: 'f2', entityId: 'person:person-cc88838ae5', predicate: 'metWith', object: 'owner', confidence: 60, validFrom: '2026-01-03T00:00:00.000Z', sourceEventId: null, createdAt: '2026-01-03T00:00:00.000Z' });
+    await upsertEntity({ id: 'person:person-e5a0c1d2b3', kind: 'person', canonicalName: 'person-e5a0c1d2b3', createdAt: '2026-01-01T00:00:00.000Z' });
+    await insertEntityFact({ id: 'f1', entityId: 'person:person-e5a0c1d2b3', predicate: 'knownAs', object: 'Eva', confidence: 100, validFrom: '2026-01-02T00:00:00.000Z', sourceEventId: null, createdAt: '2026-01-02T00:00:00.000Z', provenance: 'assertion' });
+    await insertEntityFact({ id: 'f2', entityId: 'person:person-e5a0c1d2b3', predicate: 'metWith', object: 'owner', confidence: 60, validFrom: '2026-01-03T00:00:00.000Z', sourceEventId: null, createdAt: '2026-01-03T00:00:00.000Z' });
 
-    expect(await mergeEntityRows('person:person-cc88838ae5', 'person:nobody', 'person-cc88838ae5')).toBeNull();
-    const moved = await mergeEntityRows('person:person-cc88838ae5', 'person:eva', 'person-cc88838ae5');
+    expect(await mergeEntityRows('person:person-e5a0c1d2b3', 'person:nobody', 'person-e5a0c1d2b3')).toBeNull();
+    const moved = await mergeEntityRows('person:person-e5a0c1d2b3', 'person:eva', 'person-e5a0c1d2b3');
     expect(moved).toEqual({ facts: 2, embeddings: 0 });
     const all = await getAllEntities();
     expect(all.map((e) => e.id)).toEqual(['person:eva']);
-    expect(await resolveEntityAlias('person-cc88838ae5')).toBe('person:eva');
+    expect(await resolveEntityAlias('person-e5a0c1d2b3')).toBe('person:eva');
     expect(await resolveEntityAlias('person-ffffffffff')).toBeNull();
     // The fold still learns the hash is Eva, from the alias list rather than the moved fact.
-    expect(await loadAliasNames()).toMatchObject({ 'person-cc88838ae5': 'Eva' });
+    expect(await loadAliasNames()).toMatchObject({ 'person-e5a0c1d2b3': 'Eva' });
     // A repeat moves nothing and changes nothing.
-    expect(await mergeEntityRows('person:person-cc88838ae5', 'person:eva', 'person-cc88838ae5')).toEqual({ facts: 0, embeddings: 0 });
+    expect(await mergeEntityRows('person:person-e5a0c1d2b3', 'person:eva', 'person-e5a0c1d2b3')).toEqual({ facts: 0, embeddings: 0 });
   });
 });
 
@@ -259,6 +259,15 @@ describe('Beta posterior confidence (Phase 2a)', () => {
     const [f] = await getEntityFactTimeline('project:g');
     expect(f.alpha).toBe(10);
     expect(f.confidence).toBe(77);
+  });
+
+  it('reinforceEntityFact on the beta side is evidence against: confidence falls, the record stays', async () => {
+    await insertEntityFact({ id: 'f1', entityId: 'project:g', predicate: 'usesTool', object: 'Code', confidence: 70, validFrom: T, sourceEventId: null, createdAt: T });
+    await reinforceEntityFact('f1', 1, 'beta'); // alpha 7, beta 3->4 => round(100*7/11)=64
+    const [f] = await getEntityFactTimeline('project:g');
+    expect(f.beta).toBe(4);
+    expect(f.confidence).toBe(64);
+    expect(f.object).toBe('Code');
   });
 
   it('decayCurrentFactConfidence drifts certainty toward the prior WITHOUT touching the record (D8)', async () => {

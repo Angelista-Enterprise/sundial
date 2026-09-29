@@ -73,7 +73,7 @@ export const SENSORS = [
   { name: 'input activity', package: 'input-activity', events: ['input:activity'], speech: 'heartbeat', does: 'counts keys and clicks, never what was typed' },
   { name: 'window', package: 'window', events: ['window:changed'], speech: 'state', does: 'which app and window is in front' },
   { name: 'project', package: 'project', events: ['project:detected', 'project:switched'], speech: 'state', does: 'which repository the work is in' },
-  { name: 'agent session', package: 'agent-session', events: ['agent:session'], speech: 'state', does: 'where the coding agent is working' },
+  { name: 'agent session', package: 'agent-session', events: ['agent:session', 'agent:fleet', 'agent:hook'], speech: 'state', does: 'where each coding agent works and what it waits on' },
   { name: 'focus mode', package: 'focus-mode', events: ['focus-mode:changed'], speech: 'state', does: 'whether Do Not Disturb is on' },
   { name: 'audio and camera', package: 'audio-context', events: ['media:state'], speech: 'state', does: 'whether the mic or camera is live' },
   { name: 'network', package: 'location-network', events: ['location:network'], speech: 'state', does: 'which network you are on, as a fingerprint' },
@@ -94,18 +94,20 @@ export const SENSORS = [
   { name: 'files', package: 'file-watcher', events: ['file:changed', 'file-watcher:capacity'], speech: 'event', does: 'which files changed under a watched root' },
   { name: 'symbols', package: 'symbol-edit', events: ['symbol:edited'], speech: 'event', does: 'which functions a change touched' },
   { name: 'pull requests', package: 'github-pr', events: ['git:pr-status'], speech: 'event', does: 'the state of a PR on a branch you are on' },
-  { name: 'calendar', package: 'calendar', events: ['calendar:upcoming', 'calendar:active', 'calendar:context-event'], speech: 'event', does: 'meetings, from EventKit' },
+  { name: 'calendar', package: 'calendar', events: ['calendar:upcoming', 'calendar:active', 'calendar:context-event', 'reminders:snapshot'], speech: 'event', does: 'meetings, and your reminders (title, due, done), from EventKit' },
   { name: 'sleep and wake', package: 'sleep-wake', events: ['system:sleep-wake'], speech: 'event', does: 'when the machine slept and woke' },
   { name: 'presence', package: 'presence', events: ['presence:scan'], speech: 'event', does: 'other devices on a network you consented to', consent: true },
   { name: 'clipboard', package: 'clipboard-meta', events: ['clipboard:activity'], speech: 'event', does: 'that you copied something, and how big — never what', optIn: 'clipboardEnabled' },
   { name: 'screen text', package: 'screen-ocr', events: ['screen:ocr'], speech: 'state', does: 'text read off the screen', optIn: 'ocr' },
   { name: 'screen reading', package: 'screen-vision', events: ['screen:fact'], speech: 'state', does: 'what a local vision model makes of the screen, as a few short facts', optIn: 'vision' },
+  { name: 'arc', package: 'arc', events: ['browser:arc-space'], speech: 'state', does: "the tabs of the Arc space you are in, origin and path only, so a return can offer them again" },
   { name: 'vault', package: 'vault', events: ['vault:changed'], speech: 'event', does: 'which notes you edited in the vault you named — paths only, never contents', optIn: 'vault' },
   // The one row on this card that most needs to exist. It reads subjects and
   // senders from Mail and Messages, behind Full Disk Access, and no body text
   // — which is exactly the claim a trust surface is for. It arrived in the
   // codebase on 2026-09-22 and `sensors.test.js` failed the same hour.
-  { name: 'mail and messages', package: 'mail', events: ['mail:received', 'mail:status', 'message:received'], speech: 'event', does: 'who wrote to you and what the subject was — never the body', optIn: 'mail' },
+  { name: 'mail', package: 'mail', events: ['mail:received', 'mail:sent', 'mail:status'], speech: 'event', does: 'who wrote to you, who you wrote to, and the subject — never the body', optIn: 'mail' },
+  { name: 'messages', package: 'mail', events: ['message:received'], speech: 'event', does: 'who wrote in Messages, and in which chat — never the text', optIn: 'messages' },
   { name: 'phone', package: null, events: ['phone:sleep', 'phone:place', 'phone:workout', 'phone:motion', 'phone:steps'], speech: 'event', does: 'sleep, places and workouts, pushed from your phone', pushed: true },
 ]
 

@@ -2,7 +2,7 @@ import { deriveId } from '@sundial/helpers/derive-id.js';
 import type { Effect, JudgementResultPayload, Rule } from '@sundial/kernel/types.js';
 import { THRESHOLD_MIN_N } from './judgement-track.js';
 import { questionId } from './questions/index.js';
-import { GOAL_ADVANCE_QUESTIONS, goalAdvanceSlot, MAX_GOAL_SLOTS, MAX_PROMISE_SLOTS, MOMENT_FANOUT_QUESTIONS, momentFanout, PROMISE_RESOLVE_QUESTIONS, promiseSlot } from './questions/moment-fanout.js';
+import { GOAL_ADVANCE_QUESTIONS, goalAdvanceSlot, MAX_GOAL_SLOTS, MAX_PROMISE_SLOTS, momentFanout, PROMISE_RESOLVE_QUESTIONS, promiseSlot } from './questions/moment-fanout.js';
 
 /**
  * J2.7's operating point for "this session advanced that goal" until the
@@ -12,60 +12,15 @@ import { GOAL_ADVANCE_QUESTIONS, goalAdvanceSlot, MAX_GOAL_SLOTS, MAX_PROMISE_SL
  */
 export const GOAL_ADVANCE_DEFAULT_THRESHOLD = 0.6;
 /**
- * J4.4: a promise is opened from speech at this noul until the question earns
- * its own. From the 2026-09-22 backfill: 397 speech moments, 20 at ≥ 0.7 and
- * the top of that list reads as promises ("dan zal ik Marco jouw feedback
- * zetten erin" 0.90, "ik ga het even doorsturen" 0.76); at 0.5 it is 50 and
- * the tail is small talk.
- */
-export const COMMITMENT_DEFAULT_THRESHOLD = 0.7;
-
-/**
- * Two keys before speech opens a promise, from the 2026-09-23 card audit: all
- * four live promises were room noise the speech model mis-heard (Spanish,
- * Arabic and Dutch in one excerpt, a television in the room). The judge read
- * them as promises at 0.73–0.79; neither key below needs the judge.
- *
- * The words: English or Dutch, which is all the owner speaks and all the
- * sensor keeps (R1). A letter from another script, or ¿ ¡ ñ, means the room.
+ * The words key, from the 2026-09-23 card audit: all four live promises were
+ * room noise the speech model mis-heard (Spanish, Arabic and Dutch in one
+ * excerpt, a television in the room). English or Dutch is all the owner
+ * speaks and all the sensor keeps (R1); a letter from another script, or
+ * ¿ ¡ ñ, means the room. The meeting pass applies it to every quote.
  */
 const FOREIGN = /[^\p{Script=Latin}\p{Script=Common}\p{Script=Inherited}]|[¿¡ñÑ]/u;
 export const inTheOwnersLanguage = (text: string): boolean => !FOREIGN.test(text);
 
-/**
- * The room: a meeting or a call the owner was in (`state.meetings.seen`, which
- * holds calendar meetings and unscheduled calls alike). A promise is made to
- * someone; talk overheard outside any meeting is the room's. Placed by the
- * moment id, a ULID whose clock is the moment's start, with five minutes'
- * slack at each edge for a meeting that starts or ends late.
- */
-const MEETING_SLACK_MS = 5 * 60_000;
-const ULID = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-const ulidMs = (id: string): number | null => {
-  if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(id)) return null;
-  let ms = 0;
-  for (const ch of id.slice(0, 10)) ms = ms * 32 + ULID.indexOf(ch);
-  return ms;
-};
-export function inAMeeting(meetings: Record<string, { start: string; end: string }>, momentId: string, durationMs: number): boolean {
-  const start = ulidMs(momentId);
-  if (start === null) return false;
-  const end = start + Math.max(0, durationMs);
-  return Object.values(meetings).some((m) => Date.parse(m.start) - MEETING_SLACK_MS <= end && start <= Date.parse(m.end) + MEETING_SLACK_MS);
-}
-
-/**
- * What a promise is called: the sentence in the excerpt that makes it — the
- * one with a first person and a future ("ik ga", "zal ik", "I'll", "we will")
- * — clipped. The whole excerpt was the name before, so a thread read as
- * forty words of a room.
- */
-const PROMISING = /\b(ik ga|ga ik|ik zal|zal ik|ik stuur|stuur ik|we gaan|gaan we|ik kijk|kijk ik|i'll|i will|i'm going to|we'll|we will|let me)\b/i;
-export function promiseName(spoken: string): string {
-  const sentences = spoken.split(/(?<=[.!?])\s+/).map((x) => x.trim()).filter(Boolean);
-  const said = sentences.find((x) => PROMISING.test(x)) ?? sentences[0] ?? spoken;
-  return said.length > 90 ? `${said.slice(0, 89).trimEnd()}…` : said;
-}
 export const PROMISE_RESOLVE_DEFAULT_THRESHOLD = 0.7;
 
 /**
@@ -144,26 +99,10 @@ export const applyMomentJudgement: Rule = (state, event) => {
     });
   }
 
-  // J4.4: a promise heard aloud opens a thread — only when the words exist to
-  // quote (the metadata carries the clipped excerpt) and the noul clears θ.
-  const commitmentP = noul(payload.answers.contains_commitment);
-  const spoken = typeof payload.metadata?.spoken === 'string' ? payload.metadata.spoken : null;
-  const heardInAMeeting = inAMeeting(state.meetings.seen, payload.momentId ?? '', typeof payload.metadata?.durationMs === 'number' ? payload.metadata.durationMs : 0);
-  if (commitmentP !== null && spoken && inTheOwnersLanguage(spoken) && heardInAMeeting) {
-    const record = state.judgement.questions[questionId(MOMENT_FANOUT_QUESTIONS.contains_commitment)];
-    const threshold = record && record.n >= THRESHOLD_MIN_N ? record.threshold : COMMITMENT_DEFAULT_THRESHOLD;
-    if (commitmentP >= threshold) {
-      effects.push({
-        type: 'EmitEvent',
-        event: {
-          id: deriveId(event.ts, event.id, 'commitment-heard', payload.momentId),
-          type: 'commitment:heard',
-          ts: event.ts,
-          payload: { momentId: payload.momentId, text: promiseName(spoken), p: commitmentP, projectId: typeof payload.metadata?.projectId === 'string' ? payload.metadata.projectId : null, projectName: typeof payload.metadata?.projectName === 'string' ? payload.metadata.projectName : null },
-        },
-      });
-    }
-  }
+  // J4.4 opened a promise here from the moment's 160-character clip of
+  // speech. UC1 replaced it with one pass over the whole meeting
+  // (`promise-extract.ts`): the clip rarely held the due date, and a moment's
+  // speech outside a meeting was the room's.
 
   // J4.4: a promise slot over θ closes that promise — with the second key: the
   // moment must carry non-text evidence (commit, commands, calendar, mic). A

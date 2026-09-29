@@ -150,8 +150,8 @@ describe('buildJournalMessages', () => {
 
 describe('parseJournalResult', () => {
   it('parses a valid strict-JSON reply', () => {
-    const r = parseJournalResult('{"tldr":"A deep day.","narrative":"Para one.\\n\\nPara two.","noticed":["Focus dropped after Slack."],"followups":["PL-403 open"]}');
-    expect(r).toEqual({ tldr: 'A deep day.', narrative: 'Para one.\n\nPara two.', noticed: ['Focus dropped after Slack.'], followups: ['PL-403 open'] });
+    const r = parseJournalResult('{"tldr":"A deep day.","narrative":"Para one.\\n\\nPara two.","noticed":["Focus dropped after Slack."],"followups":["KIT-403 open"]}');
+    expect(r).toEqual({ tldr: 'A deep day.', narrative: 'Para one.\n\nPara two.', noticed: ['Focus dropped after Slack.'], followups: ['KIT-403 open'] });
   });
 
   it('strips ``` fences', () => {

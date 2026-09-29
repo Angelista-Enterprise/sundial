@@ -7,8 +7,8 @@
 // none of them — the figure JSON sat in the tool row while the prose referred
 // to a drawing nobody could see. A kind added to the union without an arm here
 // fails loudly instead of silently becoming a paragraph of JSON.
-import { describe, expect, it } from 'vitest';
-import { FIGURE_KINDS, renderFigure } from './figures.js';
+import { describe, expect, it, vi } from 'vitest';
+import { FIGURE_KINDS, figureStage, renderFigure } from './figures.js';
 import { grid } from './surfaces.js';
 
 /** The smallest payload of each kind that the composer could actually return. */
@@ -140,7 +140,7 @@ describe('grid sorting', () => {
     { name: 'Alex', meetings: 4 },
     { name: 'Marco', meetings: 12 },
     { name: 'Priya', meetings: null },
-    { name: 'joris', meetings: 2 },
+    { name: 'hana', meetings: 2 },
   ];
   /** Render into a container and hand back the header buttons plus a column reader. */
   const mount = () => {
@@ -167,7 +167,7 @@ describe('grid sorting', () => {
     expect(g.column(1)).toEqual(['12', '4', '2', '—']);
     expect(g.marks()).toEqual(['none', 'descending']);
     g.head('meetings').click();
-    expect(g.column(0)).toEqual(['Alex', 'Marco', 'Priya', 'joris']);
+    expect(g.column(0)).toEqual(['Alex', 'Marco', 'Priya', 'hana']);
     expect(g.marks()).toEqual(['none', 'none']);
   });
 
@@ -184,7 +184,7 @@ describe('grid sorting', () => {
   it('sorts text case-insensitively, so a lowercase name is not exiled to the end', () => {
     const g = mount();
     g.head('person').click();
-    expect(g.column(0)).toEqual(['Alex', 'joris', 'Marco', 'Priya']);
+    expect(g.column(0)).toEqual(['Alex', 'hana', 'Marco', 'Priya']);
   });
 
   it('marks only the column actually sorted', () => {
@@ -192,5 +192,73 @@ describe('grid sorting', () => {
     g.head('meetings').click();
     g.head('person').click();
     expect(g.marks()).toEqual(['ascending', 'none']);
+  });
+});
+
+describe('figureStage (L3)', () => {
+  /** A board with one seat per id, and the three acts the stage offers. */
+  const board = () => {
+    const cards = new Set();
+    const seats = new Map();
+    const stage = {
+      onBoard: (id) => cards.has(id),
+      pane: vi.fn((id, { node }) => {
+        const body = seats.get(id) ?? document.createElement('div');
+        body.className = 'pane-body';
+        body.replaceChildren(node);
+        seats.set(id, body);
+        cards.add(id);
+      }),
+      focusPane: vi.fn(),
+      dismissPane: vi.fn(),
+    };
+    return { cards, seats, stage };
+  };
+  /** A drawn surface in a turn of the transcript. */
+  const drawn = (transcript, title) => {
+    const node = document.createElement('div');
+    node.innerHTML = `<div class="surface-head"><span class="surface-title">${title}</span></div><div class="surface-body">bars</div>`;
+    transcript.append(node);
+    return node;
+  };
+
+  it('keeps a staged figure on the board when the thread changes, and lifts it back in when the thread returns', () => {
+    const { seats, stage } = board();
+    const figures = figureStage(stage);
+    const transcript = document.createElement('div');
+    document.body.append(transcript);
+
+    // Gnomon draws it live: it takes the stage, a stub keeps its place.
+    figures.add(drawn(transcript, 'Hours by day'), 'surface:c1', { live: true });
+    expect(stage.pane).toHaveBeenCalledTimes(1);
+    expect(transcript.querySelector('.surface-stub')?.textContent).toContain('Hours by day');
+
+    // Another thread opens: the transcript goes, the card stays, nothing is removed.
+    figures.clear();
+    transcript.replaceChildren();
+    expect(stage.dismissPane).not.toHaveBeenCalled();
+
+    // The thread comes back and is replayed: its figure fills the same card, quietly.
+    const again = drawn(transcript, 'Hours by day');
+    figures.add(again, 'surface:c1', { live: false });
+    expect(stage.pane).toHaveBeenCalledTimes(2);
+    expect(seats.get('surface:c1').firstChild).toBe(again);
+    expect(stage.focusPane).toHaveBeenCalledTimes(1);
+    expect(stage.dismissPane).not.toHaveBeenCalled();
+  });
+
+  it('leaves a replayed figure in its turn when its card is not on the board', () => {
+    const { stage } = board();
+    const figures = figureStage(stage);
+    const transcript = document.createElement('div');
+    document.body.append(transcript);
+    const node = drawn(transcript, 'Old figure');
+    figures.add(node, 'figure:c2', { live: false });
+    expect(stage.pane).not.toHaveBeenCalled();
+    expect(node.parentElement).toBe(transcript);
+    // A card the record holds with nothing drawing it asks for the node by id.
+    expect(figures.relift('figure:c2')).toBe(true);
+    expect(stage.pane).toHaveBeenCalledTimes(1);
+    expect(figures.relift('figure:unknown')).toBe(false);
   });
 });

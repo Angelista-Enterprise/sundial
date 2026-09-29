@@ -104,6 +104,8 @@ let follow = null
 export const onChange = (fn) => listeners.add(fn)
 export const focused = () => focusedId
 export const has = (id) => panes.has(id) || id in board.cards
+/** Is there a card for `id` in the record — not merely a pane registered for it. */
+export const onBoard = (id) => id in board.cards
 export const titleOf = (id) => panes.get(id)?.title ?? board.cards[id]?.text ?? id
 /** What the record says this card is set to, or null. */
 export const filtersOf = (id) => board.cards[id]?.filters ?? null
@@ -1702,26 +1704,31 @@ function afterRemoving(card) {
 /** Take a card off the board. Any card: nothing is pinned. */
 export function dismissPane(id) {
   const card = board.cards[id]
-  post({ action: 'remove', id })
-  if (card) {
-    // Read the neighbourhood BEFORE the card goes, while the positions that
-    // stood around it are still true.
-    const wasFocused = focusedId === id
-    const next = wasFocused ? afterRemoving(card) : null
-    visited = visited.filter((v) => v !== id)
-    try {
-      localStorage.setItem(KEPT, JSON.stringify(visited))
-    } catch {}
-    delete board.cards[id]
+  // Not on the board: nothing to remove, and a post would log a remove the
+  // server stamps as the owner's (the replay and session-open paths did, 96%
+  // of all surface removes).
+  if (!card) {
     leave(id)
-    if (wasFocused) {
-      focusedId = null
-      // The board has not re-tiled yet — the record answers in a moment — so
-      // frame the successor once it has, which is also what makes the camera
-      // travel rather than cut.
-      if (next !== null) follow = next
-      else ensureFocus()
-    }
-    notify()
-  } else leave(id)
+    return
+  }
+  post({ action: 'remove', id })
+  // Read the neighbourhood BEFORE the card goes, while the positions that
+  // stood around it are still true.
+  const wasFocused = focusedId === id
+  const next = wasFocused ? afterRemoving(card) : null
+  visited = visited.filter((v) => v !== id)
+  try {
+    localStorage.setItem(KEPT, JSON.stringify(visited))
+  } catch {}
+  delete board.cards[id]
+  leave(id)
+  if (wasFocused) {
+    focusedId = null
+    // The board has not re-tiled yet — the record answers in a moment — so
+    // frame the successor once it has, which is also what makes the camera
+    // travel rather than cut.
+    if (next !== null) follow = next
+    else ensureFocus()
+  }
+  notify()
 }

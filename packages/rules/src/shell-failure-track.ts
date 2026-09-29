@@ -1,4 +1,4 @@
-import type { Rule, ShellFailureStreak } from '@sundial/kernel/types.js';
+import type { KernelState, Rule, ShellFailureStreak } from '@sundial/kernel/types.js';
 import { deriveId } from '@sundial/helpers/derive-id.js';
 import { formatClock } from '@sundial/helpers/local-day.js';
 
@@ -16,6 +16,14 @@ export const FAILING_STREAK_NOTICE_AT = 3;
 export const STREAK_GAP_MS = 30 * 60 * 1000;
 /** How fast the value of saying "that keeps failing" decays: it is worth little once the owner has moved on. */
 export const FAILING_STREAK_HALF_LIFE_MS = 15 * 60 * 1000;
+
+/** Working directories whose last failure is kept, newest first. */
+export const MAX_LAST_FAILURES = 20;
+
+function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  const { [key]: _gone, ...rest } = record;
+  return rest;
+}
 
 /**
  * Two commands are "the same" when they match after collapsing whitespace.
@@ -45,11 +53,19 @@ export const shellFailureTrack: Rule = (state, event) => {
   const exitCode = typeof payload.exitCode === 'number' ? payload.exitCode : null;
   const cwd = typeof payload.cwd === 'string' ? payload.cwd : null;
 
-  const shell = { ...state.shell, lastCommandAt: event.ts };
+  const shell: KernelState['shell'] = { ...state.shell, lastCommandAt: event.ts };
 
   if (exitCode === null) return { state: { ...state, shell }, effects: [] };
   if (exitCode === 0) {
-    return { state: { ...state, shell: { ...shell, streak: null } }, effects: [] };
+    const failed = cwd !== null ? state.shell.lastFailure?.[cwd] : undefined;
+    const cleared = failed && failed.command === command && cwd !== null ? withoutKey(state.shell.lastFailure ?? {}, cwd) : state.shell.lastFailure;
+    return { state: { ...state, shell: { ...shell, streak: null, ...(cleared ? { lastFailure: cleared } : {}) } }, effects: [] };
+  }
+  if (cwd !== null) {
+    const kept = Object.entries({ ...state.shell.lastFailure, [cwd]: { command, exitCode, at: event.ts } })
+      .sort((a, b) => b[1].at.localeCompare(a[1].at))
+      .slice(0, MAX_LAST_FAILURES);
+    shell.lastFailure = Object.fromEntries(kept);
   }
 
   const prior = state.shell.streak;

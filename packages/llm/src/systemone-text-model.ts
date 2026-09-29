@@ -1,10 +1,12 @@
 import { getLlmConfig } from './config.js';
 import { callChatCompletion } from './transport.js';
 import type { SystemOneAnswer, SystemOneQuestion, SystemOneResult } from './systemone.js';
+import type { JudgementPurpose } from './types.js';
 
 /**
  * The fallback backend (docs/jarvis/02, "Fallback backend"): the same
- * `{ state, questions }` put to the text model with a prompt that asks for
+ * `{ state, questions }` put to the configured TEXT model — the one in `.env`,
+ * a hosted provider unless it runs on this Mac — with a prompt that asks for
  * Jev's answer shape and per-option probabilities as JSON — the pattern
  * TypeSafe's own `system-one-adapter-python` uses. Slower and less
  * calibrated; it exists so a Jev outage degrades Gnomon instead of stopping
@@ -12,15 +14,21 @@ import type { SystemOneAnswer, SystemOneQuestion, SystemOneResult } from './syst
  * consuming rule should read `state.judgement.degraded` before acting above
  * L2 on an answer from here.
  */
-export type SystemOneBackend = 'jev' | 'local' | 'off';
+export type SystemOneBackend = 'jev' | 'text-model' | 'off';
 
+/**
+ * `SUNDIAL_SYSTEMONE_BACKEND`. This backend was first called `local`, which it
+ * is only when the text model is; that value is still read, as `text-model`,
+ * so an existing `.env` keeps working.
+ */
 export function systemOneBackend(): SystemOneBackend {
   const value = process.env.SUNDIAL_SYSTEMONE_BACKEND;
-  if (value === 'local' || value === 'off' || value === 'jev') return value;
+  if (value === 'local' || value === 'text-model') return 'text-model';
+  if (value === 'off' || value === 'jev') return value;
   // Jev is a hosted judge (api.typesafe.ai). Without its key every call would
   // fail, retry, then fall back — and a new install has no key — so the
-  // default without one is the local model, and nothing is sent to TypeSafe.
-  return process.env.TYPESAFE_API_KEY ? 'jev' : 'local';
+  // default without one is the text model, and nothing is sent to TypeSafe.
+  return process.env.TYPESAFE_API_KEY ? 'jev' : 'text-model';
 }
 
 const SYSTEM = [
@@ -47,26 +55,26 @@ function normalise(type: SystemOneQuestion['type'], raw: unknown): SystemOneAnsw
   return type === 'choice' ? { type, choice: top, probabilities, confidence } : { type, score: Number(top), probabilities, confidence };
 }
 
-export async function callSystemOneLocal(
+export async function callSystemOneTextModel(
   state: unknown,
   questions: Record<string, SystemOneQuestion>,
-  opts: { timeoutMs?: number } = {},
+  opts: { purpose?: JudgementPurpose; timeoutMs?: number } = {},
 ): Promise<SystemOneResult> {
-  const model = getLlmConfig()?.model ?? 'unconfigured';
+  const model = getLlmConfig(opts.purpose)?.model ?? 'unconfigured';
   const startedAt = performance.now();
   const result = await callChatCompletion(
     [
       { role: 'system', content: SYSTEM },
       { role: 'user', content: `STATE:\n${JSON.stringify(state)}\n\nQUESTIONS:\n${JSON.stringify(questions)}` },
     ],
-    { temperature: 0, maxTokens: 1024, timeoutMs: opts.timeoutMs },
+    { purpose: opts.purpose, temperature: 0, maxTokens: 1024, timeoutMs: opts.timeoutMs },
   );
   const stripped = result.content.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '');
   let parsed: { answers?: Record<string, unknown> };
   try {
     parsed = JSON.parse(stripped) as { answers?: Record<string, unknown> };
   } catch {
-    throw new Error(`local judgement returned no JSON: ${result.content.slice(0, 200)}`);
+    throw new Error(`text-model judgement returned no JSON: ${result.content.slice(0, 200)}`);
   }
   const answers: Record<string, SystemOneAnswer> = {};
   for (const [id, q] of Object.entries(questions)) {

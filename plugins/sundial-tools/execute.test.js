@@ -182,16 +182,7 @@ describe('execute path over the in-memory record', () => {
     });
   });
 
-  describe('the two intercepted tools (ask.ts capture points)', () => {
-    it('gnomon_show_view returns the canonical request AND fires onShowView', async () => {
-      const seen = [];
-      const definition = dshTool('gnomon_show_view', { onShowView: (shown) => seen.push(shown) });
-      const value = await definition.execute({ altitude: 'today', because: 'test drive' }, undefined);
-      expect(value.shown.altitude).toBe('today');
-      expect(value.shown.because).toBe('test drive');
-      expect(seen).toEqual([value.shown]);
-    });
-
+  describe('the intercepted tool (ask.ts capture point)', () => {
     it('gnomon_compose_figure fires onFigure for a real figure, not for a refusal', async () => {
       const figures = [];
       const definition = dshTool('gnomon_compose_figure', { onFigure: (figure) => figures.push(figure) });
@@ -266,12 +257,12 @@ describe('execute path over the in-memory record', () => {
 
     it('never stubs a WRITE tool — a repeated write is a second write', async () => {
       const deps = { handles: createHandleCache(), today: () => LATER };
-      const definition = dshTool('gnomon_show_view', deps);
+      let writes = 0;
+      const definition = toDshTool({ name: 'made_up_write', description: 'writes', schema: {}, readOnly: false, handler: async () => ({ wrote: ++writes }) }, deps);
 
-      const first = await definition.execute({ altitude: 'today', because: 'a' }, SESSION);
-      const second = await definition.execute({ altitude: 'today', because: 'a' }, SESSION);
-      expect(first.shown).toBeDefined();
-      expect(second.shown).toBeDefined();
+      await definition.execute({}, SESSION);
+      const second = await definition.execute({}, SESSION);
+      expect(second).toEqual({ wrote: 2 });
       expect(second.unchanged).toBeUndefined();
     });
   });

@@ -3,20 +3,13 @@
 // in exactly one place.
 
 import { privacyConfig } from '../privacy-config.js';
-import { isSensitiveProcessName, redact, redactLines, truncate } from './redact.js';
-import { noteShellRedaction } from './redaction-telemetry.js';
+import { isSensitiveProcessName, redact } from './redact.js';
 import { redactPii } from './redact-pii.js';
 import { stripEmbeddedUrlQueries } from './redact-url.js';
 import { detectAndLearnSensitiveApp, effectiveSensitiveApps, getRedactionTier } from './redaction-tier.js';
 
-export function redactWithPolicy(text: string, surface: 'ingest' | 'persist' | 'egress' = 'ingest'): string {
-  const out = redactPii(redact(text, privacyConfig.shellRedactPatterns, privacyConfig.shellRedactReplacement));
-  if (out !== text) noteShellRedaction(text, out, surface);
-  return out;
-}
-
-export function redactLinesWithPolicy(lines: string[]): string[] {
-  return redactLines(lines, privacyConfig.shellRedactPatterns, privacyConfig.shellRedactReplacement);
+export function redactWithPolicy(text: string): string {
+  return redactPii(redact(text, privacyConfig.shellRedactPatterns, privacyConfig.shellRedactReplacement));
 }
 
 /**
@@ -50,11 +43,6 @@ export function isHiddenProcess(processName: string): boolean {
 export function windowTitleForEgress(processName: string, windowTitle: string): string {
   if (isSensitiveProcess(processName)) return '[private]';
   return stripEmbeddedUrlQueries(windowTitle);
-}
-
-/** Redact, then optionally truncate with ellipsis. */
-export function redactAndTruncate(text: string, max: number): string {
-  return truncate(redactWithPolicy(text), max);
 }
 
 /**

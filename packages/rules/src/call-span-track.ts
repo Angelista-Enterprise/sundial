@@ -25,8 +25,8 @@ export function classifyCallApp(app: string): CallSpan['kind'] {
  * `momentRollup` records the app driving audio OUTPUT and treats "on a call" as
  * one label a moment either is or is not — so a three-hour WhatsApp call under
  * a morning of PR review was recorded as neither
- * (`issues/momentrollup-drops-the-mics-owning-process`,
- * `enhancements/call-span-overlay-on-moments`). This is the overlay that page
+ * (`issues/momentrollup-drops-the-mics-owning-process`, and
+ * `enhancements/call-span-overlay-on-moments`, retired from the almanac once built). This is the overlay that page
  * asked for: `state.av.call` opens when an app takes the microphone and closes
  * when it releases it, independent of whatever the moments underneath decide
  * they are.

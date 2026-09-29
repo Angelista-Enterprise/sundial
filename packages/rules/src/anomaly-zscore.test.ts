@@ -4,12 +4,10 @@ import type { KernelState, SanitizedEvent } from '@sundial/kernel/types.js';
 import { anomalyZscore, computeZScore, unobservedGapMs } from './anomaly-zscore.js';
 import { EMITS_PER_FULL_HOUR, coverageBucket } from './coverage-track.js';
 
-// B5: anomalyZscore now buckets by the machine's *local* hour (`getHours()`,
-// not `getUTCHours()`) — correct for the running daemon's real timezone,
-// but it means this file's `...Z` (UTC) fixture timestamps only map onto
-// the `hourOfDay` values asserted below if the test process's local
-// timezone is also UTC. Pin it so these tests are deterministic regardless
-// of which timezone the machine running them is actually set to.
+// B5/M3: anomalyZscore buckets by the owner's configured zone
+// (`state.config.timezone`, 'UTC' in a fresh state), never the machine's.
+// TZ is pinned to UTC anyway so a regression back to `getHours()` would
+// show up as the New York test below failing, not as a flaky host.
 const ORIGINAL_TZ = process.env.TZ;
 beforeAll(() => {
   process.env.TZ = 'UTC';
@@ -138,19 +136,15 @@ describe('anomalyZscore', () => {
   }
 
   describe('B5: local-hour bucketing', () => {
-    it('buckets by the machine local hour, not a fixed UTC hour', () => {
-      const originalTz = process.env.TZ;
-      try {
-        // New York is UTC-5 in January (no DST) — 10:00 UTC is 05:00 local.
-        process.env.TZ = 'America/New_York';
-        let state = createInitialState('d1');
-        state = withMoment(state, '2026-01-01T10:00:00.000Z');
-        state = anomalyZscore(state, windowEvent('2026-01-01T10:05:00.000Z')).state;
-        expect(state.baselines.hourlyDurationsByKind['5']).toEqual([5]);
-        expect(state.baselines.hourlyDurationsByKind['10']).toBeUndefined();
-      } finally {
-        process.env.TZ = originalTz;
-      }
+    it('buckets by the configured zone, not the host zone (M3)', () => {
+      // Host is UTC (pinned above); the owner is in New York, UTC-5 in
+      // January — 10:00 UTC is 05:00 for them.
+      const fresh = createInitialState('d1');
+      let state: KernelState = { ...fresh, config: { ...fresh.config, timezone: 'America/New_York' } };
+      state = withMoment(state, '2026-01-01T10:00:00.000Z');
+      state = anomalyZscore(state, windowEvent('2026-01-01T10:05:00.000Z')).state;
+      expect(state.baselines.hourlyDurationsByKind['5']).toEqual([5]);
+      expect(state.baselines.hourlyDurationsByKind['10']).toBeUndefined();
     });
   });
 

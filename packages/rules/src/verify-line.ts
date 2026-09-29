@@ -1,3 +1,4 @@
+import { deriveId } from '@sundial/helpers/derive-id.js';
 import { withPersona } from '@sundial/kernel/persona.js';
 import type { Effect, JudgementResultPayload, Rule } from '@sundial/kernel/types.js';
 import { parseMomentAnalysis } from './apply-llm-result.js';
@@ -61,11 +62,25 @@ export function templateLine(evidence: Record<string, unknown>): string {
   return renderSubject(resolveSubject(null, evidence), evidence) ?? `In ${typeof evidence.app === 'string' ? evidence.app : 'an app'}`;
 }
 
-const applied = (meta: LineMetadata, ts: string, line: string, narrative: string | null, judged: string): Effect => ({
-  type: 'UpdateMomentData',
-  momentId: meta.momentId,
-  patch: { intent: { status: 'done', text: line, analyzedAt: ts, judged }, ...(narrative ? { narrative } : {}) },
-});
+/**
+ * The line a moment ended up with, as an event the fold can read (U2-F9). The
+ * moment row is written by the executor, so no rule could see an intent once
+ * its moment had closed — and "where was I" needs exactly that one.
+ */
+export function intentLanded(momentId: string, evidence: unknown, text: string, ts: string, sourceId: string): Effect {
+  const project = isRecord(evidence) && typeof evidence.project === 'string' && evidence.project !== '' ? evidence.project : null;
+  const confidence = isRecord(evidence) && typeof evidence.project_confidence === 'string' ? evidence.project_confidence : null;
+  return { type: 'EmitEvent', event: { id: deriveId(ts, sourceId, 'moment-intent', momentId), type: 'moment:intent', ts, payload: { timestamp: ts, momentId, projectId: project, confidence, text } } };
+}
+
+const applied = (meta: LineMetadata, ts: string, line: string, narrative: string | null, judged: string, sourceId: string): Effect[] => [
+  {
+    type: 'UpdateMomentData',
+    momentId: meta.momentId,
+    patch: { intent: { status: 'done', text: line, analyzedAt: ts, judged }, ...(narrative ? { narrative } : {}) },
+  },
+  intentLanded(meta.momentId, meta.evidence, line, ts, sourceId),
+];
 
 export const verifyLine: Rule = (state, event) => {
   // 1. The line comes back from the text model: send it to the judge.
@@ -104,7 +119,7 @@ export const verifyLine: Rule = (state, event) => {
     const payload = event.payload as { questionSetId?: string; metadata?: unknown };
     if (payload.questionSetId !== judgeLine.id) return { state, effects: [] };
     const meta = lineMetadata(payload.metadata);
-    return meta ? { state, effects: [applied(meta, event.ts, meta.line, meta.narrative, 'unjudged')] } : { state, effects: [] };
+    return meta ? { state, effects: applied(meta, event.ts, meta.line, meta.narrative, 'unjudged', event.id) } : { state, effects: [] };
   }
 
   if (event.type !== 'judgement:result') return { state, effects: [] };
@@ -121,10 +136,10 @@ export const verifyLine: Rule = (state, event) => {
   if (hedges > threshold(HEDGES)) failing.push('it hedges');
   if (grounded < threshold(GROUNDED)) failing.push('it names something the evidence does not contain');
 
-  if (failing.length === 0) return { state, effects: [applied(meta, event.ts, meta.line, meta.narrative, meta.attempt === 2 ? 'retried' : 'passed')] };
+  if (failing.length === 0) return { state, effects: applied(meta, event.ts, meta.line, meta.narrative, meta.attempt === 2 ? 'retried' : 'passed', event.id) };
 
   // 4a. Second failure: the template line. Nothing invented, nothing hedged.
-  if (meta.attempt >= 2) return { state, effects: [applied(meta, event.ts, templateLine(meta.evidence), null, 'template')] };
+  if (meta.attempt >= 2) return { state, effects: applied(meta, event.ts, templateLine(meta.evidence), null, 'template', event.id) };
 
   // 4b. First failure: one more render, told what was wrong with the last one.
   return {
