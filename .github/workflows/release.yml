@@ -1,0 +1,95 @@
+# Build Sundial.app and publish it as a GitHub release.
+#
+#   1. Set "version" in package.json, commit, push.
+#   2. git tag v0.2.0 && git push origin v0.2.0      (the tag must equal "v" + version)
+#
+# A run by hand (Actions → release → Run workflow) builds the same files and keeps
+# them as a workflow artifact; it publishes nothing.
+#
+# Files on the release: Sundial-<version>.zip (the app), SHA256SUMS, and, once the
+# two Sparkle settings below exist, appcast.xml (the feed the app checks daily).
+#
+#   repo secret   SUNDIAL_ED_PRIVATE_KEY   Sparkle EdDSA private key (generate_keys -x)
+#   repo variable SUNDIAL_ED_PUBLIC_KEY    the matching public key
+#
+# The app is ad-hoc signed, not notarized: macOS quarantines the download, and the
+# release notes say how to open it. Every new build is a new code identity, so the
+# macOS permissions are granted again after an update by hand.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    env:
+      ED_PUBLIC_KEY: ${{ vars.SUNDIAL_ED_PUBLIC_KEY }}
+      ED_PRIVATE_KEY: ${{ secrets.SUNDIAL_ED_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the build number is the commit count
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0 # package.sh ships exactly this Node
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Tag matches package.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+
+      - name: Build Sundial.app
+        run: |
+          if [ -n "$ED_PUBLIC_KEY" ] && [ -n "$ED_PRIVATE_KEY" ]; then
+            export SUNDIAL_FEED_URL="https://github.com/$GITHUB_REPOSITORY/releases/latest/download/appcast.xml"
+            export SUNDIAL_ED_PUBLIC_KEY="$ED_PUBLIC_KEY"
+          fi
+          zsh apps/macos/scripts/package.sh "$RUNNER_TEMP/build"
+
+      - name: Zip, checksum, appcast
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          mkdir -p release
+          # ditto keeps the symlinks and the signature intact; plain zip does not.
+          ditto -c -k --sequesterRsrc --keepParent "$RUNNER_TEMP/build/Sundial.app" "release/Sundial-$VERSION.zip"
+          if [ -n "$ED_PUBLIC_KEY" ] && [ -n "$ED_PRIVATE_KEY" ]; then
+            printf '%s' "$ED_PRIVATE_KEY" > "$RUNNER_TEMP/ed.key"
+            "$HOME/Library/Caches/sundial-build/Sparkle-2.10.0/bin/generate_appcast" --ed-key-file "$RUNNER_TEMP/ed.key" \
+              --download-url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/" release
+            rm "$RUNNER_TEMP/ed.key"
+          fi
+          (cd release && shasum -a 256 * > SHA256SUMS)
+          cat > "$RUNNER_TEMP/notes.md" <<'EOF'
+          ## Install
+
+          1. Unzip `Sundial-*.zip` and drag `Sundial.app` into `/Applications`.
+          2. The app is not notarized, so macOS blocks the first open. Clear the flag, then open it:
+             ```bash
+             xattr -dr com.apple.quarantine /Applications/Sundial.app
+             open /Applications/Sundial.app
+             ```
+          3. Follow the setup page for the macOS permissions. Apple silicon only.
+
+          Hearing (optional) needs a speech model that is not in the app. From a checkout, run `node bin/sundial hearing`.
+          EOF
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release/* --verify-tag --title "Sundial ${GITHUB_REF_NAME#v}" --notes-file "$RUNNER_TEMP/notes.md" --generate-notes
+
+      - name: Keep the files (run by hand)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: release/*
