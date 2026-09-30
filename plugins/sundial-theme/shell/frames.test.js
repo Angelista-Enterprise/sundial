@@ -273,3 +273,48 @@ describe('a follow-up line', () => {
     expect(liveFrames(said('Gnomon noticed something', { kind: 'plugin', form: 'notice', summary: 'Gnomon noticed: x' }))).toEqual([])
   })
 })
+
+describe('log lines (dsh events around a turn)', () => {
+  const ev = (type, data) => ({ type, data })
+  it('a compaction is one line: running, then what it folded', () => {
+    const frames = replayFrames([ev('compaction/start', { compactionId: 'k1', turn: 3 }), ev('compaction/summary', { compactionId: 'k1', shadowedTokenCount: 26615 }), ev('compaction/end', { compactionId: 'k1', turn: 3 })])
+    expect(frames).toEqual([
+      { type: 'mark', key: 'compact:k1', label: 'Compacting the conversation', status: 'running…' },
+      { type: 'mark', key: 'compact:k1', label: 'Conversation compacted', status: '26.6k tokens folded into a summary' },
+    ])
+  })
+  it('a failed compaction says why (dsh logs the error as a string)', () => {
+    expect(liveFrames(ev('compaction/end', { compactionId: 'k2', turn: 1, error: 'summarization produced no text' }))).toEqual([
+      { type: 'mark', key: 'compact:k2', label: 'Compaction', status: 'failed: summarization produced no text', failed: true },
+    ])
+  })
+  it('a /compact draws its command line, not a second compaction line', () => {
+    const frames = [ev('command/run', { commandId: 'c1', name: 'compact', args: '' }), ev('compaction/start', { compactionId: 'k3', sourceCommandId: 'c1', turn: 2 }), ev('command/done', { commandId: 'c1', kind: 'success', text: 'Compacted 94 history items.' })].flatMap(liveFrames)
+    expect(frames).toEqual([{ type: 'mark', key: 'cmd:c1', status: 'Compacted 94 history items.', failed: false }])
+    expect(liveFrames(ev('command/run', { commandId: 'c2', name: 'permission' }))).toEqual([{ type: 'mark', key: 'cmd:c2', label: '/permission', status: 'running…' }])
+  })
+  it('every retry of one step shares a key, so it reads as one line', () => {
+    const retry = (n) => ev('llm/retry', { turn: 1, step: 2, retry: n, maxRetries: 5, failure: { code: 'TRANSPORT' } })
+    const [a, b] = replayFrames([retry(1), retry(2)])
+    expect(a.key).toBe(b.key)
+    expect(b).toEqual({ type: 'mark', key: 'retry:1:2', label: 'Model call retried', status: '2 of 5 · transport' })
+  })
+  it('a workflow and a goal', () => {
+    expect(replayFrames([ev('tool-workflow/run-start', { runId: 'w1', name: 'sweep' }), ev('tool-workflow/run-end', { runId: 'w1', stopReason: 'completed' })])).toEqual([
+      { type: 'mark', key: 'wf:w1', label: 'Workflow sweep', status: 'running…' },
+      { type: 'mark', key: 'wf:w1', status: 'completed', failed: false },
+    ])
+    expect(liveFrames(ev('goal/change', { operation: 'create', goal: { objective: 'Tidy the board' } }))).toEqual([{ type: 'mark', label: 'Goal set', status: 'Tidy the board' }])
+    expect(liveFrames(ev('goal/change', { operation: 'reshape' }))).toEqual([])
+  })
+  it('a past approval replays as its answer; live, the shell draws its own card', () => {
+    const asked = ev('approval/asked', { id: 'a1', toolName: 'gnomon_schedule_wakeup', callId: 'c1', reason: 'a notice opened this turn' })
+    const decided = ev('approval/decided', { id: 'a1', outcome: 'rejected' })
+    expect(replayFrames([asked, decided])).toEqual([
+      { type: 'mark', label: 'Asked to run gnomon_schedule_wakeup', status: 'refused', failed: true, title: 'a notice opened this turn' },
+    ])
+    expect([asked, decided].flatMap(liveFrames)).toEqual([])
+    // An answer with no question on the record draws nothing.
+    expect(replayFrames([decided])).toEqual([])
+  })
+})

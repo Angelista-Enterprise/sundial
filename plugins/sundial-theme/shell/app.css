@@ -385,6 +385,14 @@ button, textarea { font: inherit; letter-spacing: inherit; color: inherit; }
 .tool[data-failed] .tool-gist { color: var(--ink-muted); }
 .tool-main:hover, .tool-main[aria-expanded='true'] { color: var(--ink); }
 .tool-main:focus-visible { outline: 1px solid var(--border-strong); outline-offset: 2px; }
+/* What dsh did around the turn (a compaction, a retry, a /command, a past
+   approval): one line, quieter than a tool row, the status after a dot. */
+.log-line { display: flex; align-items: baseline; gap: 4px; min-width: 0; padding: 3px 0; font-size: 12px; color: var(--ink-faint); }
+.log-line-label { flex: none; color: var(--ink-subtle); }
+.log-line-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-line-status:empty { display: none; }
+.log-line-status::before { content: '· '; }
+.log-line[data-failed] .log-line-status { color: var(--ink-muted); }
 /* Stop ends this one call. Quiet until needed: it appears only once a call is slow. */
 .tool-stop { flex: none; height: 22px; padding: 0 9px; border: 1px solid var(--border-strong); background: transparent; font: inherit; font-size: 12px; color: var(--ink); cursor: pointer; }
 .tool-stop:hover { background: var(--wash); }
