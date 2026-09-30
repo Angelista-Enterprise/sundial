@@ -9,7 +9,7 @@
 ## Quickstart
 
 ```bash
-git clone https://github.com/<owner>/sundial.git && cd sundial
+git clone https://github.com/Angelista-Enterprise/sundial.git && cd sundial
 node bin/sundial install
 node bin/sundial open
 ```
