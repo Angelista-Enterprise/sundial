@@ -28,6 +28,8 @@ import { CARDS, MENU, cardOf, heirOf } from './cards.js'
 import { checkSignedIn, onReading, markStale, rereadAll } from './read.js'
 import { status } from './status.js'
 import { postVerdict, verdictActs } from './verdicts.js'
+import { drawLogLine } from './log-line.js'
+import { deliverableCard } from './deliverable.js'
 
 const $ = (id) => document.getElementById(id)
 const canvas = $('canvas')
@@ -1062,41 +1064,6 @@ function drawApproval(frame) {
   follow(true)
 }
 
-// ── Deliverables ──────────────────────────────────────────────────────────
-// A file Gnomon is handing over, drawn where it was handed over. This is the
-// whole point of the `present` tool: a path in a sentence is not a delivery —
-// the owner has to read it, remember it, and go somewhere else to open it.
-//
-// dsh copies nothing, so this card is a POINTER, not an attachment. The label
-// says so, because "download" would promise a snapshot that does not exist:
-// clicking tomorrow gives tomorrow's contents, and a file since deleted gives
-// an honest 404 from the route rather than a stale copy.
-function drawDeliverable(frame) {
-  if (frame.files.length === 0) return
-  const card = el('div', { class: 'deliverable' }, [
-    el('div', { class: 'deliverable-head', text: frame.files.length === 1 ? 'Gnomon made you a file' : `Gnomon made you ${frame.files.length} files` }),
-    ...frame.files.map((file) =>
-      el('div', { class: 'deliverable-file' }, [
-        el('a', {
-          class: 'deliverable-name',
-          // The session is part of the request because the session log IS the
-          // server's allowlist — the route will not serve a path this session
-          // never presented.
-          href: `/gnomon/api/deliverable?session=${encodeURIComponent(state.sessionId ?? '')}&path=${encodeURIComponent(file.path)}`,
-          download: file.name,
-          // The full path, because on this machine that is how the owner finds
-          // it in a terminal or a Finder window.
-          title: file.path,
-          text: file.name,
-        }),
-        file.description ? el('p', { class: 'deliverable-why', text: file.description }) : null,
-      ]),
-    ),
-  ])
-  turn().append(card)
-  follow(true)
-}
-
 const OUTCOME_WORDS = {
   'allowed-once': 'Allowed, once.',
   rejected: 'Refused.',
@@ -1593,11 +1560,16 @@ function apply(frame) {
       state.prose = null
       break
 
-    case 'deliverable':
-      drawDeliverable(frame)
+    case 'deliverable': {
+      const card = deliverableCard(frame, state.sessionId)
+      if (card !== null) {
+        turn().append(card)
+        follow(true)
+      }
       // A handover closes the paragraph that led to it, the way a tool call does.
       state.prose = null
       break
+    }
 
     case 'tool-done': {
       // A surface is drawn from its CALL, before the tool has said whether it
@@ -1672,21 +1644,9 @@ function apply(frame) {
       drawApproval(frame)
       break
 
-    case 'mark': {
-      // One line per key: a later frame of the same work updates the line it opened.
-      let line = frame.key ? state.marks.get(frame.key) : undefined
-      if (line === undefined) {
-        line = el('div', { class: 'log-line' }, [el('span', { class: 'log-line-label' }), el('span', { class: 'log-line-status' })])
-        if (frame.key) state.marks.set(frame.key, line)
-        turn().append(line)
-      }
-      if (frame.label) line.firstChild.textContent = frame.label
-      line.lastChild.textContent = frame.status ?? ''
-      line.toggleAttribute('data-failed', frame.failed === true)
-      // A long status is cut to one line; the whole of it (or the approval's reason) is on hover.
-      line.title = frame.title || frame.status || ''
+    case 'mark':
+      drawLogLine(frame, state.marks, turn)
       break
-    }
 
     case 'question-open':
       ;[...canvas.querySelectorAll('.question[data-answered]')].filter((q) => q.querySelector('[data-chosen], .question-said') === null).pop()?._unlock?.()
