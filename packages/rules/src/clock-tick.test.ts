@@ -28,6 +28,12 @@ describe('clockTick', () => {
     expect(effects).toEqual([]);
   });
 
+  it('learns the day on the first tick of a fresh state, without a boundary for a day that never ran', () => {
+    const { state: next, effects } = clockTick(at('', 'Europe/Amsterdam'), tick('2026-07-24T07:00:00.000Z'));
+    expect(effects).toEqual([]);
+    expect(next.budgets.day).toBe('2026-07-24');
+  });
+
   it('emits nothing while the day has not turned over', () => {
     const { effects } = clockTick(at('2026-07-29', 'UTC'), tick('2026-07-29T12:00:00.000Z'));
     expect(effects).toEqual([]);

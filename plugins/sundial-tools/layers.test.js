@@ -1,11 +1,10 @@
 // Which tools reach the prompt, and the two properties the deferral must keep:
 // the registered set never changes shape, and nothing gated slips through the
-// dispatcher.
+// dispatcher (it re-enters dsh's pipeline under the inner tool's own name).
 import { describe, it, expect, vi } from 'vitest';
 import { ASK_TOOL_REGISTRY } from '@sundial/kernel/tools/index.js';
 import { toolDefinitions } from '@sundial/kernel/tools/registry.js';
-import { GNOMON_TOOLS as GATED_TOOLS } from '../sundial-actions/gate.js';
-import { deferredToolsContext, DISCOVER_TOOL_NAME, DISPATCH_TOOL_NAME, HOT_TOOL_NAMES, layerTools, oneLine, splitByHeat } from './layers.js';
+import { DISCOVER_TOOL_NAME, DISPATCH_TOOL_NAME, HOT_TOOL_NAMES, MENU_CONTEXT_NAME, hideColdTools, layerTools, menuOf, menuText, oneLine, splitByHeat } from './layers.js';
 
 // dsh's REAL defineTool, not a stand-in. A fake one passed these tests while
 // the harness refused to boot: dsh's schema compiler rejects
@@ -13,60 +12,81 @@ import { deferredToolsContext, DISCOVER_TOOL_NAME, DISPATCH_TOOL_NAME, HOT_TOOL_
 // only the real compiler says so.
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
-function build(tools = ASK_TOOL_REGISTRY) {
-  const { hot, cold } = splitByHeat(tools);
-  const definitionsByName = new Map(
-    tools.map((tool) => [tool.name, { name: tool.name, execute: vi.fn(async (args, exec) => ({ ran: tool.name, args, sawSession: exec?.agent?.id ?? null })) }]),
-  );
-  return { hot, cold, definitionsByName, ...layerTools({ coldTools: cold, definitionsByName, defineTool, toolDefinitions }) };
+// What dsh's registry would hand back: the read tools, an action tool, a dsh built-in, the two fixed entries.
+const SCHEMAS = [
+  ...toolDefinitions(ASK_TOOL_REGISTRY),
+  { name: 'gnomon_draft', description: 'Write a draft for the owner to send. It never sends.', parameters: { type: 'object', properties: {} } },
+  { name: 'todo_write', description: 'Write the plan.', parameters: { type: 'object', properties: {} } },
+  { name: DISCOVER_TOOL_NAME, description: 'discover', parameters: {} },
+  { name: DISPATCH_TOOL_NAME, description: 'dispatch', parameters: {} },
+];
+
+function build(result = { isError: false, value: { ok: true } }) {
+  const tools = { schemas: vi.fn(() => SCHEMAS), execute: vi.fn(async () => result) };
+  return { tools, ...layerTools({ tools, defineTool }) };
 }
 
+const exec = { callId: 'call-1', rootCallId: 'call-1', agent: { id: 'gnomon-companion' }, token: 'tok', signal: new AbortController().signal };
+
 describe('splitByHeat', () => {
-  it('keeps the measured-hot tools in the prompt and defers the rest', () => {
-    const { hot, cold } = build();
-    expect(hot.map((t) => t.name).sort()).toEqual([...HOT_TOOL_NAMES].sort());
-    expect(cold.length).toBeGreaterThan(0);
-    expect(hot.length + cold.length).toBe(ASK_TOOL_REGISTRY.length);
+  it('shows the hot tools and the two fixed entries, defers the rest', () => {
+    const { hot, cold } = splitByHeat(SCHEMAS);
+    expect(hot.map((t) => t.name)).toEqual(expect.arrayContaining(['todo_write', DISCOVER_TOOL_NAME, DISPATCH_TOOL_NAME]));
+    for (const t of hot) expect(HOT_TOOL_NAMES.includes(t.name) || t.name === DISCOVER_TOOL_NAME || t.name === DISPATCH_TOOL_NAME).toBe(true);
+    expect(cold.map((t) => t.name)).toContain('gnomon_draft');
+    expect(hot.length + cold.length).toBe(SCHEMAS.length);
   });
 
-  it('loses no tool — every one is either shown or reachable', () => {
-    const { hot, cold } = build();
-    const seen = new Set([...hot, ...cold].map((t) => t.name));
-    for (const tool of ASK_TOOL_REGISTRY) expect(seen.has(tool.name)).toBe(true);
-  });
-
-  it('ignores a hot name that no longer exists, rather than failing to boot', () => {
-    const { hot } = splitByHeat(ASK_TOOL_REGISTRY, ['gnomon_signals', 'gnomon_renamed_away']);
-    expect(hot.map((t) => t.name)).toEqual(['gnomon_signals']);
+  it('ignores a hot name that is not registered, rather than failing to boot', () => {
+    const { hot } = splitByHeat(SCHEMAS, ['gnomon_signals', 'gnomon_no_longer_exists']);
+    expect(hot.map((t) => t.name)).toEqual(['gnomon_signals', DISCOVER_TOOL_NAME, DISPATCH_TOOL_NAME]);
   });
 });
 
-describe('the saving, measured the way it will actually be paid', () => {
-  it('sends less schema than before, counting the name list it adds back', () => {
-    const { hot, cold, discover, dispatch } = build();
-    const before = JSON.stringify(toolDefinitions(ASK_TOOL_REGISTRY)).length;
-    const after = JSON.stringify(toolDefinitions(hot)).length + deferredToolsContext(cold).text().length + JSON.stringify([discover, dispatch]).length;
-    expect(after).toBeLessThan(before);
-  });
-});
-
-describe('the deferred-tools note', () => {
+describe('the menu', () => {
   it('names every deferred tool, so the model cannot forget one exists', () => {
-    const { cold } = build();
-    const text = deferredToolsContext(cold).text();
+    const { cold } = splitByHeat(SCHEMAS);
+    const text = menuText(cold);
     for (const tool of cold) expect(text).toContain(tool.name);
-  });
-
-  it('says how to reach them', () => {
-    const { cold } = build();
-    const text = deferredToolsContext(cold).text();
-    expect(text).toContain(DISPATCH_TOOL_NAME);
     expect(text).toContain(DISCOVER_TOOL_NAME);
+    expect(text).toContain(DISPATCH_TOOL_NAME);
   });
 
-  it('is a summary, not a second copy of every schema', () => {
-    const { cold } = build();
-    expect(deferredToolsContext(cold).text().length).toBeLessThan(JSON.stringify(toolDefinitions(cold)).length / 2);
+  it('groups by purpose, and a tool nobody filed lands in More', () => {
+    const groups = menuOf([{ name: 'gnomon_draft', description: 'x' }, { name: 'gnomon_brand_new', description: 'y' }]);
+    expect(groups.map((g) => g.group)).toEqual(['Act for the owner (needs their yes)', 'More']);
+  });
+
+  it('is a menu, not a second copy of every schema', () => {
+    const { cold } = splitByHeat(SCHEMAS);
+    expect(menuText(cold).length).toBeLessThan(JSON.stringify(cold).length / 10);
+  });
+});
+
+describe('hideColdTools', () => {
+  async function assemble(assembly) {
+    let listener;
+    hideColdTools({ on: (event, fn) => { expect(event).toBe('system-prompt/assemble'); listener = fn; return () => {}; } });
+    return listener(null, {}, async () => assembly);
+  }
+
+  it('sends only the hot tools, and puts the menu in their place', async () => {
+    const out = await assemble({ tools: SCHEMAS, contexts: [{ name: 'clock', text: 'now' }, { name: 'sandbox:policy', text: 'file policy' }], sections: [] });
+    expect(out.tools.map((t) => t.name)).not.toContain('gnomon_draft');
+    expect(out.tools.map((t) => t.name)).toContain(DISPATCH_TOOL_NAME);
+    expect(out.contexts.map((c) => c.name)).toEqual(['clock', MENU_CONTEXT_NAME]);
+    expect(out.contexts[1].text).toContain('gnomon_draft');
+  });
+
+  it('adds the menu once, however often the prompt is assembled', async () => {
+    const once = await assemble({ tools: SCHEMAS, contexts: [], sections: [] });
+    const twice = await assemble({ ...once, tools: SCHEMAS });
+    expect(twice.contexts.filter((c) => c.name === MENU_CONTEXT_NAME)).toHaveLength(1);
+  });
+
+  it('leaves an assembly with nothing to hide alone', async () => {
+    const assembly = { tools: [SCHEMAS.find((t) => t.name === 'todo_write')], contexts: [] };
+    expect(await assemble(assembly)).toBe(assembly);
   });
 });
 
@@ -87,85 +107,61 @@ describe('oneLine', () => {
 });
 
 describe('gnomon_tools (discovery)', () => {
-  it('lists every deferred tool when asked for no particular one', async () => {
-    const { cold, discover } = build();
-    const out = await discover.execute({});
-    expect(out.tools).toHaveLength(cold.length);
-    expect(out.tools[0]).toHaveProperty('summary');
+  it('returns the grouped menu when asked for no particular tool', async () => {
+    const { discover } = build();
+    const out = await discover.execute({}, exec);
+    expect(out.menu.flatMap((g) => g.tools.map((t) => t.name))).toContain('gnomon_draft');
   });
 
-  it('returns a real schema for a named tool', async () => {
+  it('returns a real schema for a named tool — an action tool as well as a read tool', async () => {
     const { discover } = build();
-    const out = await discover.execute({ name: 'gnomon_llm_ledger' });
-    expect(out.name).toBe('gnomon_llm_ledger');
-    expect(out.parameters).toBeDefined();
-    expect(JSON.stringify(out.parameters)).toContain('groupBy');
+    const ledger = await discover.execute({ name: 'gnomon_llm_ledger' }, exec);
+    expect(JSON.stringify(ledger.parameters)).toContain('groupBy');
+    expect((await discover.execute({ name: 'gnomon_draft' }, exec)).name).toBe('gnomon_draft');
   });
 
   it('returns plain JSON for every deferred tool — dsh rejects anything else as "not lossless JSON"', async () => {
-    const { cold, discover } = build();
-    for (const tool of cold) {
-      const { parameters } = await discover.execute({ name: tool.name });
-      // zod hangs a hidden `~standard` property (functions inside) on the
-      // schema; dsh refuses any object with a non-enumerable own property.
+    const { discover } = build();
+    for (const tool of splitByHeat(SCHEMAS).cold) {
+      const { parameters } = await discover.execute({ name: tool.name }, exec);
       expect(Reflect.ownKeys(parameters), tool.name).toEqual(Object.keys(parameters));
     }
   });
 
   it('answers a wrong name with the list rather than an error the model must recover from', async () => {
     const { discover } = build();
-    const out = await discover.execute({ name: 'gnomon_not_a_tool' });
+    const out = await discover.execute({ name: 'gnomon_not_a_tool' }, exec);
     expect(out.available).toContain('gnomon_llm_ledger');
   });
 });
 
 describe('gnomon_call (dispatch)', () => {
-  it('runs the real definition, so validation and the handles still apply', async () => {
-    const { dispatch, definitionsByName } = build();
-    const out = await dispatch.execute({ name: 'gnomon_llm_ledger', args: { days: 3 } }, { agent: { id: 'sess' } });
-    expect(out.ran).toBe('gnomon_llm_ledger');
-    expect(out.args).toEqual({ days: 3 });
-    expect(definitionsByName.get('gnomon_llm_ledger').execute).toHaveBeenCalledTimes(1);
+  it("re-enters dsh's pipeline under the inner tool's own name, so the gate judges the real tool", async () => {
+    const { tools, dispatch } = build();
+    await dispatch.execute({ name: 'gnomon_draft', args: { to: 'Mira' } }, exec);
+    expect(tools.execute).toHaveBeenCalledWith(expect.objectContaining({ name: 'gnomon_draft', arguments: { to: 'Mira' }, agent: exec.agent, rootCallId: 'call-1', parent: 'tok', signal: exec.signal }));
   });
 
-  it('passes the execution context through, so per-session state keeps working', async () => {
-    const { dispatch } = build();
-    const out = await dispatch.execute({ name: 'gnomon_people', args: {} }, { agent: { id: 'sess-9' } });
-    expect(out.sawSession).toBe('sess-9');
+  it('returns what the tool returned', async () => {
+    const { dispatch } = build({ isError: false, value: { rows: 3 } });
+    expect(await dispatch.execute({ name: 'gnomon_llm_ledger' }, exec)).toEqual({ rows: 3 });
+  });
+
+  it('turns a failed or refused call into an error the model can read', async () => {
+    const { dispatch } = build({ isError: true, error: { code: 'DENIED', message: 'The owner said no.' } });
+    expect(await dispatch.execute({ name: 'gnomon_draft' }, exec)).toEqual({ error: 'The owner said no.' });
   });
 
   it('defaults missing args to an empty object', async () => {
-    const { dispatch } = build();
-    const out = await dispatch.execute({ name: 'gnomon_people' }, undefined);
-    expect(out.args).toEqual({});
+    const { tools, dispatch } = build();
+    await dispatch.execute({ name: 'gnomon_llm_ledger' }, exec);
+    expect(tools.execute.mock.calls[0][0].arguments).toEqual({});
   });
 
-  it('refuses an unknown name and says what is available', async () => {
-    const { dispatch } = build();
-    const out = await dispatch.execute({ name: 'rm_rf' }, undefined);
-    expect(out.error).toContain('rm_rf');
-    expect(Array.isArray(out.available)).toBe(true);
-  });
-
-  /**
-   * The safety property. `sundial-actions` gates its write tools BY NAME at the
-   * tools seam. A dispatcher that could invoke one of those by name would be a
-   * hole straight through the permission gate, so the deferred set must never
-   * contain a gated tool — today it cannot, because the gated tools live in a
-   * different registry, and this test is what keeps that true.
-   */
-  it('cannot reach a permission-gated action tool', async () => {
-    const { cold, definitionsByName, dispatch } = build();
-    for (const gated of Object.keys(GATED_TOOLS)) {
-      expect(cold.map((t) => t.name)).not.toContain(gated);
-      expect(definitionsByName.has(gated)).toBe(false);
-      const out = await dispatch.execute({ name: gated, args: {} }, undefined);
-      expect(out.error).toBeDefined();
-    }
-  });
-
-  it('is never dispatched in parallel: one flag covers whatever comes through the door', () => {
-    const { dispatch } = build();
-    expect(dispatch.isConcurrencySafe()).toBe(false);
+  it('refuses an unknown name and itself, and says what is available', async () => {
+    const { tools, dispatch } = build();
+    expect((await dispatch.execute({ name: 'gnomon_not_a_tool' }, exec)).available).toContain('gnomon_draft');
+    expect((await dispatch.execute({ name: DISPATCH_TOOL_NAME }, exec)).error).toMatch(/directly/);
+    expect(tools.execute).not.toHaveBeenCalled();
   });
 });

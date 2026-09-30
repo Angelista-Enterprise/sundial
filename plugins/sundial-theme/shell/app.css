@@ -464,6 +464,9 @@ button, textarea { font: inherit; letter-spacing: inherit; color: inherit; }
 .plan-step[data-status='in_progress']::before { background: var(--ochre); animation: breath 1.6s ease-in-out infinite; }
 .plan-step[data-status='completed'] { color: var(--ink-faint); text-decoration: line-through; text-decoration-color: var(--border-strong); }
 .plan-step[data-status='completed']::before { background: var(--ink-faint); }
+.turn[data-ended] .plan-step:not([data-status='completed']) { color: var(--ink-faint); }
+.turn[data-ended] .plan-step:not([data-status='completed'])::before { background: none; border: 1px solid var(--border-strong); box-sizing: border-box; animation: none; }
+.turn[data-ended] .plan-step:not([data-status='completed'])::after { content: ' · not marked done'; }
 
 /* ── Approvals ───────────────────────────────────────────────────────────
    Drawn in the canvas, in the turn it belongs to, rather than as a modal. The
@@ -605,9 +608,8 @@ button, textarea { font: inherit; letter-spacing: inherit; color: inherit; }
 .surface-fail { font-size: 13px; color: var(--ink-faint); padding: 6px 0; }
 /* A surface the tool refused. It stays on the record — the model tried, and
    hiding the attempt would make a turn that took two goes look like one — but
-   it recedes, because nothing was drawn and there is nothing here to read. */
-.surface[data-refused] { border-color: var(--divider); }
-.surface[data-refused] .surface-title, .surface[data-refused] .surface-because { color: var(--ink-faint); }
+   as one faint line, because nothing was drawn and there is nothing here to read. */
+.surface-refused { font-size: 12px; color: var(--ink-faint); padding: 2px 0; }
 .axis { display: flex; font-size: 12px; color: var(--ink-faint); padding-top: 6px; }
 .axis span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .legend { display: flex; flex-wrap: wrap; gap: 8px 26px; padding-top: 14px; font-size: 12px; color: var(--ink-muted); align-items: center; }
