@@ -41,6 +41,12 @@ group('services', () => {
     expect(by.phone.choices).toBeNull()
   })
 
+  it('carries why a service cannot be turned on', () => {
+    const by = Object.fromEntries(describe({}, [], [], {}, { hearing: 'No model.' }).filter((r) => !r.sep).map((r) => [r.id, r]))
+    expect(by.hearing.blocked).toBe('No model.')
+    expect(by.ocr.blocked).toBeNull()
+  })
+
   it('draws a refinement only while the service it refines is on', () => {
     const ids = (config) => describe(config, [], []).filter((r) => !r.sep).map((r) => r.id)
     expect(ids({})).not.toContain('jobsPerNight')

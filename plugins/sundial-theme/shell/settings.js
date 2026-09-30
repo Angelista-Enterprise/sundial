@@ -386,12 +386,12 @@ function servicesBlock() {
       ...data.services.map((s) => {
         if (s.sep) return s.title ? el('h4', { class: 'set-title', text: s.title }) : el('div', { class: 'set-sep' })
         const when = s.live ? 'Applies to the next Claude session.' : s.changed ? 'Waits for the restart.' : null
-        const hint = [s.what, s.needs ? `Needs: ${s.needs}` : null, when].filter(Boolean).join(' ')
+        const hint = [s.what, s.needs ? `Needs: ${s.needs}` : null, s.blocked, when].filter(Boolean).join(' ')
         const right = s.choices
           ? el(
               'div',
               { class: 'set-opts', role: 'radiogroup', 'aria-label': s.label },
-              s.choices.map(([value, text]) => el('button', { type: 'button', class: 'set-opt', role: 'radio', 'aria-checked': String(value === s.value), text, onclick: pick(s, value) })),
+              s.choices.map(([value, text]) => el('button', { type: 'button', class: 'set-opt', role: 'radio', 'aria-checked': String(value === s.value), text, disabled: s.blocked && value === true ? '' : null, onclick: pick(s, value) })),
             )
           : s.value === 'set' || s.value === 'unset'
             ? textField(s)

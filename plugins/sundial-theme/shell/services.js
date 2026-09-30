@@ -99,9 +99,10 @@ const isOn = (v) => v !== false && v !== 'off' && v !== 'unset' && v !== null
 
 /**
  * The rows the card draws: each service with its value in the saved file, the
- * value this process booted with, its choices, and its last signal.
+ * value this process booted with, its choices, and its last signal. `blocked`:
+ * service id → why it cannot be turned on yet.
  */
-export function describe(config, pendingRestart, freshness, claude = {}) {
+export function describe(config, pendingRestart, freshness, claude = {}, blocked = {}) {
   const last = new Map(freshness.map((f) => [`${f.signalType}:${f.eventType}`, f.lastCapturedAt]))
   const value = (s) => (s.claude ? claude[s.claude] === true : valueOf(s, config))
   const byId = new Map(SERVICES.filter((s) => !s.sep).map((s) => [s.id, s]))
@@ -115,6 +116,8 @@ export function describe(config, pendingRestart, freshness, claude = {}) {
         label: s.label,
         what: s.what,
         needs: s.needs ?? null,
+        // Something missing on this Mac: said in the row, and the switch cannot go On.
+        blocked: blocked[s.id] ?? null,
         value: value(s),
         // W3: waiting for a restart, by the log's own list (`state.config.pendingRestart`).
         changed: s.path ? pendingRestart.some((p) => s.path === p || s.path.startsWith(`${p}.`) || p.startsWith(`${s.path}.`)) : false,

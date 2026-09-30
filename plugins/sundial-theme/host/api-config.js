@@ -9,6 +9,7 @@ import { promisify } from 'node:util'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
+import { existsSync } from 'node:fs'
 import { NOTICE_GROUPS } from '@sundial/kernel/notice-groups.js'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { resolveSundialConfig } from '@sundial/helpers/sundial-config.js'
@@ -188,6 +189,12 @@ export function mountConfig(ctx, shell) {
     const ours = (script) => text.split('\n').some((line) => line.includes(script) && line.includes(home))
     return { hooks: ours('claude-hook.mjs'), context: ours('claude-context.mjs') }
   }
+  // Hearing has nothing to listen with until whisper-server and both models are here. Said in Settings, never pushed.
+  const hearingBlock = () => {
+    const server = ['/opt/homebrew/bin/whisper-server', '/usr/local/bin/whisper-server'].some((f) => existsSync(f))
+    const models = ['ggml-large-v3-turbo-q5_0.bin', 'ggml-silero-v5.1.2.bin'].every((f) => existsSync(join(home, 'models', f)))
+    return server && models ? null : 'The speech model is not installed. In a terminal, from the Sundial folder, run: node bin/sundial hearing'
+  }
   api('/gnomon/api/services', (req, res) => withConfigLock(() => servicesRoute(req, res)))
   async function servicesRoute(req, res) {
     if (req.method === 'POST') {
@@ -199,6 +206,7 @@ export function mountConfig(ctx, shell) {
         const folder = typed.startsWith('~/') ? join(homedir(), typed.slice(2)) : typed
         if (service.id === 'vault' && typed !== '' && !(await stat(folder).then((st) => st.isDirectory(), () => false))) return sendJson(res, 400, { unavailable: 'There is no folder at that path.' })
       } else if (!allowed(service, body.value)) return sendJson(res, 400, { unavailable: 'That service has no such switch.' })
+      if (service.id === 'hearing' && body.value === true && hearingBlock()) return sendJson(res, 400, { unavailable: hearingBlock() })
       if (service.text) {
         const config = await readConfigFile()
         await writeConfig(config, typed === '' ? setPath(config, service.path, undefined) : setPath(config, service.path, typed))
@@ -216,7 +224,7 @@ export function mountConfig(ctx, shell) {
       }
     }
     const [config, freshness, claude] = await Promise.all([readConfigFile(), readFreshness(), claudeInstalled()])
-    const services = describe(config, pendingRestart(), freshness, claude)
+    const services = describe(config, pendingRestart(), freshness, claude, { hearing: hearingBlock() })
     const waiting = services.filter((s) => s.changed).map((s) => s.label)
     sendJson(res, 200, { services, restartNeeded: waiting.length > 0, waiting, bootedAt, noticeGroups: NOTICE_GROUPS.map(({ id, label, what }) => ({ id, label, what })) })
    }
@@ -316,6 +324,7 @@ export function mountConfig(ctx, shell) {
     if (req.method !== 'POST') return sendJson(res, 200, read())
     const body = await readJson(req, 1024)
     if (typeof body?.listen !== 'boolean') return sendJson(res, 400, { unavailable: 'Say listen: true or listen: false.' })
+    if (body.listen && hearingBlock()) return sendJson(res, 400, { unavailable: hearingBlock() })
     await ctx.gnomonKernel.appendSignal('hearing:set', { listen: body.listen, ...(typeof body.minutes === 'number' ? { minutes: body.minutes } : {}), by: 'owner' })
     // The strip reads hearing off the `now` frame, so every open tab sees the chip flip now, not at the next pulse.
     broadcast({ type: 'now', now: snapshot() })
