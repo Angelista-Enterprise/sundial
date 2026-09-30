@@ -285,6 +285,8 @@ const state = {
   surfaces: new Map(),
   /** approval id → its card, so an outcome can settle the card that asked. */
   approvals: new Map(),
+  /** mark key → its line, so a later frame of the same compaction, retry or command updates it. */
+  marks: new Map(),
   running: false,
   /** Text is arriving: the gnomon speaks rather than thinks. */
   speaking: false,
@@ -353,6 +355,7 @@ function clearCanvas() {
   state.tools.clear()
   state.surfaces.clear()
   state.approvals.clear()
+  state.marks.clear()
 }
 
 /**
@@ -1668,6 +1671,22 @@ function apply(frame) {
     case 'approval':
       drawApproval(frame)
       break
+
+    case 'mark': {
+      // One line per key: a later frame of the same work updates the line it opened.
+      let line = frame.key ? state.marks.get(frame.key) : undefined
+      if (line === undefined) {
+        line = el('div', { class: 'log-line' }, [el('span', { class: 'log-line-label' }), el('span', { class: 'log-line-status' })])
+        if (frame.key) state.marks.set(frame.key, line)
+        turn().append(line)
+      }
+      if (frame.label) line.firstChild.textContent = frame.label
+      line.lastChild.textContent = frame.status ?? ''
+      line.toggleAttribute('data-failed', frame.failed === true)
+      // A long status is cut to one line; the whole of it (or the approval's reason) is on hover.
+      line.title = frame.title || frame.status || ''
+      break
+    }
 
     case 'question-open':
       ;[...canvas.querySelectorAll('.question[data-answered]')].filter((q) => q.querySelector('[data-chosen], .question-said') === null).pop()?._unlock?.()
