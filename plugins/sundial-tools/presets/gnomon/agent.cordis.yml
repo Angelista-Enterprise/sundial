@@ -8,8 +8,7 @@
 #
 # Deliberately absent: bash, file editing, plan mode, workflow/goal tools.
 # Gnomon is a context engine, not a coding agent, and it has its own job loop
-# (the `workbench` rule) and its own goals. Delegation IS here since
-# 2026-09-23: "look into this in the background" is a chat move, not a job.
+# (the `workbench` rule) and its own goals.
 
 # A visible plan for a long answer or a job. One thing in progress at a time:
 # Gnomon's jobs are sequential by construction.
@@ -53,24 +52,8 @@
 - id: tool-ask-user
   name: '@deepseek-ai/dsh-tool-ask-user'
 
-# Background delegation. `subagent` starts a durable child that works while
-# the conversation goes on; its settlement notice wakes this agent, and the
-# shell's session watch streams the turn that follows. One level deep: a
-# helper does not hire helpers. `send_message` / `interrupt_agent` /
-# `list_agents` steer the children; `job_*` reads and stops background jobs.
-- id: tool-subagent
-  name: '@deepseek-ai/dsh-tool-subagent'
-  config:
-    provider: spawn
-    toolName: subagent
-    backgroundMode: continuable
-    maxDepth: 1
-
-- id: tool-subagent-control
-  name: '@deepseek-ai/dsh-tool-subagent-control'
-
-- id: tool-subagent-list-agents
-  name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
-
-- id: tool-jobs
-  name: '@deepseek-ai/dsh-tool-jobs'
+# No delegation tools (subagent, send_message, interrupt_agent, list_agents,
+# job_*) since 2026-09-30: together ~1,500 tokens of schema and prompt on every
+# turn, for a move the chat rarely made. Work that takes longer goes to
+# gnomon_start_job, which runs on dsh's `subagents` SERVICE (work.js) and does
+# not need these tool rows.

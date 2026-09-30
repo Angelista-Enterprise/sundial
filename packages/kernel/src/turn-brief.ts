@@ -71,6 +71,7 @@ export const REPLY_RULES = [
   'Never end with an offer ("Want me to…", "Say the word…", "I can also…").',
   'If they only acknowledge ("ok", "thanks", "nice"), reply with a few words and nothing else. A choice only they can make is an ask_user_question, not a question in prose.',
   'Use as few tools as answer it; the shell only when no gnomon_* tool can.',
+  'A plan you write with todo_write is shown to the owner: mark each step completed when it is done, and before you answer, do every step or remove it from the list.',
 ].join(' ');
 
 const WAITS_ON: Record<string, string> = { tool: ' (tool call, maybe an approval)', permission: ' (an approval)', question: ' (a question for the owner)', plan: ' (a plan to approve)', failed: ' (stopped on an error)' };

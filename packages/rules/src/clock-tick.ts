@@ -21,6 +21,8 @@ export const clockTick: Rule = (state, event) => {
   // helpers/local-day.ts.
   const eventDate = localDate(event.ts, state.config.timezone);
   if (eventDate === state.budgets.day) return { state, effects: [] };
+  // The first tick of a fresh state only learns the day; nothing ended.
+  if (state.budgets.day === '') return { state: { ...state, budgets: { ...state.budgets, day: eventDate } }, effects: [] };
 
   return {
     state: {

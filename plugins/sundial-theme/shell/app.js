@@ -422,7 +422,7 @@ async function showToday() {
  * there and usually says "0" is furniture.
  */
 function updateLens() {
-  const count = stack().querySelectorAll('.surface:not([data-refused])').length
+  const count = stack().querySelectorAll('.surface').length
   let lens = canvas.querySelector('.lens')
   if (count === 0) {
     lens?.remove()
@@ -1152,8 +1152,10 @@ const idsOf = (value) => {
 /** The cards a line points at, each a door that brings it back into view. */
 function cardLinks(ids) {
   if (ids.length === 0) return null
-  return el('span', { class: 'point-cards' }, ids.map((id) => el('button', { type: 'button', class: 'point-card', 'data-id': id, text: cardName(id), onclick: (event) => (event.stopPropagation(), pointAt([id])) })))
+  return el('span', { class: 'point-cards' }, ids.map((id) => el('button', { type: 'button', class: 'point-card', 'data-id': id, text: cardName(id), hidden: !isCard(id), onclick: (event) => (event.stopPropagation(), pointAt([id])) })))
 }
+/** Whether an id names a card at all. A model sometimes points at a moment or a row id instead; a door to nothing printed that raw id. */
+const isCard = (id) => has(id) || CARD_NAME.has(id)
 function pointLine({ kind, label = null, text, ids }) {
   const node = el('div', { class: 'point', 'data-kind': kind, tabindex: ids.length ? '0' : null }, [
     label ? el('span', { class: 'point-n', text: label }) : null,
@@ -1171,7 +1173,10 @@ const cardName = (id) => {
   return title !== id ? title : CARD_NAME.get(id) ?? (id.startsWith('lens:') ? 'the lens' : id.replace(/^[a-z]+:/, ''))
 }
 onChange(() => {
-  for (const link of document.querySelectorAll('.point-card[data-id]')) link.textContent = cardName(link.dataset.id)
+  for (const link of document.querySelectorAll('.point-card[data-id]')) {
+    link.textContent = cardName(link.dataset.id)
+    link.hidden = !isCard(link.dataset.id)
+  }
 })
 function pointNode(frame) {
   const a = frame.args ?? {}
@@ -1610,10 +1615,9 @@ function apply(frame) {
         if (frame.failed || /^Not drawn:/.test(frame.text ?? '')) {
           // A refusal is not a figure: whatever took the stage comes back down.
           if (!state.replaying) dismissPane(`surface:${frame.callId}`)
-          surface.setAttribute('data-refused', '')
-          surface
-            .querySelector('.surface-body')
-            .replaceChildren(el('div', { class: 'surface-fail', text: (frame.text ?? '').replace(/^Not drawn:\s*/, '') || 'This surface was refused.' }))
+          // One faint line, not a card: an untitled frame around an error read as content.
+          const why = (frame.text ?? '').replace(/^Not drawn:\s*/, '').replace(/^Error:\s*/, '') || 'refused'
+          surface.replaceWith(el('div', { class: 'surface-refused', text: `A surface was not drawn: ${why}` }))
           updateLens()
         }
         break
@@ -1685,6 +1689,8 @@ function apply(frame) {
     case 'done':
       dropLiveLine()
       state.speaking = false
+      // The plan stops being live: a step the model never ticked must not keep breathing.
+      state.turn?.setAttribute('data-ended', '')
       if (wk.block) wk.block.open = false
       wk.node?.querySelector('.work-ask')?.remove()
       // A turn that ended for any reason other than finishing says so. Before
