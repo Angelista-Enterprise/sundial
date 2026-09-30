@@ -23,7 +23,7 @@ if [ "${E2E_NO_LAUNCHD:-0}" = 1 ]; then
   node bin/sundial install --no-open --no-sidecars --no-launchagent || exit 1
   zsh $SUNDIAL_HOME/start.sh > $SUNDIAL_HOME/logs/sundial.log 2>&1 &
   SERVER=$!
-  for i in {1..120}; do curl -s -o /dev/null $B/ && break; sleep 1; done
+  for i in {1..120}; do [ "$(curl -s -o /dev/null -w '%{http_code}' $B/)" = 401 ] && break; sleep 1; done
 else
   node bin/sundial install --no-open --no-sidecars || exit 1
 fi
