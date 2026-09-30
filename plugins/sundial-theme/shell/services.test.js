@@ -28,8 +28,8 @@ group('services', () => {
     expect(allowed(undefined, true)).toBe(false)
   })
 
-  it('describes each row: value, changed since boot, and the newest of its signals', () => {
-    const rows = describe({ ocr: { enabled: true }, privacy: { mail: true } }, { ocr: { enabled: false }, privacy: { mail: true } }, [
+  it('describes each row: value, waiting for a restart (the log\'s list), and the newest of its signals', () => {
+    const rows = describe({ ocr: { enabled: true }, privacy: { mail: true } }, ['ocr.enabled'], [
       { signalType: 'mail', eventType: 'received', lastCapturedAt: '2026-09-20T10:00:00Z' },
       { signalType: 'message', eventType: 'received', lastCapturedAt: '2026-09-26T10:00:00Z' },
     ])
@@ -42,7 +42,7 @@ group('services', () => {
   })
 
   it('draws a refinement only while the service it refines is on', () => {
-    const ids = (config) => describe(config, config, []).filter((r) => !r.sep).map((r) => r.id)
+    const ids = (config) => describe(config, [], []).filter((r) => !r.sep).map((r) => r.id)
     expect(ids({})).not.toContain('jobsPerNight')
     expect(ids({ jobs: { enabled: true } })).toEqual(expect.arrayContaining(['jobsPerNight', 'usdPerNight']))
     expect(ids({})).not.toContain('pushAtMac')
@@ -50,7 +50,7 @@ group('services', () => {
   })
 
   it('reads a Claude hook from what is installed, applies it live, and gives the night-shift caps their code defaults', () => {
-    const rows = describe({ jobs: { enabled: true } }, {}, [], { hooks: true, context: false })
+    const rows = describe({ jobs: { enabled: true } }, ['jobs.enabled'], [], { hooks: true, context: false })
     const by = Object.fromEntries(rows.filter((r) => !r.sep).map((r) => [r.id, r]))
     expect(by.claudeHooks).toMatchObject({ value: true, live: true, changed: false })
     expect(by.claudeContext).toMatchObject({ value: false, live: true })

@@ -9,9 +9,11 @@ import { HANDOFF_TOOLS } from './handoff-tools.js';
 import { MEMORY_TOOLS } from './memory-tools.js';
 import { TREND_TOOLS } from './trend-tools.js';
 import { RECALL_TOOLS } from './recall-tools.js';
-import { executeTool, toolDefinitions, type GnomonTool } from './registry.js';
+import { RELIABILITY_TOOLS } from './reliability-tools.js';
+import { executeTool, toolDefinitions, type GnomonTool, type ToolEnv } from './registry.js';
 
-export { UnknownToolError, ToolArgumentError, type GnomonTool } from './registry.js';
+export { UnknownToolError, ToolArgumentError, type GnomonTool, type ToolEnv } from './registry.js';
+export { toolEnv } from '../tool-env.js';
 export { ASK_SYSTEM_PROMPT } from './ask-prompt.js';
 
 /**
@@ -30,8 +32,8 @@ export { ASK_SYSTEM_PROMPT } from './ask-prompt.js';
  * tools already established, so it belongs at the end of the list the same way
  * it belongs at the end of the work.
  */
-// lane D: HANDOFF_TOOLS (#20); lane C: TREND_TOOLS; lane B: BRIEF_TOOLS; lane A: RECALL_TOOLS; the figures stay last.
-export const TOOL_REGISTRY: GnomonTool[] = [...EVIDENCE_TOOLS, ...CONTEXT_TOOLS, ...MEMORY_TOOLS, ...HANDOFF_TOOLS, ...TREND_TOOLS, ...BRIEF_TOOLS, ...RECALL_TOOLS, ...FIGURE_TOOLS];
+// lane D: HANDOFF_TOOLS (#20); lane C: TREND_TOOLS; lane B: BRIEF_TOOLS; lane A: RECALL_TOOLS; W5: RELIABILITY_TOOLS; the figures stay last.
+export const TOOL_REGISTRY: GnomonTool[] = [...EVIDENCE_TOOLS, ...CONTEXT_TOOLS, ...MEMORY_TOOLS, ...HANDOFF_TOOLS, ...TREND_TOOLS, ...BRIEF_TOOLS, ...RECALL_TOOLS, ...RELIABILITY_TOOLS, ...FIGURE_TOOLS];
 
 /**
  * What the chat may call. The same list MCP is advertised since
@@ -52,6 +54,6 @@ export function gnomonToolDefinitions(): ToolDefinition[] {
  * `ToolArgumentError` / whatever the handler throws — the tool loop turns each
  * into a result the model reads and retries against.
  */
-export async function executeGnomonTool(name: string, args: unknown): Promise<unknown> {
-  return executeTool(ASK_TOOL_REGISTRY, name, args);
+export async function executeGnomonTool(name: string, args: unknown, env?: ToolEnv): Promise<unknown> {
+  return executeTool(ASK_TOOL_REGISTRY, name, args, env);
 }

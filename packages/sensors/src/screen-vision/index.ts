@@ -3,6 +3,7 @@ import { getSundialHome } from '@sundial/helpers/config.js';
 import path from 'node:path';
 import { readScreenOcrSnapshot } from '../screen-ocr/screen-ocr-capture.js';
 import { isPrivateCapture } from '../screen-ocr/index.js';
+import { classifyLlmError, type LlmErrorClass } from '@sundial/helpers/llm-error-class.js';
 
 /**
  * J3.3 — screen understanding. The OCR helper writes a downscaled frame
@@ -24,6 +25,10 @@ export interface ScreenVisionConfig {
   framePath?: string;
   ollamaUrl?: string;
   fetchImpl?: typeof fetch;
+  /** W3: the one `llm_audit` writer (`openLlmAudit`), injected by the sensor runtime so this package needs no model package. */
+  /** W5: the one budget gate (`reserveLlmCall('vision')`), injected likewise: the call id, or null when refused. */
+  reserve?: (purpose: 'vision') => Promise<string | null>;
+  openAudit?: (row: { id?: string; momentId: null; purpose: string; model: string; prompt: string; route: string }) => Promise<{ settle(patch: { respondedAt: string; latencyMs: number; success: boolean; statusCode?: number; responseContent?: string; error?: string; errorClass?: LlmErrorClass }): Promise<void> }>;
 }
 
 const PROMPT =
@@ -75,10 +80,15 @@ export class ScreenVisionSensor {
   }
 
   private async describe(processName: string | null): Promise<ScreenFactEvent | null> {
+    // W5: reserved before the model is contacted, like every other call; a refusal (cap, breaker) skips this frame.
+    const callId = this.config.reserve ? await this.config.reserve('vision') : undefined;
+    if (callId === null) return null;
     const image = fs.readFileSync(this.framePath).toString('base64');
     const started = Date.now();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 90_000);
+    // A local model is still a model call: one ledger row, filed as `vision`, under the reservation's id.
+    const audit = await this.config.openAudit?.({ ...(callId ? { id: callId } : {}), momentId: null, purpose: 'vision', model: this.config.model, prompt: `${PROMPT}\n\n[image]`, route: 'ollama' }).catch(() => undefined);
     try {
       const response = await this.fetchImpl(this.ollamaUrl, {
         method: 'POST',
@@ -88,9 +98,13 @@ export class ScreenVisionSensor {
       });
       if (!response.ok) throw new Error(`ollama ${response.status}`);
       const parsed = (await response.json()) as { response?: string };
+      await audit?.settle({ respondedAt: new Date().toISOString(), latencyMs: Date.now() - started, statusCode: response.status, success: true, responseContent: parsed.response ?? '' }).catch(() => undefined);
       const facts = parseFacts(parsed.response ?? '');
       if (facts.length === 0) return null;
       return { type: 'screen:fact', payload: { timestamp: new Date().toISOString(), processName, model: this.config.model, facts, latencyMs: Date.now() - started } };
+    } catch (error) {
+      await audit?.settle({ respondedAt: new Date().toISOString(), latencyMs: Date.now() - started, success: false, error: error instanceof Error ? error.message : String(error), errorClass: classifyLlmError(error) }).catch(() => undefined);
+      throw error;
     } finally {
       clearTimeout(timer);
     }

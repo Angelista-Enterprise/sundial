@@ -183,8 +183,8 @@ export interface SundialConfigFile {
    * Switches that stay OFF until a measurement earns them (docs/jarvis/04).
    * `ownerStateInGateCost` (J2.1): let the owner-state filter price an
    * interruption — only after two weeks of self-report taps and Brier ≤ 0.15.
-   * `learnedGate` (J5.1): let the fitted per-kind logistic replace the fixed
-   * notice threshold — only if `gnomon-fit-gate.js` shows it wins held-out.
+   * (`learnedGate`, J5.1, had no reader and went in W6 P6: what it would have
+   * learned, the gate calibrates from outcomes now — `calibrate`, W5.)
    * `forecasting`: the day-shape, fragmented-hour and project-touch forecasters,
    * their tournament, the uncertainty map and research goals.
    * `gateFeatures` (J1.6): the judge's gate features, logged beside each notice
@@ -192,7 +192,7 @@ export interface SundialConfigFile {
    * has no UI yet). All three are experimental and off for a new install;
    * `sundial migrate` turns them on for an install that already ran them.
    */
-  experiments?: { ownerStateInGateCost?: boolean; learnedGate?: boolean; forecasting?: boolean; gateFeatures?: boolean; presence?: boolean };
+  experiments?: { ownerStateInGateCost?: boolean; forecasting?: boolean; gateFeatures?: boolean; presence?: boolean };
   /**
    * J3.5 — the Obsidian vault Gnomon may read as a sense (notes edited today →
    * subject candidates; paths only) and write as a sink (the day's journal page
@@ -459,7 +459,7 @@ export interface ResolvedSundialConfig {
   timezone: string;
   refutationEnabled: boolean;
   /** See `SundialConfigFile.experiments`; all default false. */
-  experiments: { ownerStateInGateCost: boolean; learnedGate: boolean; forecasting: boolean; gateFeatures: boolean; presence: boolean };
+  experiments: { ownerStateInGateCost: boolean; forecasting: boolean; gateFeatures: boolean; presence: boolean };
   /** See `SundialConfigFile.vault`; null = off. */
   vault: string | null;
   /** See `SundialConfigFile.llm`; entries that fail the shape check are dropped. */
@@ -716,7 +716,7 @@ export const DEFAULT_SUNDIAL_CONFIG: ResolvedSundialConfig = {
   // a running skeptic is built to catch. `refutationEnabled: false` in
   // ~/.sundial/config.json turns it back off.
   refutationEnabled: true,
-  experiments: { ownerStateInGateCost: false, learnedGate: false, forecasting: false, gateFeatures: false, presence: false },
+  experiments: { ownerStateInGateCost: false, forecasting: false, gateFeatures: false, presence: false },
   vault: null,
   llm: { providers: [], use: {} },
   ownerAliases: [],
@@ -767,7 +767,7 @@ function resolveActionClass(raw: unknown, fallbackDefault: ActionPolicy): Action
   return { default: def, byTool };
 }
 
-function resolveActions(raw: unknown): ActionsConfig {
+export function resolveActions(raw: unknown): ActionsConfig {
   const base = DEFAULT_SUNDIAL_CONFIG.actions;
   if (!isPlainObject(raw)) return { internal: { ...base.internal }, outward: { ...base.outward }, filesystemAllow: [] };
   return {
@@ -1072,7 +1072,11 @@ export function loadSundialConfig(): ResolvedSundialConfig {
     console.warn(`[gnomon] failed to parse ${configPath}, using defaults:`, error);
     return DEFAULT_SUNDIAL_CONFIG;
   }
+  return resolveSundialConfig(parsed);
+}
 
+/** A parsed `config.json`, every field validated and defaulted (W3: the routes resolve what they are about to write). */
+export function resolveSundialConfig(parsed: SundialConfigFile): ResolvedSundialConfig {
   const tier = parsed.privacy?.redactionTier;
 
   return {
@@ -1098,7 +1102,6 @@ export function loadSundialConfig(): ResolvedSundialConfig {
     refutationEnabled: parsed.refutationEnabled !== false,
     experiments: {
       ownerStateInGateCost: parsed.experiments?.ownerStateInGateCost === true,
-      learnedGate: parsed.experiments?.learnedGate === true,
       forecasting: parsed.experiments?.forecasting === true,
       gateFeatures: parsed.experiments?.gateFeatures === true,
       presence: parsed.experiments?.presence === true,

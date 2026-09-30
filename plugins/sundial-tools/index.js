@@ -19,7 +19,8 @@
 //
 // Named exports only — a default export drops `inject`.
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { executeGnomonTool } from '@sundial/kernel/tools/index.js';
+import { ASSERTABLE_ENTITY_KINDS } from '@sundial/helpers/vocab.js';
+import { executeGnomonTool, toolEnv } from '@sundial/kernel/tools/index.js';
 import { ASK_TOOL_REGISTRY } from '@sundial/kernel/tools/index.js';
 import { toolDefinitions } from '@sundial/kernel/tools/registry.js';
 import { resolveDailyCaps } from '@sundial/kernel/budgets.js';
@@ -38,13 +39,9 @@ import { createLlmAuditRecorder } from './audit.js';
 import { createShellWitness } from './shell-witness.js';
 import { CARD_KINDS, normKind } from '@sundial/rules/board-track.js';
 import { createCardReaders } from './card-readers.js';
-import { clockContext, frozenPerTurn } from './clock.js';
 import { BOARD_LOOK_ID, boardContextText, boardSummary } from './board-context.js';
 import { LENS_AGGS, LENS_OPS, LENS_SHOWS, lensProblem, runLens } from '../sundial-theme/shell/lens-core.js';
 import { CARDS, checkFilters, describeCard } from '../sundial-theme/shell/cards.js';
-import { internalHeaders } from '../sundial-theme/shell/guard.js';
-import { createAmbientContext } from './ambient.js';
-import { composeAmbientContext, gatherAmbientInput } from '@sundial/kernel/ambient-context.js';
 import { showSurfaceTool, SURFACE_TOOL_NAME } from './show-surface.js';
 import { watchTools } from './watch-tools.js';
 
@@ -63,8 +60,6 @@ export {
   MAX_BODY_CHARS,
 } from './audit.js';
 export { GNOMON_PERSONA, HARNESS_NOTE } from './persona.js';
-export { clockContext, CLOCK_CONTEXT_NAME, CLOCK_CONTEXT_ORDER } from './clock.js';
-export { createAmbientContext, AMBIENT_CONTEXT_NAME, AMBIENT_CONTEXT_ORDER, AMBIENT_REFRESH_MS } from './ambient.js';
 export { showSurfaceTool, rejectSurfacePayload, rejectCanvasHtml, SURFACE_TOOL_NAME, SURFACE_KINDS } from './show-surface.js';
 
 export const name = 'sundial-tools';
@@ -151,7 +146,7 @@ export function apply(ctx) {
   // file the owner as a person or a topic by accident.
   // Gnomon's own rules: adopt a tested watch, drop one.
   for (const tool of watchTools((type, payload) => ctx.gnomonKernel.appendSignal(type, payload), () => ctx.gnomonKernel.getState())) ctx.tools.register(tool);
-  const ASSERT_ENTITY_KINDS = ['person', 'project', 'tool', 'topic', 'owner', 'goal'];
+  const ASSERT_ENTITY_KINDS = ASSERTABLE_ENTITY_KINDS;
   ctx.tools.register(
     defineTool({
       name: 'gnomon_assert',
@@ -331,21 +326,8 @@ export function apply(ctx) {
     }),
   );
 
-  // The clock the persona cannot carry (see clock.js). Registration is
-  // context-scoped, so it is torn down with the plugin on unload.
-  ctx.systemPrompt.context(frozenPerTurn(clockContext()));
-
-  // What Gnomon knows about the owner, in every turn (see ambient.js). The
-  // slice reads the record, and dsh resolves a context synchronously, so it is
-  // cached and rebuilt behind the turn: once now, then every minute. The timer
-  // is an effect so it dies with the plugin.
-  const ambient = createAmbientContext({
-    build: async () => composeAmbientContext(await gatherAmbientInput({ state: ctx.gnomonKernel.getState() })),
-    onError: (error) => console.warn(`[sundial-tools] ambient memory refresh failed: ${error?.message ?? error}`),
-  });
-  ctx.effect(() => () => ambient.dispose(), 'sundial-tools ambient memory');
-  ctx.systemPrompt.context(frozenPerTurn(ambient.context));
-  void ambient.refresh();
+  // W1 step 5: the clock and the owner's memory are in every turn's brief
+  // (`gnomonKernel.brief`), read when the turn starts; no prompt context here.
 
   // ── The board ────────────────────────────────────────────────────────────
   // The owner's space is Gnomon's too. One tool, several verbs, every verb an
@@ -374,13 +356,8 @@ export function apply(ctx) {
     }
   };
   // lane Q (Q12): what the board context says, and the board a tool reads back, are in board-context.js.
-  ctx.systemPrompt.context(
-    frozenPerTurn({
-      name: 'gnomon:board',
-      order: -35,
-      text: () => boardContextText(ctx.gnomonKernel.getState(), deps.today()),
-    }),
-  );
+  // W1 step 5: said in every turn's brief, as one of its sections.
+  ctx.effect(() => ctx.gnomonKernel.briefSection((state) => boardContextText(state, deps.today())), 'sundial-tools board brief section');
   // ── What a card shows ─────────────────────────────────────────────────
   // The read tools are date- and project-shaped; the owner's questions are
   // card-shaped ("this pane", "that stretch"). One tool turns a card id into
@@ -399,16 +376,16 @@ export function apply(ctx) {
     for (const [k, v] of Object.entries(value)) out[k] = Array.isArray(v) && JSON.stringify(v).length > LOOK_CHARS / 2 ? { shown: Math.min(8, v.length), of: v.length, rows: v.slice(0, 8) } : v;
     return out;
   };
-  const route = async (path) => {
-    const response = await fetch(`http://127.0.0.1:${process.env.SUNDIAL_WEB_PORT || 3080}${path}`, { headers: { accept: 'application/json', ...internalHeaders() } });
-    if (!response.ok) throw new Error(`${path} → ${response.status}`);
-    return response.json();
-  };
   // One reader per card kind, and `CARD_KINDS` (the record's own list) is what
-  // the test beside `card-readers.js` holds it to.
+  // the test beside `card-readers.js` holds it to. A card's route is read in
+  // process, through the theme's views (`gnomonReads`), never over the loopback.
   const CARD_READERS = createCardReaders({
-    route,
-    tool: executeGnomonTool,
+    read: (path) => {
+      const reads = ctx.get?.('gnomonReads');
+      if (!reads) throw new Error(`${path}: the web client is not loaded`);
+      return reads.read(path);
+    },
+    tool: (name, args) => executeGnomonTool(name, args, toolEnv(deps.getState)),
     state: () => ctx.gnomonKernel.getState(),
   });
   ctx.tools.register(
@@ -462,7 +439,7 @@ export function apply(ctx) {
    */
   const mayAct = () => {
     const level = ctx.gnomonKernel.getState()?.settings?.autonomy ?? 'act';
-    return level === 'act' ? null : `the owner set autonomy to "${level}" — you may not place or move cards. Say what you would have shown instead.`;
+    return level === 'act' ? null : `the owner set board staging to "${level}" — you may not place or move cards. Say what you would have shown instead.`;
   };
   const parseJson = (v) => (typeof v === 'string' ? (() => { try { return JSON.parse(v); } catch { return undefined; } })() : v);
   ctx.tools.register(
@@ -519,7 +496,7 @@ export function apply(ctx) {
         // A preview is a read and is always allowed; placing is an act.
         const refused = args.action === 'place' ? mayAct() : null;
         if (refused) return { done: false, reason: refused };
-        const data = await executeGnomonTool(spec.source.tool, spec.source.args);
+        const data = await executeGnomonTool(spec.source.tool, spec.source.args, toolEnv(deps.getState));
         const result = runLens(spec, data);
         // A column the rows do not have rendered as the literal word `undefined`
         // down every row, silently, and read as data. Refuse it and say what the
@@ -748,16 +725,12 @@ export function apply(ctx) {
     createShellWitness({ getDefaultCwd: () => process.cwd() }),
   );
 
-  // Same resolution the daemon did once at boot: defaults overlaid with
-  // ~/.sundial/config.json's `budgets` field.
-  // J1.4b: Jev's tool prediction for every owner message, logged beside the
-  // tools the loop actually called — a month of pairs before any routing.
-  ctx.on(
-    'session/event',
-    createRouteLog({ judgeNow: (options) => ctx.gnomonKernel.judgeNow(options), appendSignal: (type, payload) => ctx.gnomonKernel.appendSignal(type, payload) }),
-  );
+  // W1: every owner message and reply, in every session but a subagent's, as
+  // `chat:owner` / `chat:said` (J1.4b's route prediction is retired, W5 step 8).
+  ctx.on('session/event', createRouteLog({ appendSignal: (type, payload, ts) => ctx.gnomonKernel.appendSignal(type, payload, ts) }));
 
-  const dailyCaps = resolveDailyCaps(loadSundialConfig().budgets);
+  // W3: the cap the kernel enforces, from the config in the log (a change applies without a restart).
+  const dailyCap = (purpose) => resolveDailyCaps(ctx.gnomonKernel.getState()?.config?.budgets)[purpose];
 
   // The waterfall wraps EVERY dsh model call (agent conversation only — the
   // kernel's effect LLM calls use @sundial/llm's own transport and never pass
@@ -770,10 +743,10 @@ export function apply(ctx) {
     'llm/stream',
     createAskBudgetGuard({
       getState: () => ctx.gnomonKernel.getState(),
-      getDailyCap: (purpose) => dailyCaps[purpose],
-      appendSignal: (type, payload) => ctx.gnomonKernel.appendSignal(type, payload),
+      getDailyCap: dailyCap,
+      reserve: (purpose, options) => ctx.gnomonKernel.reserveLlmCall(purpose, options),
       recordAudit: createLlmAuditRecorder({
-        queries: ctx.gnomonDb.queries,
+        openAudit: (row) => ctx.gnomonKernel.openLlmAudit(row),
         getMomentId: () => ctx.gnomonKernel.getState()?.moment?.id ?? null,
         routeBaseUrl: (id) =>
           id === DEFAULT_PROVIDER || id === LEGACY_PROVIDER
@@ -784,6 +757,6 @@ export function apply(ctx) {
   );
 
   console.log(
-    `[sundial-tools] registered ${hot.length} hot read tools + ${cold.length} deferred behind ${DISCOVER_TOOL_NAME}/${DISPATCH_TOOL_NAME} + gnomon_assert + ${SURFACE_TOOL_NAME} + the gnomon:now clock context; repeat-call handles armed; ask budget guard armed (cap ${dailyCaps.ask}/day), chat calls written to the ledger`,
+    `[sundial-tools] registered ${hot.length} hot read tools + ${cold.length} deferred behind ${DISCOVER_TOOL_NAME}/${DISPATCH_TOOL_NAME} + gnomon_assert + ${SURFACE_TOOL_NAME} + the board brief section; repeat-call handles armed; ask budget guard armed (cap ${dailyCap('ask')}/day), chat calls written to the ledger`,
   );
 }

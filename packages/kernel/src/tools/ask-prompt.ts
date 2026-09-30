@@ -1,5 +1,4 @@
 import { localDate } from '@sundial/helpers/local-day.js';
-import { loadSundialConfig } from '@sundial/helpers/sundial-config.js';
 import { EVIDENCE_DISCIPLINE, withPersona } from '../persona.js';
 
 /**
@@ -108,28 +107,3 @@ export function nowLine(now: Date, timeZone: string): string {
   const yesterday = localDate(new Date(now.getTime() - 86_400_000).toISOString(), timeZone);
   return `Right now it is ${stamp} (${timeZone}). Today is ${today}; yesterday was ${yesterday}. Every tool's \`date\` argument is YYYY-MM-DD in this timezone.`;
 }
-
-/**
- * Phrasing for the context block, so both callers frame the clock and an empty
- * semantic search the same way.
- *
- * The empty case is not a dead end any more and the wording has to say so. It
- * used to end the request — "no memory to answer from yet" — which was true when
- * `scoredSearch` was the only way in. "Which files did I edit today" has no
- * embedded row by construction and is perfectly answerable, so an empty search
- * is now a hint about which tool to reach for rather than a verdict.
- */
-/**
- * The clock line on its own, for a surface that has no context block to hang it on.
- *
- * The dsh harness is exactly that surface: its persona is a static YAML string,
- * so the date cannot be interpolated into it, and nothing else in the agent
- * loop states one. That is the same starting condition as the `yesterday`
- * failure documented above, minus the fix — `plugins/sundial-tools` registers
- * this as a dynamic `systemPrompt.context`, re-resolved on every assembly, so
- * a session left open across midnight does not carry a stale date.
- */
-export function gnomonClockLine(options: { now?: Date; timeZone?: string } = {}): string {
-  return nowLine(options.now ?? new Date(), options.timeZone ?? loadSundialConfig().timezone);
-}
-

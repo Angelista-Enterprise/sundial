@@ -9,10 +9,13 @@ import { applyGateFeatures, gateFeaturesJudge } from './gate-features-log.js';
 import { coverageTrack } from './coverage-track.js';
 import { expectationLearn } from './expectation-learn.js';
 import { expectationWatch } from './expectation-watch.js';
+import { conversationTrack } from './conversation-track.js';
+import { loopTrack } from './loop-track.js';
 import { noticeGate } from './notice-gate.js';
+import { calibrate } from './calibrate.js';
+import { autonomyTrack } from './autonomy-track.js';
 // lane D
 import { noticeRoute } from './notice-route.js';
-import { askTrack } from './ask-track.js';
 import { routineLearn } from './routine-learn.js';
 import { assistantTrack } from './assistant-track.js';
 import { budgetTrack } from './budget-track.js';
@@ -32,7 +35,6 @@ import { entityExtract } from './entity-extract.js';
 import { factConfidenceDecay } from './fact-confidence-decay.js';
 import { feedbackTrack } from './feedback-track.js';
 import { solicitFeedback } from './solicit-feedback.js';
-import { wakeupTrack } from './wakeup-track.js';
 import { askHarvest, askHarvestBackfill } from './ask-harvest.js';
 import { ownerAsk } from './owner-ask.js';
 import { agentSessionTrack } from './agent-session-track.js';
@@ -64,6 +66,7 @@ import { momentClose } from './moment-close.js';
 import { hearingWindow } from './hearing-window.js';
 import { boardTrack } from './board-track.js';
 import { settingsTrack } from './settings-track.js';
+import { configTrack } from './config-track.js';
 import { momentRollup } from './moment-rollup.js';
 import { fileWatcherCapacity } from './file-watcher-capacity.js';
 import { networkTrack } from './network-track.js';
@@ -72,7 +75,6 @@ import { conversationFactExtract } from './conversation-fact-extract.js';
 import { nightlyRefutation } from './nightly-refutation.js';
 import { applyFactAudit, nightlyBeliefAudit } from './nightly-belief-audit.js';
 import { applyAliasAlignment, nightlyAliasAlignment } from './alias-alignment.js';
-import { powerTrack } from './power-track.js';
 import { fileTrack } from './file-track.js';
 import { shellFailureTrack } from './shell-failure-track.js';
 import { pressureTrack } from './pressure-track.js';
@@ -110,6 +112,7 @@ import { briefClock } from './brief-clock.js';
 import { mailMatters } from './mail-matters.js';
 // lane H
 import { sensorHealth } from './sensor-health.js';
+import { llmReliability } from './llm-reliability.js';
 
 /**
  * Fixed fold order (decision #1, docs/design/00-overview.md). Phase 3 Wave
@@ -177,7 +180,7 @@ import { sensorHealth } from './sensor-health.js';
  *
  * C1 adds three single-purpose state-slice writers — `focusModeTrack`
  * (`focus-mode:changed` → `state.focusMode`), `powerTrack` (`system:power`
- * → `state.power`), `networkTrack` (`location:network` → `state.network`) —
+ * → `state.power`, retired in W6 P8: nothing read it), `networkTrack` (`location:network` → `state.network`) —
  * each reacting to an event type no other rule touches, so none has an
  * ordering constraint with anything else. `momentRollup` itself grows three
  * more branches (`git:status`, `media:usage`, `symbol:edited`) plus five
@@ -203,6 +206,8 @@ export const RULE_MANIFEST: Rule[] = [
   // daemon's ingest gate consults on the NEXT event, so it must record whatever
   // got past the gate on this one.
   observedTrack,
+  // W3: the one writer of `state.config` after boot, before every rule that reads it.
+  configTrack,
   clockTick,
   budgetTrack,
   // Before every consumer of coverage, and it has no other constraint: it counts
@@ -272,7 +277,6 @@ export const RULE_MANIFEST: Rule[] = [
   // One thread per ticket key, from every sense that can see one.
   ticketTrack,
   focusModeTrack,
-  powerTrack,
   networkTrack,
   // Fold wave one (2026-09-04): five streams that were logged and never read.
   // Each writes one slice and reads no other rule's output, so they sit with
@@ -364,37 +368,32 @@ export const RULE_MANIFEST: Rule[] = [
   // and `memory.recentInsights`; no other rule writes those on a tick, so it has
   // no ordering constraint. After `feedbackTrack` for readability, not necessity.
   solicitFeedback,
-  // Ask's own record: reacts to `ask:answered`/`ask:remembered`, two event
-  // types no other rule touches — same non-dependency as `feedbackTrack`, and
-  // beside it because both fold a deliberate act of the owner's rather than an
-  // observation of them.
-  askTrack,
-  // Scheduled wake-ups. Folds `wakeup:scheduled`/`wakeup:cancelled` — two event
-  // types nothing else reacts to — and fires due ones on `clock:tick` as an
-  // ordinary `notice:candidate`, which the executor's recursive EmitEvent pass
-  // folds like any producer's. So it has no ordering constraint either, and
-  // sits beside the three above for the same reason: it records a deliberate
-  // act of the owner's rather than an observation of them.
-  wakeupTrack,
-  // The other direction of asking: `solicitFeedback` above asks the owner to
-  // RATE something, `askTrack` records what the owner asked, and this records
-  // what GNOMON asked. Folds `ask:owner-opened`/`ask:owner-answered`, two more
-  // event types nothing else touches, and expires an ignored question on
-  // `clock:tick`. Beside its siblings for the same reason; no ordering
-  // constraint.
-  // J1.5: hears the owner's answer BEFORE `ownerAsk` closes the open question
+  // J1.5: hears the owner's answer BEFORE `loopTrack` closes the open question (W2 M3)
   // on the same event — it needs `open` (the ask's ts matches the meeting's
   // `askedAt`, and its id says whether goals were listed). Emits a `Judge`.
   listenToReply,
-  // H2: reads the question off `state.ownerAsk.open` on the same event, for the
+  // H2: reads the open question (`openAsk`) on the same event, for the
   // same reason `listenToReply` does and under the same ordering requirement —
-  // `ownerAsk` sets `open` to null a line below. Emits one `extract` call whose
+  // `loopTrack` closes it a few lines below. Emits one `extract` call whose
   // reading is filed BESIDE the ask, never as a fact.
   askHarvest,
   // H4: the same reading for the answers that predate the rule. Rides
   // `clock:tick` and ends on its own; no ordering constraint, since it folds
   // two event types nothing else touches.
   askHarvestBackfill,
+  // W1: the chat, in the log — the single writer of `state.conversation`, on `chat:*` only.
+  // BEFORE `loopTrack`, which reads `conversation.said` on the same `chat:said`.
+  conversationTrack,
+  // W2: open loops and their follow-up lines, the single writer of `state.loops`. After
+  // `conversationTrack` (its openers read `conversation.said` on the same `chat:said`) and
+  // `gitAheadTrack` (the push case reads `git.unpushed` on the same `git:status`); before the gate.
+  // M1–M3: it folds the wake-ups, the proposals and the question Gnomon is waiting on, so it sits
+  // where their rules did: after `listenToReply` and `askHarvest`, which read an open question
+  // before it closes, and before `meetingFollowup`, `peopleAsk` and `goalCheckin`, which ask only
+  // when none is open.
+  loopTrack,
+  // What GNOMON asked: the counts, the answered ring and the `owner_asks` rows, off what `loopTrack`
+  // folded on the same event (so directly after it).
   ownerAsk,
   // decisions/assistant-as-an-event-source, write half: folds `assistant:proposal`
   // /`assistant:response`/`assistant:claim`. Same non-dependency as the two above —
@@ -563,9 +562,16 @@ export const RULE_MANIFEST: Rule[] = [
   // lane B: after `promiseTrack`, which on the same tick leaves a promise due at a meeting to this rule's prep.
   briefClock,
   noticeGate,
+  // W5: the single writer of `state.calibrated`. After `noticeGate` (it reads `notices.lastDelivered`
+  // on the same event), `routineLearn` (the trail) and `feedbackTrack` (the insight a verdict names).
+  calibrate,
+  // W5 step 10: the single writer of `state.autonomy`, after `calibrate` (it reads the numbers `calibrate` just moved).
+  autonomyTrack,
   // lane H: Sundial's own health. Order-free: it reads only its own slice and
   // speaks through a `notice:candidate`, which reaches the gate in its own pass.
   sensorHealth,
+  // W5: the breaker per model route, the single writer of `state.reliability`. Order-free for the same reason.
+  llmReliability,
   // count-office-days is intentionally NOT a rule: "days at the office" is a
   // read-time analytic over moments' `location` (Phase 5 #6,
   // `getLocationDayCounts` in @sundial/db), not something the reducer folds into

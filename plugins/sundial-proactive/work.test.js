@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { installWorkLoop, WORK_JOB_CHANNEL } from './work.js'
+import { briefSubagent, installWorkLoop, WORK_SESSION_ID } from './work.js'
 
 /**
  * A job used to be a `followup` on the one persistent `gnomon-work` agent, so
@@ -17,20 +17,29 @@ import { installWorkLoop, WORK_JOB_CHANNEL } from './work.js'
 const JOB = { id: 'job-1', kind: 'meeting-brief', subject: 'Standup', reason: 'starts in 19 min', detail: { attendees: ['Alex'] } }
 
 /** A ctx with just the seams `installWorkLoop` touches. */
-function fakeCtx({ subagents } = {}) {
+function fakeCtx({ subagents, reserve = async () => 'call-1' } = {}) {
   const handlers = new Map()
+  const actors = new Map()
   const agent = { id: 'gnomon-work', status: 'running', inject: vi.fn(), followup: vi.fn() }
+  const audits = []
   return {
     ctx: {
       tools: { register: vi.fn(() => () => {}) },
       agents: { get: () => agent, create: vi.fn(), resume: vi.fn() },
       agentDefaultModel: { currentSelection: () => ({ provider: 'tensorx', model: 'qwen/qwen3.8-flash-next' }) },
-      gnomonKernel: { appendSignal: vi.fn(async () => {}) },
+      gnomonKernel: {
+        appendSignal: vi.fn(async () => {}),
+        registerActor: (kind, actor) => (actors.set(kind, actor), () => actors.delete(kind)),
+        openLlmAudit: async (row) => (audits.push(row), { id: row.id, settle: async () => {} }),
+      },
       on: (event, handler) => handlers.set(event, handler),
       get: (name) => (name === 'subagents' ? subagents : undefined),
     },
     agent,
-    notice: (payload) => handlers.get('gnomon/notice')?.({ channel: WORK_JOB_CHANNEL, payload }),
+    audits,
+    actors,
+    // W3: the executor calls the `subagent` actor for StartSubagent, with its in-lane budget gate.
+    notice: (job) => actors.get('subagent').start({ type: 'StartSubagent', job }, { reserve }),
   }
 }
 
@@ -99,6 +108,21 @@ describe('the work loop', () => {
     // A reload used to leave children running against a plugin that no longer
     // existed to receive their results.
     expect(signal.aborted).toBe(true)
+  })
+
+  it('answers the executor with the child and its completion; Stop aborts it', async () => {
+    const subagents = fakeSubagents()
+    const { ctx, notice, actors } = fakeCtx({ subagents })
+    installWorkLoop(ctx, { home: '/home', cwd: '/ws', log: () => {}, warn: () => {} })
+    const started = await notice(JOB)
+    expect(started.childId).toBe('child-1')
+    const { signal } = subagents.calls[0].request
+    await actors.get('subagent').stop({ type: 'StopSubagent', jobId: JOB.id })
+    expect(signal.aborted).toBe(true)
+    subagents.finish('aborted')
+    await started.done
+    // The close is the executor's to fold now, not the plugin's.
+    expect(ctx.gnomonKernel.appendSignal).not.toHaveBeenCalled()
   })
 
   it('falls back to the work agent when the profile has no subagent provider', async () => {
@@ -218,11 +242,45 @@ describe('Claude hands', () => {
     await vi.waitFor(() => expect(ctx.gnomonKernel.appendSignal).toHaveBeenCalledWith('work:closed', expect.objectContaining({ jobId: 'job-1', outcome: 'failed' })))
   })
 
+  it('W3: reserves a hand call first — its id is the audit row\'s — and a spent budget refuses the job', async () => {
+    const spawnFn = fakeSpawn(envelope({ outcome: 'nothing' }))
+    const { ctx, notice, audits } = fakeCtx({})
+    installWorkLoop(ctx, { home, cwd: '/ws', hands, resolveClaudeFn: (p) => p, spawnFn, log: () => {}, warn: () => {} })
+    await notice(JOB)
+    expect(audits).toMatchObject([{ id: 'call-1', purpose: 'hand', model: 'claude-code' }])
+    const spent = fakeCtx({ reserve: async () => null })
+    installWorkLoop(spent.ctx, { home, cwd: '/ws', hands, resolveClaudeFn: (p) => p, spawnFn, log: () => {}, warn: () => {} })
+    await expect(spent.notice(JOB)).rejects.toThrow(/hand budget is spent/)
+    expect(spent.audits).toEqual([])
+  })
+
   it('stays on dsh when no claude binary is found', async () => {
     const subagents = fakeSubagents()
     const { ctx, notice } = fakeCtx({ subagents })
     installWorkLoop(ctx, { home, cwd: '/ws', hands, resolveClaudeFn: () => null, log: () => {}, warn: () => {} })
     await notice(JOB)
     await vi.waitFor(() => expect(subagents.calls).toHaveLength(1))
+  })
+})
+
+describe('a helper the model starts is briefed once (W5)', () => {
+  const setup = (parentSession) => {
+    const child = { session: { header: { parentSession } }, inject: vi.fn() }
+    const brief = vi.fn(async () => ({ text: 'Right now it is 10:00 on Tuesday. Mira Bakker works on puzzlebox-studio.', present: 'Right now: …' }))
+    return { child, brief, ctx: { agents: { get: (id) => (id === 'child-1' ? child : undefined) }, gnomonKernel: { brief } } }
+  }
+  it('injects the brief into a model-started child, with no reply rules', async () => {
+    const { child, brief, ctx } = setup('session-7f')
+    expect(await briefSubagent(ctx, { id: 'child-1', local: true })).toBe(true)
+    expect(brief).toHaveBeenCalledWith({ sessionId: 'child-1', cause: { kind: 'work' } })
+    expect(child.inject).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(child.inject.mock.calls[0][0])).toContain('Mira Bakker works on puzzlebox-studio')
+  })
+  it('leaves Sundial\'s own jobs (briefed in their prompt) and remote children alone', async () => {
+    const own = setup(WORK_SESSION_ID)
+    expect(await briefSubagent(own.ctx, { id: 'child-1', local: true })).toBe(false)
+    expect(own.child.inject).not.toHaveBeenCalled()
+    const remote = setup('session-7f')
+    expect(await briefSubagent(remote.ctx, { id: 'child-1', local: false })).toBe(false)
   })
 })

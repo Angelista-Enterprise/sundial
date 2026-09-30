@@ -172,21 +172,22 @@ function readFinish(reason) {
 /**
  * Build the recorder.
  *
- * @param options.queries `@sundial/db`'s query module (recordLlmAudit/updateLlmAudit)
+ * @param options.openAudit `@sundial/llm`'s `openLlmAudit` (through gnomonKernel), the one writer of `llm_audit`
  * @param options.getMomentId () => the open moment's id or null — the one correlation id Gnomon has
  * @param options.routeBaseUrl (routeId) => that route's base URL, so a hosted model with a bare id is recorded as remote (see `ledgerModel`)
  * @param options.newId id factory, overridable in tests
  * @param options.clock () => epoch ms, overridable in tests
- * @returns `begin(options)` → a per-call collector, or null when the row could not be opened
+ * @returns `begin(options, id?)` → a per-call collector, or null when the row could not be opened. `id`: the budget reservation's call id, so the row and the spend join
  */
-export function createLlmAuditRecorder({ queries, getMomentId, routeBaseUrl = () => undefined, newId = createEventId, clock = () => Date.now() }) {
-  return async function begin(options) {
-    const id = newId();
+export function createLlmAuditRecorder({ openAudit, getMomentId, routeBaseUrl = () => undefined, newId = createEventId, clock = () => Date.now() }) {
+  return async function begin(options, reservedId) {
+    const id = reservedId ?? newId();
     const startedAt = clock();
     // Kept: `settle` prices a failed stream off the prompt that was sent.
     const prompt = serializePrompt(options);
+    let row;
     try {
-      await queries.recordLlmAudit({
+      row = await openAudit({
         id,
         momentId: getMomentId(),
         purpose: auditPurpose(options),
@@ -195,6 +196,7 @@ export function createLlmAuditRecorder({ queries, getMomentId, routeBaseUrl = ()
         model: ledgerModel(options?.model ?? 'unknown', options?.provider, routeBaseUrl(options?.provider)),
         prompt,
         requestedAt: new Date(startedAt).toISOString(),
+        route: options?.provider ?? 'unknown',
       });
     } catch (error) {
       console.error('[sundial-tools] failed to open a ledger row for a chat call:', error);
@@ -256,7 +258,7 @@ export function createLlmAuditRecorder({ queries, getMomentId, routeBaseUrl = ()
         // one arrived before the failure; estimate from the prompt otherwise.
         const billedPromptTokens = success ? undefined : columns.promptTokens || estimateBilledPromptTokens(prompt);
         try {
-          await queries.updateLlmAudit(id, {
+          await row.settle({
             respondedAt: new Date(endedAt).toISOString(),
             latencyMs: endedAt - startedAt,
             success,

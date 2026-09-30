@@ -434,6 +434,7 @@ async function install() {
   writeStartScript({ sidecars });
   writeAppEnv({ sidecars });
   writeMarker({ sidecars, mode, app: APP });
+  await hearing({ fromInstall: true });
   // A test install (its own label) leaves the owner's Claude settings alone unless asked.
   if (flag('claude-hooks') || (LABEL === 'dev.sundial.agent' && !flag('no-claude-hooks'))) addClaudeHooks();
   if (flag('claude-context') || (LABEL === 'dev.sundial.agent' && !flag('no-claude-context'))) addClaudeContext();
@@ -461,6 +462,48 @@ async function install() {
   say(`Optional shell history: add this line to ~/.zshrc\n  [ -f "${path.join(HOME, 'shell-hook.zsh')}" ] && source "${path.join(HOME, 'shell-hook.zsh')}"`);
   await offerMcp();
   if (!flag('no-open')) openBrowser();
+}
+
+/**
+ * Hearing needs whisper-server and two model files (~575 MB), none of which
+ * ship with Sundial. Without them the audio helper writes `no-model` and
+ * nothing is heard. Asked, never assumed: it is a big download and it turns
+ * the microphone on. `sundial hearing` runs it later; --hearing answers yes.
+ */
+const MODELS = {
+  'ggml-large-v3-turbo-q5_0.bin': 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin',
+  'ggml-silero-v5.1.2.bin': 'https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin',
+};
+
+async function hearing({ fromInstall = false } = {}) {
+  const configFile = path.join(HOME, 'config.json');
+  const config = JSON.parse(fs.readFileSync(configFile, 'utf8') || '{}');
+  const missing = Object.keys(MODELS).filter((name) => !fs.existsSync(path.join(HOME, 'models', name)));
+  const needServer = !has('whisper-server');
+  if (fromInstall && (flag('no-hearing') || config.audio?.enabled === false || (config.audio?.enabled && !missing.length && !needServer))) return;
+  const todo = [needServer && 'brew install whisper-cpp', ...missing.map((name) => `download ${name}`)].filter(Boolean);
+  const later = 'Turn it on later with: node bin/sundial hearing';
+  if (!flag('hearing')) {
+    if (!process.stdin.isTTY) return say(`\nHearing is off. ${later}`);
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const answer = (await rl.question(`\nLet Gnomon hear meetings and calls on this Mac? It listens to the microphone only in meetings, on this Mac, in English and Dutch.\n${todo.length ? `This will: ${todo.join(', ')} (about 575 MB in total).\n` : ''}Turn on hearing? [y/N] `)).trim().toLowerCase();
+    rl.close();
+    if (answer !== 'y' && answer !== 'yes') return say(`Skipped. ${later}`);
+  }
+  if (needServer) {
+    if (!has('brew')) fail('whisper-server is missing and Homebrew is not installed. Install Homebrew, then run `brew install whisper-cpp`.');
+    run('brew', ['install', 'whisper-cpp']);
+  }
+  fs.mkdirSync(path.join(HOME, 'models'), { recursive: true, mode: 0o700 });
+  for (const name of missing) {
+    const file = path.join(HOME, 'models', name);
+    say(`Downloading ${name}`);
+    run('curl', ['-fL', '--progress-bar', '-C', '-', '-o', `${file}.part`, MODELS[name]]);
+    fs.renameSync(`${file}.part`, file);
+  }
+  config.audio = { autoMeetings: true, ...config.audio, enabled: true };
+  fs.writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  say('Hearing is on. Restart Sundial to pick it up: node bin/sundial restart');
 }
 
 /**
@@ -820,6 +863,7 @@ const commands = {
     openApp();
   },
   open: openBrowser,
+  hearing,
   'claude-hooks': claudeHooks,
   'claude-context': claudeContext,
   mcp: () => run(process.execPath, [path.join(REPO, 'packages', 'mcp', 'bin', 'sundial-mcp.js')], { env: { ...process.env, SUNDIAL_HOME: HOME } }),
@@ -832,9 +876,11 @@ if (!commands[command]) {
   install     check prerequisites, build, write ${HOME}, start at login
                 --no-open  --no-sidecars  --no-launchagent  --no-mcp  --skip-build
                 --no-app (a LaunchAgent instead of the Mac app)  --no-login-item
+                --no-hearing  --hearing (answer the hearing question)
                 --no-claude-hooks  --claude-hooks (a test install adds none unless asked)
                 --no-claude-context  --claude-context (the same, for the SessionStart context hook)
                 --timeout <seconds>  (how long to wait for the web client, default 120)
+  hearing     turn on hearing: whisper-server + two models (575 MB), asks first; --hearing = yes
   status      what is installed and running
   doctor      check prerequisites only
   open        sign this browser in and open Sundial

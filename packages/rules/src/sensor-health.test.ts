@@ -137,3 +137,46 @@ describe('sensorHealth', () => {
     expect(state.sensorHealth.push).toEqual({ lastOkAt: at(MIN), lastFailedAt: at(2 * MIN), lastError: 'timeout' });
   });
 });
+
+describe('W6 D9: uptime and downtime', () => {
+  it('counts minutes up per local day from the heartbeat, the last seven days', () => {
+    const { state } = run([...ticks(0, 5 * MIN), ev('clock:tick', 24 * 60 * MIN)]);
+    expect(state.sensorHealth.uptime).toEqual([
+      { day: '2026-09-01', minutes: 6 },
+      { day: '2026-09-02', minutes: 1 },
+    ]);
+  });
+
+  it('says once, at the next start, that Sundial was down over an hour while the Mac was on; not when the Mac was off', () => {
+    const up = (ms: number, lastSeenMs: number, bootMs: number) => ev('sundial:up', ms, { lastSeenAt: at(lastSeenMs), macBootAt: at(bootMs) });
+    const down = run([ev('clock:tick', 0), up(3 * 60 * MIN, 0, -60 * MIN)]);
+    expect(down.said).toHaveLength(1);
+    expect(down.said[0]).toMatchObject({ key: 'sensor-health:downtime', observation: expect.stringContaining('not running for 3 hours') });
+    // The Mac booted 20 minutes ago: it was off, not Sundial down.
+    expect(run([ev('clock:tick', 0), up(3 * 60 * MIN, 0, 3 * 60 * MIN - 20 * MIN)]).said).toEqual([]);
+    // A restart a minute later says nothing; the first tick after a said downtime re-arms it.
+    expect(run([ev('clock:tick', 0), up(MIN, 0, -60 * MIN)]).said).toEqual([]);
+    const after = run([ev('clock:tick', 3 * 60 * MIN + MIN)], down.state);
+    expect(after.state.sensorHealth.troubles.downtime).toBeUndefined();
+  });
+});
+
+describe('W6 D9: the downtime notice reaches the phone through the gate', () => {
+  it('folds through the manifest to one phasic Notify that pushes', async () => {
+    const { reduce } = await import('@sundial/kernel/reduce.js');
+    const { RULE_MANIFEST } = await import('./manifest.js');
+    let state = base();
+    const notifies: { channel: string; acts?: string[] }[] = [];
+    const feed = (e: SanitizedEvent) => {
+      const out = reduce(state, e, RULE_MANIFEST);
+      state = out.state;
+      for (const { effect } of out.effects) if (effect.type === 'Notify') notifies.push({ channel: effect.channel, acts: (effect.payload as { acts?: string[] }).acts });
+      // A candidate re-enters as its own event, as the executor does.
+      for (const { effect } of out.effects) if (effect.type === 'EmitEvent') feed({ ...effect.event, sanitized: true } as SanitizedEvent);
+    };
+    feed(ev('clock:tick', 0));
+    feed(ev('sundial:up', 3 * 60 * MIN, { lastSeenAt: at(0), macBootAt: at(-60 * MIN) }));
+    expect(notifies.filter((n) => n.channel === 'phasic-notice')).toHaveLength(1);
+    expect(notifies.find((n) => n.channel === 'phasic-notice')?.acts).toContain('push');
+  });
+});

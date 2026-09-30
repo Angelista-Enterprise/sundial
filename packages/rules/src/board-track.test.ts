@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { createInitialState } from '@sundial/kernel/initial-state.js';
+import { createInitialState as fresh } from '@sundial/kernel/initial-state.js';
+
+/** An empty board: the geometry below is measured from nothing, not from the fresh record's default stages. */
+const createInitialState = (id: string) => {
+  const s = fresh(id);
+  return { ...s, board: { ...s.board, cards: {}, sections: {} } };
+};
 import type { KernelState, SanitizedEvent } from '@sundial/kernel/types.js';
 import { GAP, ROW_PAD, boardTrack, defaultSize, liveSpan, resolveSpan, DEFAULT_SIZE } from './board-track.js';
 

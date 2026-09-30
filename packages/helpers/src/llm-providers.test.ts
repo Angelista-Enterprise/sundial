@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { isLocalUrl, ledgerModel, parseProviders, providerKeyEnv, providerLabel, setEnvValues } from './llm-providers.js';
+import { chatDefault, isLocalUrl, ledgerModel, parseProviders, providerKeyEnv, providerLabel, setEnvValues } from './llm-providers.js';
 
 describe('llm providers', () => {
   it('names a provider the way a person would', () => {
@@ -47,5 +47,18 @@ describe('llm providers', () => {
     expect(statSync(file).mode & 0o777).toBe(0o600);
     expect(() => setEnvValues(file, { SUNDIAL_LLM_MODEL: 'a\nEVIL=1' })).toThrow();
     expect(() => setEnvValues(file, { 'bad key': 'x' })).toThrow();
+  });
+
+  it('a provider-only install chats on the provider llm.use.default names, with its model', () => {
+    const llm = { providers: [{ id: 'p-puzzlebox', label: 'Puzzlebox', baseUrl: 'https://llm.example.org/v1', model: 'puzzle-7b' }], use: { default: 'p-puzzlebox' } };
+    const dsh = { provider: 'openai', model: 'qwen/qwen3.8-flash-next' };
+    expect(chatDefault(dsh, llm, false)).toEqual({ provider: 'p-puzzlebox', model: 'puzzle-7b' });
+    expect(chatDefault({ provider: 'tensorx', model: 'm' }, llm, false)).toEqual({ provider: 'p-puzzlebox', model: 'puzzle-7b' });
+    // Gnomon's own route in .env, a picked route, or no usable default: the selection stays.
+    expect(chatDefault(dsh, llm, true)).toBe(dsh);
+    const picked = { provider: 'p-other', model: 'x' };
+    expect(chatDefault(picked, llm, false)).toBe(picked);
+    expect(chatDefault(dsh, { ...llm, use: {} }, false)).toBe(dsh);
+    expect(chatDefault(dsh, undefined, false)).toBe(dsh);
   });
 });

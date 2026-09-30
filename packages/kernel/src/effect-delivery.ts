@@ -105,6 +105,26 @@ export function effectDeliveryGuarantee(effect: Effect): DeliveryGuarantee {
     case 'RunAskHarvestBackfill':
     // A repeat plans the same week again and replaces the plan; steps already run are not re-run (the plan keys them).
     case 'RunGoalPlan':
+    // A repeat reads the week again; the entry is kept once a day (its dedupe key), the fold takes the latest.
+    case 'ComposeWeekReview':
+      return 'at-least-once';
+
+    /** W3: a repeat re-judges moments with the same questions; the per-pack reservation bounds what it can spend. */
+    case 'RunRejudge':
+      return 'at-least-once';
+
+    /**
+     * W3: a job or a subagent started twice is two jobs spending, in two
+     * worktrees or two children. After a crash its outcome is unknown, so a
+     * replay abandons it; the rule's own timeout frees the slot.
+     */
+    case 'StartJob':
+    case 'StartSubagent':
+      return 'at-most-once';
+
+    /** Stopping twice stops once: the second finds nothing running. */
+    case 'StopJob':
+    case 'StopSubagent':
       return 'at-least-once';
 
     // Deterministic re-read of the forecaster's own recorded rows: a repeat
@@ -258,6 +278,12 @@ export const EFFECT_FAMILY: Record<Effect['type'], EffectFamily> = {
   RunJournal: 'think',
   RunGoalTrial: 'think',
   RunGoalPlan: 'think',
+  ComposeWeekReview: 'record',
+  RunRejudge: 'think',
+  StartJob: 'think',
+  StartSubagent: 'think',
+  StopJob: 'itself',
+  StopSubagent: 'itself',
   // W2 — changes what Gnomon knows, through the retractions and merges it plans.
   RunWorldHygiene: 'record',
 

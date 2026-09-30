@@ -3,42 +3,8 @@ import {
   canonicalizeConversationCandidate,
   conversationExtractionInstructions,
   formatTranscript,
-  selectOwnerTurns,
   MAX_CONVERSATION_CONFIDENCE,
-  MAX_TURN_CHARS,
-  type RawSessionEvent,
 } from './conversation-extract.js';
-
-const T0 = Date.parse('2026-09-04T08:00:00.000Z');
-const owner = (time: number, text: string, kind?: string): RawSessionEvent => ({
-  type: 'user/message',
-  time,
-  data: { ...(kind ? { source: { kind } } : {}), content: [{ type: 'text', text }] },
-});
-
-describe('selectOwnerTurns', () => {
-  it('keeps only what the owner typed, inside the window', () => {
-    const events: RawSessionEvent[] = [
-      owner(T0 - 1, 'too early: my partner is called Sam'),
-      owner(T0 + 1000, 'I usually go climbing on Thursdays'),
-      owner(T0 + 2000, 'ok'),
-      owner(T0 + 3000, 'The owner is looking at: Today.', 'plugin'),
-      { type: 'assistant/message', time: T0 + 4000, data: { content: [{ type: 'text', text: 'Noted — you climb on Thursdays.' }] } },
-      owner(T0 + 5000, 'Also, I dislike meetings before 10'),
-      owner(T0 + 999_999_999, 'too late'),
-    ];
-    const turns = selectOwnerTurns('s1', events, T0, T0 + 10_000);
-    expect(turns.map((turn) => turn.text)).toEqual(['I usually go climbing on Thursdays', 'Also, I dislike meetings before 10']);
-    expect(turns[0]).toMatchObject({ sessionId: 's1', at: new Date(T0 + 1000).toISOString() });
-  });
-
-  it('truncates a paste rather than dropping it — the first line is usually the owner\'s own', () => {
-    const long = `Here is the log: ${'x'.repeat(5000)}`;
-    const [turn] = selectOwnerTurns('s1', [owner(T0, long)], T0, T0 + 1);
-    expect(turn.text.length).toBe(MAX_TURN_CHARS + 1);
-    expect(turn.text.startsWith('Here is the log:')).toBe(true);
-  });
-});
 
 describe('formatTranscript', () => {
   it('tags each line with day-time and session, and keeps the NEWEST lines under a cap', () => {

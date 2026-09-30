@@ -4,12 +4,15 @@
  * `{ state, questions }`, obeying the ten laws of state, that a rule puts on
  * a `Judge` effect. One file per set; this file holds what every set shares.
  *
- * Law 4: a question's id is the hash of its instruction text and criteria.
- * Thresholds, calibration bins and verdict counts hang off that id, so a
- * wording edit is a new question with a fresh threshold — the phrasing probe
- * showed five wordings of one question moving mean p from 0.34 to 0.74 while
- * their rankings agreed, so a threshold learned for one wording is wrong for
- * the next.
+ * Law 4, as W6 D4 changed it: a question's id is its set and slot
+ * (`moment-fanout:is_work`), stamped on the question by `keyed`. Thresholds,
+ * calibration bins and verdict counts hang off that id. It used to be the hash
+ * of the wording, so every rewording restarted at n = 0: the record's 53 ids
+ * held 22 graded answers, and none could reach the n = 20 the threshold learns
+ * at. (The phrasing probe showed five wordings of one question moving mean p
+ * from 0.34 to 0.74 while their rankings agreed: a rewording now keeps its
+ * bins, and the answers after it move the threshold.) `wordingHash` is the old
+ * id, kept for the one-time mapping (`migrateQuestionIds`).
  */
 import crypto from 'node:crypto';
 import type { JudgeQuestion } from '@sundial/kernel/types.js';
@@ -24,12 +27,27 @@ export interface QuestionSet<Input extends unknown[]> {
   samples: () => Input[];
 }
 
-export function questionId(q: Question): string {
+/** The pre-D4 id: the hash of the wording. */
+export function wordingHash(q: Question): string {
   return crypto
     .createHash('sha1')
     .update(q.instructions + JSON.stringify(q.criteria ?? null))
     .digest('hex')
     .slice(0, 12);
+}
+
+/** Non-enumerable, so the question sent to Jev and logged is unchanged. */
+const TEMPLATE = Symbol('question template');
+
+/** Stamp each question of a set with its template id, `<setId>:<slot>`; returns the same object. */
+export function keyed<Q extends Record<string, Question>>(setId: string, questions: Q): Q {
+  for (const [key, q] of Object.entries(questions)) if (!(TEMPLATE in q)) Object.defineProperty(q, TEMPLATE, { value: `${setId}:${key}` });
+  return questions;
+}
+
+/** The id thresholds and bins hang off: the template (set and slot); the wording hash for a question no set stamped. */
+export function questionId(q: Question): string {
+  return (q as { [TEMPLATE]?: string })[TEMPLATE] ?? wordingHash(q);
 }
 
 // The three primitives, matching docs.typesafe.ai/primitives (as `lab/jev/client.mjs`).

@@ -75,7 +75,7 @@ function nextCurrent(state: KernelState, recent: string[], nameForRoot: string):
 /**
  * Reacts to `project:detected` — the single writer of `state.project.known`
  * (the registry per-window attribution prefix-matches against, see
- * `attribution.ts`) and of the durable `projects`/`organizations` rows.
+ * `attribution.ts`) and of the durable `projects` rows.
  *
  * `id` is the root path — deterministic, so this pure rule assigns it (and a
  * remote-derived `organizationId`) with no DB read. Org is derived at
@@ -152,12 +152,8 @@ export const projectTrack: Rule = (state, event) => {
       row: { id: root, name, rootPath: root, organizationId: org },
     },
   ];
-  // Upsert the org row too, so `projects.organizationId` is never a dangling
-  // reference. Idempotent (executor upserts) — a shared org across many
-  // projects just re-writes the same row.
-  if (org) {
-    effects.push({ type: 'WriteDB', table: 'organizations', row: { id: org, name: org } });
-  }
+  // W6 P9: the org rides on `projects.organizationId` only. Its own `organizations` row (the same
+  // slug as id and name, 2,820 upserts for 4 rows) had no reader, so it is no longer written.
 
   const recentDetections = [...state.project.recentDetections, root].slice(-DETECTION_WINDOW);
 

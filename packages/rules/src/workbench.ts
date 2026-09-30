@@ -20,8 +20,6 @@ export const HANDOFF_MIN_ACTIVE_DAYS = 2;
 /** Closed-job ring and the done map's horizon. */
 export const MAX_RECENT_JOBS = 20;
 export const DONE_HORIZON_MS = 30 * 24 * 60 * 60 * 1000;
-/** The Notify channel the proactive plugin runs a worker turn for. */
-export const WORK_JOB_CHANNEL = 'work-job';
 /** Owner-requested jobs waiting for the slot. A sixth is refused: a queue that long is a backlog, and the owner should hear that. */
 export const MAX_QUEUED_JOBS = 5;
 /** Repeating jobs the owner may keep. An eleventh is refused by the tool. */
@@ -218,7 +216,7 @@ function drain(state: KernelState, ts: string): { state: KernelState; effects: E
   const job: WorkJob = { ...queue[0]!, openedAt: ts };
   return {
     state: { ...state, workbench: { ...state.workbench, open: job, queue: queue.slice(1) } },
-    effects: [{ type: 'Notify', channel: WORK_JOB_CHANNEL, payload: { ...job } }],
+    effects: [{ type: 'StartSubagent', job: { ...job } }],
   };
 }
 
@@ -255,7 +253,8 @@ function pruneDone(done: Record<string, string>, nowMs: number): Record<string, 
 
 /**
  * The work loop's one rule. Opens a job when `pickJob` finds one and hands it
- * to the proactive plugin over the `work-job` Notify channel; the plugin runs a
+ * to the executor as `StartSubagent` (W3; the proactive plugin is the actor
+ * that runs it, and `work:stop-requested` asks for `StopSubagent`); it runs a
  * worker turn that ends in `gnomon_shelve` (→ `work:shelved`) or
  * `gnomon_work_done` (→ `work:closed`), which fold back here. A shelved result
  * becomes a `knowledge_entries` row of kind `shelf`, retractable through the
@@ -393,6 +392,12 @@ export const workbench: Rule = (state, event) => {
     return drain({ ...state, workbench: { ...state.workbench, ...counted, queue: [...queue, job] } }, event.ts);
   }
 
+  // W3: the owner's Stop. The executor aborts the child and answers `work:closed`, which closes the record.
+  if (event.type === 'work:stop-requested') {
+    const jobId = typeof event.payload.jobId === 'string' ? event.payload.jobId : '';
+    return jobId === '' ? { state, effects: [] } : { state, effects: [{ type: 'StopSubagent', jobId }] };
+  }
+
   if (event.type === 'work:repeat-stopped') {
     const key = repeatKey(typeof event.payload.subject === 'string' ? event.payload.subject : '');
     const repeats = state.workbench.repeats ?? {};
@@ -427,6 +432,6 @@ export const workbench: Rule = (state, event) => {
 
   return {
     state: { ...dayState, workbench: { ...dayState.workbench, open: job, countToday: dayState.workbench.countToday + (job.kind === 'meeting-brief' ? 0 : 1) } },
-    effects: [{ type: 'Notify', channel: WORK_JOB_CHANNEL, payload: { ...job } }],
+    effects: [{ type: 'StartSubagent', job: { ...job } }],
   };
 };

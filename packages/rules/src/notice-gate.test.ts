@@ -1,7 +1,7 @@
 import { createInitialState } from '@sundial/kernel/initial-state.js';
 import type { KernelState, NoticeCandidate, SanitizedEvent } from '@sundial/kernel/types.js';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_GATE_POLICY, type GatePolicy, type NoticeState, applyDelivery, decide, habituatedGain, interruptionCostOf, noticeGate } from './notice-gate.js';
+import { DEFAULT_GATE_POLICY, type GatePolicy, type NoticeState, applyDelivery, calibratedPolicy, decide, habituatedGain, interruptionCostOf, noticeGate } from './notice-gate.js';
 
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
@@ -28,9 +28,13 @@ function candidateEvent(c: NoticeCandidate, ts = '2026-03-10T14:00:00.000Z'): Sa
   return { id: 'c1', type: 'notice:candidate', ts, payload: { timestamp: ts, ...c }, sanitized: true };
 }
 
+
+/** W5 step 10: the kinds under test have earned interrupting alone (the phasic path is what these tests exercise). */
+const actAlone = (s: KernelState, kinds: string[]): KernelState => ({ ...s, autonomy: { ...s.autonomy, levels: { ...s.autonomy.levels, ...Object.fromEntries(kinds.map((k) => [`notice:${k}`, { level: 'act' as const, earned: true, since: '2026-01-01T00:00:00.000Z' }])) } } });
+
 function utcState(): KernelState {
   const base = createInitialState('d1');
-  return { ...base, config: { ...base.config, timezone: 'UTC' } };
+  return actAlone({ ...base, config: { ...base.config, timezone: 'UTC' } }, ['absent:break', 'agent-waiting', 'day-runs-long', 'owner-question', 'work-shelved', 'nope']);
 }
 
 describe('habituatedGain', () => {
@@ -314,15 +318,40 @@ describe('noticeGate rule', () => {
     expect((tomorrow.effects[0] as unknown as { channel: string }).channel).toBe('phasic-notice');
   });
 
+  // W2 step 7: an interruption the plugin could not deliver did not spend the owner's attention.
+  it('a dropped notice does not spend the phasic cap, and Unsaid gets an undelivered row', () => {
+    const urgent = (i: number) => candidate({ kind: 'day-runs-long', key: `day-runs-long:${i}`, valueHalfLifeMs: 90 * 60_000, surprise: 4, precision: 0.9 });
+    let state = utcState();
+    for (let i = 0; i < POLICY.phasicDailyCap; i += 1) state = noticeGate(state, { ...candidateEvent(urgent(i), `2026-03-10T1${i}:00:00.000Z`), id: `c${i}` }).state;
+    const drop = noticeGate(state, { id: 'd1', type: 'notice:dropped', ts: '2026-03-10T16:30:00.000Z', payload: { noticeKey: 'day-runs-long:2', sessionId: null, reason: 'companion-disposed', kind: 'day-runs-long' }, sanitized: true });
+    expect(drop.effects).toEqual([expect.objectContaining({ type: 'RecordGateDecision', noticeKey: 'day-runs-long:2', channel: 'suppressed', reason: 'undelivered:companion-disposed' })]);
+    expect(drop.state.notices.recentPhasic.find((p) => p.noticeKey === 'day-runs-long:2')?.undelivered).toBe('companion-disposed');
+    const next = noticeGate(drop.state, { ...candidateEvent(urgent(7), '2026-03-10T17:00:00.000Z'), id: 'c7' });
+    expect((next.effects[0] as unknown as { channel: string }).channel).toBe('phasic-notice');
+    const capped = noticeGate(state, { ...candidateEvent(urgent(7), '2026-03-10T17:00:00.000Z'), id: 'c7' });
+    expect((capped.effects[0] as unknown as { channel: string }).channel).toBe('tonic-notice');
+  });
+
+  it('puts the delivery acts and the addressed chat on the Notify', () => {
+    const phasic = noticeGate(utcState(), candidateEvent(candidate({ kind: 'day-runs-long', key: 'k1', valueHalfLifeMs: 90 * 60_000, surprise: 4, precision: 0.9 })));
+    expect(phasic.effects[0]).toMatchObject({ type: 'Notify', channel: 'phasic-notice', payload: { sessionId: null, acts: ['inject', 'turn', 'push', 'banner'] } });
+    const line = noticeGate(utcState(), candidateEvent({ ...candidate({ kind: 'followup:unpushed', key: 'followup:unpushed:abc', surprise: 2, precision: 1, valueHalfLifeMs: 4 * HOUR, sessionId: 'session-7f' }), plain: true } as NoticeCandidate));
+    expect(line.effects.map((e) => e.type)).toEqual(['Notify', 'RecordGateDecision']);
+    expect(line.effects[0]).toMatchObject({ channel: 'tonic-notice', payload: { sessionId: 'session-7f', acts: ['line'] } });
+  });
+
   it('leaves no trace in the gate memory when it suppresses — but records the verdict durably', () => {
     // A producer may legitimately re-offer a candidate before it ever clears the bar.
     // Habituating on presentation would kill exactly those before they were said once.
     const state = utcState();
     const weak = candidate({ surprise: 0.2, precision: 0.2 });
     const { state: next, effects } = noticeGate(state, candidateEvent(weak));
-    // STATE identity is preserved (the hot-path guarantee); the decision itself
-    // is persisted as an effect — the gate-decision record's trade.
-    expect(next).toBe(state);
+    // The gate's memory is untouched: no habituation, no budget. The one thing
+    // counted is W5's exploration share for the kind (a count, not a delivery);
+    // the decision itself is persisted as an effect — the gate-decision record's trade.
+    expect(next.notices.habituation).toBe(state.notices.habituation);
+    expect(next.notices.spentToday).toBe(state.notices.spentToday);
+    expect(next.notices.explore).toEqual({ 'absent:break': 1 });
     expect(effects).toHaveLength(1);
     const record = effects[0] as unknown as { type: string; channel: string; reason: string; surprise: number; habituation: number };
     expect(record.type).toBe('RecordGateDecision');
@@ -499,5 +528,67 @@ describe('noticeGate · a held notice that runs out of time says so', () => {
     const out = noticeGate(state, { id: 't1', type: 'clock:tick', ts: '2026-03-10T09:45:00.000Z', payload: {}, sanitized: true });
     expect(out.state.notices.deferred).toEqual([]);
     expect(out.effects).toEqual([expect.objectContaining({ type: 'RecordGateDecision', noticeKey: 'agent-waiting:s1', channel: 'suppressed', reason: 'expired' })]);
+  });
+});
+
+describe('W4 step 8: the gate reads each kind\'s measured precision', () => {
+  const judged = (useful: number, wrong: number) => {
+    const s = utcState();
+    s.calibrated.params['notice.precision:absent:break'] = { n: useful + wrong, hits: useful, sum: useful, updatedAt: null };
+    return s;
+  };
+  const weightOf = (s: KernelState) => noticeGate(s, candidateEvent(candidate())).effects.find((e) => e.type === 'RecordGateDecision') as { weight: number; precision: number };
+
+  it('a kind nobody judged weighs as its producer says; a judged kind as it was judged', () => {
+    expect(weightOf(utcState()).precision).toBeCloseTo(0.9, 10);
+    // (0.9 · 10 + 2) / (10 + 20): judged mostly wrong, it weighs a third of its word.
+    expect(weightOf(judged(2, 18)).precision).toBeCloseTo(11 / 30, 10);
+    expect(weightOf(judged(2, 18)).weight).toBeCloseTo(3 * (11 / 30), 10);
+  });
+
+  it('an owner question keeps its slot over the cap only once its kind has earned it', () => {
+    const s = utcState();
+    expect(calibratedPolicy(s, DEFAULT_GATE_POLICY).reservedOverCap).toBe(0);
+    s.calibrated.params['notice.precision:owner-question'] = { n: 30, hits: 27, sum: 27, updatedAt: null };
+    expect(calibratedPolicy(s, DEFAULT_GATE_POLICY).reservedOverCap).toBe(1);
+    // The cost weight stays the policy's until both cost bands hold TRUST_N questions.
+    expect(calibratedPolicy(s, DEFAULT_GATE_POLICY).interruptionCostWeight).toBe(0.8);
+    s.calibrated.params['gate.answered:high'] = { n: 20, hits: 4, sum: 4, updatedAt: null };
+    s.calibrated.params['gate.answered:low'] = { n: 40, hits: 20, sum: 20, updatedAt: null };
+    // At full cost the owner answers (0.4·10+4)/30 of what they answer at a low cost, (0.4·10+20)/50:
+    // an interruption there is worth that share of a notice at the bar, so its cost is the rest.
+    expect(calibratedPolicy(s, DEFAULT_GATE_POLICY).interruptionCostWeight).toBeCloseTo(1.6 * (1 - (8 / 30) / (24 / 50)), 10);
+  });
+});
+
+describe('W5: exploration', () => {
+  const weak = (i: number) => candidateEvent(candidate({ kind: 'commitment-fading', key: `commitment-fading:${i}`, surprise: 0.2 }), new Date(Date.parse('2026-03-10T09:00:00.000Z') + i * 60_000).toISOString());
+  it('one in ten suppressed candidates of a thin kind is said in the list, marked as exploration', () => {
+    let s = utcState();
+    const decisions: { channel: string; reason: string }[] = [];
+    const notifies: Record<string, unknown>[] = [];
+    for (let i = 0; i < 20; i++) {
+      const out = noticeGate(s, weak(i));
+      s = out.state;
+      for (const e of out.effects) {
+        if (e.type === 'RecordGateDecision') decisions.push(e as unknown as { channel: string; reason: string });
+        if (e.type === 'Notify') notifies.push(e.payload as Record<string, unknown>);
+      }
+    }
+    expect(decisions.filter((d) => d.reason === 'exploration').map((d) => d.channel)).toEqual(['tonic', 'tonic']);
+    expect(decisions.filter((d) => d.reason === 'below-threshold')).toHaveLength(18);
+    expect(notifies.every((p) => p.exploration === true)).toBe(true);
+    expect(s.notices.lastDelivered?.items[0]).toMatchObject({ exploration: true });
+  });
+  it('a kind judged 30 times is not explored', () => {
+    let s = utcState();
+    s.calibrated.params['notice.precision:commitment-fading'] = { n: 30, hits: 3, sum: 3, updatedAt: null };
+    let explored = 0;
+    for (let i = 0; i < 20; i++) {
+      const out = noticeGate(s, weak(i));
+      s = out.state;
+      explored += out.effects.filter((e) => e.type === 'RecordGateDecision' && (e as unknown as { reason: string }).reason === 'exploration').length;
+    }
+    expect(explored).toBe(0);
   });
 });

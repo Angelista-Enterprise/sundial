@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { getDb, resetDb } from '../db-client.js';
-import { insertKnowledgeEntry, getKnowledgeEntriesForDate, getKnowledgeEntriesByIds, touchKnowledgeAccessBatch, getKnowledgeEntryByDedupeKey, deleteKnowledgeEntryByDedupeKey } from './knowledge-entries.js';
+import { insertKnowledgeEntry, getKnowledgeEntriesForDate, getKnowledgeEntriesByIds, touchKnowledgeAccessBatch, deleteKnowledgeEntryByDedupeKey } from './knowledge-entries.js';
 
 async function setupTestDb() {
   resetDb();
@@ -125,25 +125,18 @@ describe('D2: getKnowledgeEntriesByIds / touchKnowledgeAccessBatch', () => {
   });
 });
 
-describe('getKnowledgeEntryByDedupeKey / deleteKnowledgeEntryByDedupeKey (P6 regenerate)', () => {
+describe('deleteKnowledgeEntryByDedupeKey (P6 regenerate)', () => {
   beforeEach(async () => {
     await setupTestDb();
-  });
-
-  it('fetches an entry by its dedupeKey (how the daily journal is found, since createdAt is the next day)', async () => {
-    await insertKnowledgeEntry(entry({ id: 'd1', kind: 'daily', dedupeKey: 'daily:2026-07-20', createdAt: '2026-07-21T00:00:01.000Z' }));
-    const found = await getKnowledgeEntryByDedupeKey('daily:2026-07-20');
-    expect(found?.id).toBe('d1');
-    expect(await getKnowledgeEntryByDedupeKey('daily:2026-07-19')).toBeNull();
   });
 
   it('deletes by dedupeKey and reports whether one existed, enabling overwrite-regenerate', async () => {
     await insertKnowledgeEntry(entry({ id: 'd1', kind: 'daily', dedupeKey: 'daily:2026-07-20' }));
     expect(await deleteKnowledgeEntryByDedupeKey('daily:2026-07-20')).toBe(true);
-    expect(await getKnowledgeEntryByDedupeKey('daily:2026-07-20')).toBeNull();
+    expect((await getKnowledgeEntriesByIds(['d1', 'd2'])).find((e) => e.dedupeKey === 'daily:2026-07-20') ?? null).toBeNull();
     // a fresh insert with the same dedupeKey now succeeds (was a no-op before delete)
     expect(await insertKnowledgeEntry(entry({ id: 'd2', kind: 'daily', dedupeKey: 'daily:2026-07-20', title: 'rewritten' }))).toBe(true);
-    expect((await getKnowledgeEntryByDedupeKey('daily:2026-07-20'))?.title).toBe('rewritten');
+    expect(((await getKnowledgeEntriesByIds(['d1', 'd2'])).find((e) => e.dedupeKey === 'daily:2026-07-20') ?? null)?.title).toBe('rewritten');
   });
 
   it('returns false when deleting a dedupeKey that does not exist', async () => {

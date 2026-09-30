@@ -12,6 +12,12 @@
  * Nothing runs by itself. `planBackfill` only reads and counts; `runBackfill`
  * writes, and skips every commit and meeting the log already holds, so a
  * second run over a wider reach adds only what is new.
+ *
+ * W6 D7: each row also carries `observedAt`, the instant it was appended and
+ * folded. `captured_at` is the event's real time (the read tools place it
+ * there), so a count that needs the fold's order reads `observedAt` for a
+ * back-filled row: the record's 230 back-filled mails sat up to seven days
+ * before the rows around them.
  */
 import { execFile } from 'node:child_process';
 import { promises as fs } from 'node:fs';
@@ -231,7 +237,7 @@ export async function runBackfill(opts: BackfillOptions, append: (type: string, 
     ...(freshMeetings ?? []).map((m) => ({ type: 'calendar:active', ...m })),
     ...(freshMails ?? []).map((m) => ({ ...m, type: m.type })),
   ].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
-  for (const row of rows) await append(row.type, row.payload, row.ts);
+  for (const row of rows) await append(row.type, { ...row.payload, observedAt: new Date().toISOString() }, row.ts);
   const result: BackfillResult = {
     repos: fresh.filter((r) => r.commits.length > 0).length,
     commits: fresh.reduce((n, r) => n + r.commits.length, 0),

@@ -8,13 +8,16 @@
 // the almanac's law made literal: the assistant emits events, folded by
 // ordinary rules, and the owner's verdict is the only thing that moves belief.
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { createEventId } from '@sundial/helpers/event-id.js'
 // The ONE re-ask predicate, shared with the `ownerAsk` reducer: a copy here is
 // how the tool came to refuse questions the reducer accepts, and the symptom is
 // the duplicate ask this guard exists to stop.
 import { recentlyAnswered } from '@sundial/helpers/asked.js'
+import { openAsk } from '@sundial/helpers/loops.js'
+import { CLAIMABLE_ENTITY_KINDS } from '@sundial/helpers/vocab.js'
 import { nextOccurrence, parseRepeat, repeatKey } from '@sundial/helpers/repeat-schedule.js'
 
-const ENTITY_KINDS = ['person', 'project', 'tool', 'topic', 'task']
+const ENTITY_KINDS = CLAIMABLE_ENTITY_KINDS
 
 /** How long a WAITING ask holds its turn. A person who has not answered in ten minutes has walked away; the ask stays open on the record without the turn. */
 const ASK_WAIT_MS = 10 * 60 * 1000
@@ -62,7 +65,7 @@ export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS,
       if (signal?.aborted === true) return { answered: false, reason: 'the owner stopped the turn before answering' }
       await new Promise((resolve) => setTimeout(resolve, askPollMs))
       const ask = getState?.().ownerAsk
-      if (ask?.open?.askId === askId) continue
+      if (openAsk(getState?.())?.askId === askId) continue
       const answer = (ask?.recent ?? []).find((entry) => entry.askId === askId)?.answer
       return answer === undefined ? { answered: false, reason: 'the question closed without an answer (expired, or superseded)' } : { answered: true, answer }
     }
@@ -119,7 +122,7 @@ export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS,
         evidence: { type: 'array', items: { type: 'string' }, description: 'Two to eight short lines naming what the draft rests on — a moment, a heard promise, a PR, a calendar row. The owner sees these; the judge reads them.' },
       },
       output: {
-        schema: { type: 'object', additionalProperties: false, properties: { recorded: { type: 'boolean' } } },
+        schema: { type: 'object', additionalProperties: false, properties: { recorded: { type: 'boolean' }, proposalId: { type: 'string' } } },
         render: (_args, value) => [{ type: 'text', text: value.recorded ? 'Draft placed on the owner’s Today with its evidence. They send it, or dismiss it; you do not.' : 'Not recorded.' }],
       },
       async execute(args) {
@@ -149,13 +152,15 @@ export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS,
         // prompt builders read and no surface did, so every proposal went into
         // the model's own context and nowhere else. A tool result the model
         // trusts must not describe a delivery that did not happen.
-        render: (_args, value) => [{ type: 'text', text: value.recorded ? 'Proposal recorded — it appears on the owner’s Today surface for accept or reject.' : 'Not recorded.' }],
+        render: (_args, value) => [{ type: 'text', text: value.recorded ? `Proposal recorded (id ${value.proposalId}) — it appears on the owner’s Today surface for accept or reject.` : 'Not recorded.' }],
       },
       async execute(args) {
         const summary = String(args.summary).trim()
         if (!summary) throw new Error('summary is required')
-        await appendSignal('assistant:proposal', { summary, ...(typeof args.kind === 'string' && args.kind.trim() ? { kind: args.kind.trim() } : {}) })
-        return { recorded: true }
+        // W6 D3: one id, minted here and carried by the response, so the two rows join in the log.
+        const proposalId = createEventId()
+        await appendSignal('assistant:proposal', { proposalId, summary, ...(typeof args.kind === 'string' && args.kind.trim() ? { kind: args.kind.trim() } : {}) })
+        return { recorded: true, proposalId }
       },
     }),
 
@@ -340,7 +345,7 @@ export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS,
         // Refused here rather than silently dropped by the rule, so the model
         // learns it still owes an answer on the question already open instead of
         // believing it asked a second one.
-        const open = getState?.().ownerAsk?.open
+        const open = openAsk(getState?.())
         if (open) return { asked: false, askId: open.askId, reason: `already waiting on an answer to: "${open.question}"` }
 
         // Answered a moment ago, most likely in the web seat. Refused HERE with
@@ -459,7 +464,7 @@ export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS,
         // an id to re-record against — by asking the owner again. Refuse first,
         // and say why, so the model stops rather than retries.
         const ask = getState?.().ownerAsk
-        const open = ask?.open ?? null
+        const open = openAsk(getState?.())
         if (open === null) {
           const recent = (ask?.recent ?? []).find((entry) => entry.askId === askId)
           return {

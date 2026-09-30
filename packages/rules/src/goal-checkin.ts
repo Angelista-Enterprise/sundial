@@ -1,5 +1,6 @@
 import type { GoalProgressEntry, KernelState, Rule } from '@sundial/kernel/types.js';
 import { deriveId } from '@sundial/helpers/derive-id.js';
+import { openAsk } from '@sundial/helpers/loops.js';
 
 /** Statuses that mean a goal is no longer live. */
 const CLOSED_STATUSES = new Set(['done', 'dropped', 'abandoned', 'cancelled', 'canceled', 'completed', 'achieved']);
@@ -77,7 +78,7 @@ function localWeekday(iso: string, timeZone: string): string {
 export const goalCheckin: Rule = (state, event) => {
   if (event.type !== 'day:boundary') return { state, effects: [] };
   if (localWeekday(event.ts, state.config.timezone) !== 'Monday') return { state, effects: [] };
-  if (state.ownerAsk.open !== null) return { state, effects: [] };
+  if (openAsk(state) !== null) return { state, effects: [] };
   const goals = openGoals(state.memory.factCursor);
   if (goals.length === 0) return { state, effects: [] };
 

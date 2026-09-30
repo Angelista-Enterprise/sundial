@@ -16,7 +16,8 @@ describe('rerank (J1.3)', () => {
     expect(out.map((h) => h.refId)).toEqual(['b'])
     expect(out[0].relevance).toBe(0.9)
     const [call] = judgeNow.mock.calls[0]
-    expect(call).toMatchObject({ purpose: 'rank', questionSetId: 'rank-evidence' })
+    expect(judgeNow).toHaveBeenCalledTimes(1)
+    expect(call).toMatchObject({ purpose: 'rank', questionSetId: 'rank-evidence', caller: 'rerank' })
     expect(call.state.candidates.c1).toBe('B: about branches')
     expect(Object.keys(call.questions)).toEqual(['c0', 'c1', 'c2'])
   })

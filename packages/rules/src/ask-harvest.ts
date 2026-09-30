@@ -1,7 +1,9 @@
+import { EXTRACTABLE_ENTITY_KINDS } from '@sundial/helpers/vocab.js';
 import type { AskProposal, Rule } from '@sundial/kernel/types.js';
 import { withPersona } from '@sundial/kernel/persona.js';
 import { MAX_CONVERSATION_CONFIDENCE } from './conversation-extract.js';
 import { normalizePredicate } from './nightly-fact-extract.js';
+import { openAsk } from '@sundial/helpers/loops.js';
 
 /**
  * Reading what the owner already told us, so keeping it costs one press.
@@ -29,7 +31,7 @@ import { normalizePredicate } from './nightly-fact-extract.js';
  *
  * **Ordering: this runs BEFORE `ownerAsk` in `RULE_MANIFEST`**, the same
  * requirement `transcriptClean` has against `momentClose`. It reads the
- * question off `state.ownerAsk.open`, and `ownerAsk` sets that to null on this
+ * question off the open ask (`openAsk`), and `loopTrack` closes it on this
  * very event. Placed after it, every harvest would see no question at all.
  */
 
@@ -100,7 +102,7 @@ export function askHarvestPrompt(question: string, answer: string): string {
   return `Gnomon asked: ${question}\n\nThe owner answered: ${answer}`;
 }
 
-const VALID_ENTITY_KINDS = new Set(['person', 'project', 'tool', 'topic', 'owner', 'goal']);
+const VALID_ENTITY_KINDS = new Set<string>(EXTRACTABLE_ENTITY_KINDS);
 
 /**
  * Parse the model's reading, in `parseExtractedFactCandidates`' defensive
@@ -172,7 +174,7 @@ function harvestable(state: Parameters<Rule>[0], event: Parameters<Rule>[1]): { 
 
   if (event.type === ASK_HARVEST_DUE) {
     // The backfill's executor already read the row, so nothing here reaches for
-    // `state.ownerAsk.open` — the ask it names closed days or weeks ago.
+    // the open ask — the one it names closed days or weeks ago.
     const askId = text(event.payload.askId);
     const question = text(event.payload.question);
     const answer = text(event.payload.answer);
@@ -180,7 +182,7 @@ function harvestable(state: Parameters<Rule>[0], event: Parameters<Rule>[1]): { 
   }
 
   if (event.type !== 'ask:owner-answered') return null;
-  const open = state.ownerAsk.open;
+  const open = openAsk(state);
   if (!open) return null;
   // The same match `ownerAsk` makes a beat later: an answer naming a different
   // ask is a stale reply to an expired question, and harvesting it would read

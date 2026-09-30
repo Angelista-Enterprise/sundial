@@ -10,15 +10,15 @@
  * sentence saying what the answer is for; no other moment is in it, so the
  * scores are comparable across calls (pointwise, PROBES: 83 % > listwise).
  */
-import { noul, score, type QuestionSet } from './index.js';
+import { noul, score, type QuestionSet, keyed } from './index.js';
 import { momentFanout, momentFanoutState, type MomentFanoutInput } from './moment-fanout.js';
 
 export const JOURNAL_TOP_K = 10;
 
-export const JOURNAL_RANK_QUESTIONS = {
+export const JOURNAL_RANK_QUESTIONS = keyed('journal-rank', {
   prominence: score("If included, how much space does this session deserve in the day's journal?", ['A word in passing, at most.', 'One clause in a sentence about the period.', 'Its own sentence.', 'A headline of the day.']),
   is_the_headline: noul('Could this session be THE thing the day is remembered for?'),
-};
+});
 
 export const journalRank: QuestionSet<[MomentFanoutInput]> = {
   id: 'journal-rank',

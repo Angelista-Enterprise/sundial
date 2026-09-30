@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { getDb, resetDb } from '../db-client.js';
-import { insertSignal, getRecentSignals, getSignalFreshness, getRedactionSummary, getSignalsForDate, getSignalsInRange, getSignalsAfter } from './signals.js';
+import { insertSignal, getRecentSignals, getSignalFreshness, getSignalsForDate, getSignalsInRange, getSignalsAfter } from './signals.js';
 
 async function setupTestDb() {
   resetDb();
@@ -76,58 +76,6 @@ describe('getRecentSignals with a signalType filter', () => {
 
     expect(firstPage.map((r) => r.id)).toEqual(['s3', 's2']);
     expect(secondPage.map((r) => r.id)).toEqual(['s1']);
-  });
-});
-
-describe('getRedactionSummary', () => {
-  beforeEach(async () => {
-    await setupTestDb();
-  });
-
-  it('aggregates privacy:redacted signals into per-property and per-source counts within the range', async () => {
-    await insertSignal({
-      id: 'p1',
-      signalType: 'privacy',
-      eventType: 'redacted',
-      data: { properties: { windowTitle: 3, url: 1 }, total: 4, sourceType: 'window:changed' },
-      capturedAt: '2026-01-10T00:00:00.000Z',
-    });
-    await insertSignal({
-      id: 'p2',
-      signalType: 'privacy',
-      eventType: 'redacted',
-      data: { properties: { windowTitle: 2 }, total: 2, sourceType: 'window:changed' },
-      capturedAt: '2026-01-11T00:00:00.000Z',
-    });
-    await insertSignal({
-      id: 'p3',
-      signalType: 'privacy',
-      eventType: 'redacted',
-      data: { properties: { command: 5 }, total: 5, sourceType: 'shell:command' },
-      capturedAt: '2026-01-12T00:00:00.000Z',
-    });
-    // Outside the range + a non-privacy signal — both must be ignored.
-    await insertSignal({ id: 'p0', signalType: 'privacy', eventType: 'redacted', data: { properties: { url: 99 }, total: 99, sourceType: 'window:changed' }, capturedAt: '2025-12-01T00:00:00.000Z' });
-    await insertSignal({ id: 'g1', signalType: 'git', eventType: 'commit', data: {}, capturedAt: '2026-01-11T00:00:00.000Z' });
-
-    const summary = await getRedactionSummary('2026-01-01T00:00:00.000Z', '2026-01-31T00:00:00.000Z');
-
-    expect(summary.events).toBe(3);
-    expect(summary.total).toBe(11); // 4 + 2 + 5
-    expect(summary.byProperty).toEqual([
-      { property: 'windowTitle', count: 5 },
-      { property: 'command', count: 5 },
-      { property: 'url', count: 1 },
-    ]);
-    expect(summary.bySourceType).toEqual([
-      { sourceType: 'window:changed', count: 6 },
-      { sourceType: 'shell:command', count: 5 },
-    ]);
-  });
-
-  it('returns zeroed totals when nothing was redacted in the window', async () => {
-    const summary = await getRedactionSummary('2026-01-01T00:00:00.000Z', '2026-01-31T00:00:00.000Z');
-    expect(summary).toMatchObject({ events: 0, total: 0, byProperty: [], bySourceType: [] });
   });
 });
 

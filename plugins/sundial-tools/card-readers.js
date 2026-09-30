@@ -1,3 +1,4 @@
+import { wakeupsOf } from '@sundial/helpers/loops.js';
 import { threadRows as threadRowsOf } from './threads.js';
 import { INSTRUMENT_ROUTES } from '../sundial-theme/shell/cards.js';
 import { lensProblem, runLens } from '../sundial-theme/shell/lens-core.js';
@@ -47,11 +48,11 @@ const fromCardText = (what) => (_key, card) => ({
 });
 
 /**
- * @param route  reads one of the shell's own JSON routes, e.g. '/gnomon/day'
+ * @param read   reads one of the shell's own JSON views by path, e.g. '/gnomon/day'
  * @param tool   runs one of Gnomon's read tools by name
  * @param state  the live KernelState, or null before boot
  */
-export function createCardReaders({ route, tool, state }) {
+export function createCardReaders({ read, tool, state }) {
   /** One moment, in the fields the ring and the "Just now" list are drawn from. */
   const momentRow = (m) => ({
     id: m.id,
@@ -80,7 +81,7 @@ export function createCardReaders({ route, tool, state }) {
     // waits for a verdict. NOT the moment list — that is the dial beside it,
     // and answering with moments described a card the owner was not looking at.
     today: async () => {
-      const [day, shelf] = await Promise.all([route('/gnomon/today'), route('/gnomon/shelf')]);
+      const [day, shelf] = await Promise.all([read('/gnomon/today'), read('/gnomon/shelf')]);
       return {
         date: day.date ?? null,
         observedMin: day.coverage?.trackedMin ?? null,
@@ -97,7 +98,7 @@ export function createCardReaders({ route, tool, state }) {
     dial: async (_key, card, args = {}) => {
       const hour = typeof args.hour === 'number' ? args.hour : null;
       const on = card?.filters?.date ? `?date=${card.filters.date}` : '';
-      const [figure, day, today] = await Promise.all([route(`/gnomon/dial${on}`), route(`/gnomon/day${on}`), route(`/gnomon/today${on}`)]);
+      const [figure, day, today] = await Promise.all([read(`/gnomon/dial${on}`), read(`/gnomon/day${on}`), read(`/gnomon/today${on}`)]);
       return {
         date: day.date ?? today.date ?? null,
         hour,
@@ -115,28 +116,28 @@ export function createCardReaders({ route, tool, state }) {
     // asking for 8 here answered about a different window than the card draws.
     // What Gnomon noticed and said, and what it asked; set to a view, one half.
     voice: async (_key, card) => {
-      const [unsaid, asks] = await Promise.all([route('/gnomon/unsaid'), route('/gnomon/asks')]);
+      const [unsaid, asks] = await Promise.all([read('/gnomon/unsaid'), read('/gnomon/asks')]);
       const all = { noticing: unsaid, asks };
       const view = card?.filters?.view;
       return view && all[view] ? { view, [view]: all[view] } : all;
     },
     // The fortnight's shape; set to a view, only that section.
     rhythm: async (_key, card) => {
-      const [shape, rhythm, habits] = await Promise.all([route('/gnomon/shape'), route('/gnomon/rhythm'), route('/gnomon/habits')]);
+      const [shape, rhythm, habits] = await Promise.all([read('/gnomon/shape'), read('/gnomon/rhythm'), read('/gnomon/habits')]);
       const all = { strata: shape, days: shape.days ?? [], arcs: rhythm, habits: { ...habits, commitments: undefined } };
       const view = card?.filters?.view;
       return view && all[view] !== undefined ? { view, [view]: all[view] } : all;
     },
     // Goals and every open commitment; set to a project, only its commitments.
     play: async (_key, card) => {
-      const [goals, habits] = await Promise.all([route('/gnomon/goals'), route('/gnomon/habits')]);
+      const [goals, habits] = await Promise.all([read('/gnomon/goals'), read('/gnomon/habits')]);
       const project = card?.filters?.project ?? null;
       const open = habits.commitments?.open ?? [];
       return { ...(project ? { project } : {}), commitments: project ? open.filter((c) => c.project === project) : open, goals: goals.goals ?? [] };
     },
     // What the card shows: only what still waits, across everything that waits.
     shelf: async () => {
-      const [shelf, untracked, assistant, drafts, asks] = await Promise.all([route('/gnomon/shelf'), route('/gnomon/attribution/proposals'), route('/gnomon/assistant/proposals'), route('/gnomon/drafts'), route('/gnomon/asks')]);
+      const [shelf, untracked, assistant, drafts, asks] = await Promise.all([read('/gnomon/shelf'), read('/gnomon/attribution/proposals'), read('/gnomon/assistant/proposals'), read('/gnomon/drafts'), read('/gnomon/asks')]);
       const items = shelf.items ?? [];
       return {
         waiting: items.filter((i) => i.verdict === null || i.verdict === undefined),
@@ -152,21 +153,21 @@ export function createCardReaders({ route, tool, state }) {
     // once made the reading and the card disagree).
     engine: async (_key, card) => {
       const tab = card?.filters?.tab ?? 'cost';
-      if (tab === 'cost') return { tab, ...(await route('/gnomon/ledger')) };
+      if (tab === 'cost') return { tab, ...(await read('/gnomon/ledger')) };
       if (!INSTRUMENT_ROUTES[tab]) return { error: `The Engine room has no "${tab}" tab.`, tabs: ['cost', ...Object.keys(INSTRUMENT_ROUTES)] };
-      return { tab, ...(await route(INSTRUMENT_ROUTES[tab])) };
+      return { tab, ...(await read(INSTRUMENT_ROUTES[tab])) };
     },
 
     // Three tabs, so three readings. "Just now" was missing entirely.
 
     kanban: async () => {
       const [goals, habits, asks, shelf, untracked, assistant] = await Promise.all([
-        route('/gnomon/goals'),
-        route('/gnomon/habits'),
-        route('/gnomon/asks'),
-        route('/gnomon/shelf'),
-        route('/gnomon/attribution/proposals'),
-        route('/gnomon/assistant/proposals'),
+        read('/gnomon/goals'),
+        read('/gnomon/habits'),
+        read('/gnomon/asks'),
+        read('/gnomon/shelf'),
+        read('/gnomon/attribution/proposals'),
+        read('/gnomon/assistant/proposals'),
       ]);
       return {
         goals: goals.goals,
@@ -178,7 +179,7 @@ export function createCardReaders({ route, tool, state }) {
       };
     },
 
-    threads: async () => threadRowsOf(await route('/gnomon/api/sessions')),
+    threads: async () => threadRowsOf(await read('/gnomon/api/sessions')),
     // The conversation card shows the thread the model is already in.
     chat: async () => ({ note: 'This card is the conversation you are speaking in; its words are your own thread.' }),
     entity: async (key) => ({ matches: await tool('gnomon_entity_history', { name: key }) }),
@@ -194,7 +195,7 @@ export function createCardReaders({ route, tool, state }) {
       const { date, meeting } = card?.filters ?? {};
       if (date || meeting) {
         const on = date ?? new Date().toLocaleDateString('sv');
-        const meetings = (await route(`/gnomon/meetings?date=${on}`)).meetings ?? [];
+        const meetings = (await read(`/gnomon/meetings?date=${on}`)).meetings ?? [];
         const m = meeting ? meetings.find((x) => x.title.toLowerCase().includes(String(meeting).toLowerCase())) ?? null : null;
         const hhmm = (iso) => new Date(iso).toTimeString().slice(0, 5);
         const args = { date: on, signalType: 'audio:transcript', limit: 60, ...(m ? { from: hhmm(m.start), to: hhmm(m.end) } : {}) };
@@ -207,7 +208,7 @@ export function createCardReaders({ route, tool, state }) {
           ...(heard.nextOffset ? { more: `${heard.total - heard.nextOffset} more — call gnomon_signals with ${JSON.stringify({ ...args, offset: heard.nextOffset })}` } : {}),
         };
       }
-      const [memory, people, lenses] = await Promise.all([route('/gnomon/memory'), route('/gnomon/people'), route('/gnomon/lenses')]);
+      const [memory, people, lenses] = await Promise.all([read('/gnomon/memory'), read('/gnomon/people'), read('/gnomon/lenses')]);
       const kind = card?.filters?.kind;
       const entities = (memory.entities ?? []).filter((e) => !kind || e.kind === kind);
       const kinds = {};
@@ -237,7 +238,7 @@ export function createCardReaders({ route, tool, state }) {
       if (bench === null) return { unavailable: 'The bench has not been read yet.' };
       const open = bench.open ?? null;
       const all = {
-        wakeups: state()?.wakeups?.open ?? [],
+        wakeups: wakeupsOf(state()),
         open:
           open === null
             ? null

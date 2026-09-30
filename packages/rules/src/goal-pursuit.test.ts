@@ -10,14 +10,12 @@ const withActive = (state: KernelState): KernelState => ({ ...state, config: { .
 const emitted = (effects: Effect[]) => effects.filter((e) => e.type === 'EmitEvent').map((e) => (e as Extract<Effect, { type: 'EmitEvent' }>).event);
 
 describe('goalPursuit (J5.3)', () => {
-  it('plans only ACTIVE goals, on the Monday boundary or when the owner asks', () => {
+  it('plans only ACTIVE goals, on the Monday boundary', () => {
     const state = withActive(createInitialState('d1'));
     expect(activeGoals(state).map((g) => g.entityId)).toEqual(['goal:jarvis']);
     const monday = goalPursuit(state, ev('day:boundary'));
     expect(monday.effects).toEqual([{ type: 'RunGoalPlan', goalId: 'goal:jarvis', goalName: 'jarvis — work like Jarvis', progress: [], ts: TS }]);
     expect(goalPursuit(state, ev('day:boundary', {}, 'e2', '2026-09-28T22:00:00.000Z')).effects).toEqual([]);
-    expect(goalPursuit(state, ev('goal:pursue', { goalId: 'goal:sleep' })).effects).toEqual([]);
-    expect(goalPursuit(state, ev('goal:pursue', { goalId: 'goal:jarvis' })).effects).toHaveLength(1);
   });
 
   it('a plan queues the first internal step as a job, proposes the outward ones, grades each result, and reports at the end', () => {

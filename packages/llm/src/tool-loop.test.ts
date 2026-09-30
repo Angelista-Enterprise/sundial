@@ -260,14 +260,30 @@ describe('runToolLoop', () => {
 
   it('answers from what it gathered when the budget runs out mid-run', async () => {
     runAuditedLlmCall.mockResolvedValueOnce(reply('', [{ name: 'get_files' }])).mockResolvedValueOnce(reply('partial but useful'));
-    const beforeCall = vi.fn(async (round: number) => {
-      if (round > 1) throw new BudgetExhaustedError();
+    const beforeCall = vi.fn(async (round: number, options?: { overCap?: boolean }) => {
+      if (round > 1 && !options?.overCap) throw new BudgetExhaustedError();
+      return `call-${round}${options?.overCap ? '-final' : ''}`;
     });
 
     const result = await runToolLoop(baseOptions({ beforeCall }));
 
     expect(result.stopReason).toBe('budget');
     expect(result.content).toBe('partial but useful');
+    // W5: the forced answer is reserved too (past the cap), and its row takes that id.
+    expect(beforeCall).toHaveBeenLastCalledWith(2, { overCap: true });
+    expect(runAuditedLlmCall.mock.calls[1][0]).toMatchObject({ callId: 'call-2-final' });
+  });
+
+  it('W5: sends no forced answer when even that reservation is refused (an open breaker)', async () => {
+    runAuditedLlmCall.mockResolvedValueOnce(reply('', [{ name: 'get_files' }]));
+    const beforeCall = vi.fn(async (round: number) => {
+      if (round > 1) throw new BudgetExhaustedError();
+    });
+
+    const result = await runToolLoop(baseOptions({ beforeCall }));
+
+    expect(result).toMatchObject({ stopReason: 'budget', content: '' });
+    expect(runAuditedLlmCall).toHaveBeenCalledTimes(1);
   });
 
   it('does not spend a call to say nothing when the budget is gone before the first round', async () => {

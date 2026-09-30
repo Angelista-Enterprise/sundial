@@ -31,4 +31,19 @@ describe('getLlmConfig: which provider does what (llm.use)', () => {
     // A provider that was removed falls back to the .env model instead of stopping the call.
     expect(getLlmConfig('extract')?.route).toBe('openai');
   });
+
+  it('W3: reads llm.use from its source (the kernel\'s state.config), so a change applies without a restart', async () => {
+    const { getLlmConfig, setLlmConfigSource } = await import('./config.js');
+    let llm = { providers: [{ id: 'far', label: 'Far', baseUrl: 'https://llm.example.com/v1', model: 'big-model' }], use: {} as Record<string, string> };
+    setLlmConfigSource(() => llm);
+    try {
+      expect(getLlmConfig('reflect')?.route).toBe('openai');
+      llm = { ...llm, use: { reflect: 'far' } };
+      expect(getLlmConfig('reflect')?.model).toBe('big-model');
+    } finally {
+      setLlmConfigSource(null);
+    }
+    // And the file again, read per call rather than cached for the process.
+    expect(getLlmConfig('journal')?.route).toBe('far');
+  });
 });

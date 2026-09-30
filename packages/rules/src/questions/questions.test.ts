@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { choice, noul, questionId, score } from './index.js';
+import { choice, keyed, noul, questionId, score, wordingHash } from './index.js';
+import { QUESTION_SETS } from './registry.js';
 import { GOAL_ADVANCE_QUESTIONS, MOMENT_FANOUT_QUESTIONS, momentFanout, PROMISE_RESOLVE_QUESTIONS } from './moment-fanout.js';
 import { INGEST_ANOMALY_QUESTIONS } from './ingest-anomaly.js';
 import { JOURNAL_RANK_QUESTIONS, journalRank, selectJournalMoments } from './journal-rank.js';
@@ -16,26 +17,34 @@ import { FORECAST_SETS } from './forecast-targets.js';
 import { AUDIT_FACT_QUESTIONS, auditFact } from './audit-fact.js';
 import { ALIGN_ALIAS_QUESTIONS, alignAlias } from './align-alias.js';
 
-describe('questionId (law 4)', () => {
-  it('two questions differing by one word have different ids', () => {
-    const a = noul('Was the owner doing work during this session?');
-    const b = noul('Was the owner doing work during that session?');
-    expect(questionId(a)).not.toBe(questionId(b));
-    expect(questionId(a)).toBe(questionId(noul(a.instructions)));
-    expect(questionId(a)).toHaveLength(12);
+describe('questionId (law 4, W6 D4: by template, not wording)', () => {
+  it('two rewordings of one slot share one id; the wording hash still tells them apart', () => {
+    const a = keyed('moment-fanout-test', { is_work: noul('Was the owner doing work during this session?') }).is_work;
+    const b = keyed('moment-fanout-test', { is_work: noul('Was the owner doing work during that session?') }).is_work;
+    expect(questionId(a)).toBe('moment-fanout-test:is_work');
+    expect(questionId(b)).toBe(questionId(a));
+    expect(wordingHash(a)).not.toBe(wordingHash(b));
+    // The stamp is not part of what is sent or logged.
+    expect(JSON.stringify(a)).toBe(JSON.stringify(noul(a.instructions)));
   });
 
-  it('criteria are part of the id, in their order', () => {
+  it('criteria are part of the wording hash, in their order; an unstamped question falls back to it', () => {
     const a = choice('Which?', { x: 'one', y: 'two' });
     const b = choice('Which?', { x: 'one', y: 'two.' });
     const c = score('How much?', ['low', 'high']);
-    expect(new Set([questionId(a), questionId(b), questionId(c)]).size).toBe(3);
+    expect(new Set([wordingHash(a), wordingHash(b), wordingHash(c)]).size).toBe(3);
+    expect(questionId(a)).toBe(wordingHash(a));
+    expect(questionId(a)).toHaveLength(12);
+  });
+
+  it('every question every set asks is stamped with its own set and slot', () => {
+    for (const set of QUESTION_SETS) for (const sample of set.samples()) for (const [key, q] of Object.entries(set.build(...sample).questions)) expect(questionId(q)).toBe(`${set.id}:${key}`);
   });
 });
 
 describe('moment-fanout', () => {
-  it('pins every id — a change here is a new question with an empty calibration record', () => {
-    const ids = Object.fromEntries(Object.entries(MOMENT_FANOUT_QUESTIONS).map(([key, q]) => [key, questionId(q)]));
+  it('pins every id — a change here is a rewording (W6 D4: it keeps its template id and its record)', () => {
+    const ids = Object.fromEntries(Object.entries(MOMENT_FANOUT_QUESTIONS).map(([key, q]) => [key, wordingHash(q)]));
     expect(ids).toMatchInlineSnapshot(`
       {
         "contains_blocker": "ee331b018268",
@@ -50,7 +59,7 @@ describe('moment-fanout', () => {
   });
 
   it('J2.7: pins the six goal-slot ids — fixed wording pointing at `open_goals.gN`, never the goal text', () => {
-    const ids = Object.fromEntries(Object.entries(GOAL_ADVANCE_QUESTIONS).map(([key, q]) => [key, questionId(q)]));
+    const ids = Object.fromEntries(Object.entries(GOAL_ADVANCE_QUESTIONS).map(([key, q]) => [key, wordingHash(q)]));
     expect(ids).toMatchInlineSnapshot(`
       {
         "advances_goal_g0": "309b8dd46b80",
@@ -64,7 +73,7 @@ describe('moment-fanout', () => {
   });
 
   it('J4.4: pins the four promise-slot ids', () => {
-    const ids = Object.fromEntries(Object.entries(PROMISE_RESOLVE_QUESTIONS).map(([key, q]) => [key, questionId(q)]));
+    const ids = Object.fromEntries(Object.entries(PROMISE_RESOLVE_QUESTIONS).map(([key, q]) => [key, wordingHash(q)]));
     expect(ids).toMatchInlineSnapshot(`
       {
         "resolves_promise_p0": "32008a826593",
@@ -91,13 +100,13 @@ describe('moment-fanout', () => {
 
 describe('ingest-anomaly (J3.7)', () => {
   it('pins the id — the door question the anomaly bench measured', () => {
-    expect(questionId(INGEST_ANOMALY_QUESTIONS.claims_about_session)).toMatchInlineSnapshot(`"73810167752f"`);
+    expect(wordingHash(INGEST_ANOMALY_QUESTIONS.claims_about_session)).toMatchInlineSnapshot(`"73810167752f"`);
   });
 });
 
 describe('journal-rank (J2.5)', () => {
   it('pins the two ids — the lab wording that ranked top-6 at 50 % vs 15 %', () => {
-    const ids = Object.fromEntries(Object.entries(JOURNAL_RANK_QUESTIONS).map(([key, q]) => [key, questionId(q)]));
+    const ids = Object.fromEntries(Object.entries(JOURNAL_RANK_QUESTIONS).map(([key, q]) => [key, wordingHash(q)]));
     expect(ids).toMatchInlineSnapshot(`
       {
         "is_the_headline": "313d692b2ce4",
@@ -115,7 +124,7 @@ describe('journal-rank (J2.5)', () => {
 
 describe('classify-action / verify-action (J4.1, J4.2)', () => {
   it('pins the three ids', () => {
-    const ids = Object.fromEntries(Object.entries({ ...CLASSIFY_ACTION_QUESTIONS, ...VERIFY_ACTION_QUESTIONS }).map(([key, q]) => [key, questionId(q)]));
+    const ids = Object.fromEntries(Object.entries({ ...CLASSIFY_ACTION_QUESTIONS, ...VERIFY_ACTION_QUESTIONS }).map(([key, q]) => [key, wordingHash(q)]));
     expect(ids).toMatchInlineSnapshot(`
       {
         "carried_out": "8970033735e9",
@@ -135,7 +144,7 @@ describe('classify-action / verify-action (J4.1, J4.2)', () => {
 
 describe('perceive (J2.1)', () => {
   it('pins the four ids — raw rates only, benched by the rewritten live flow', () => {
-    const ids = Object.fromEntries(Object.entries(PERCEIVE_QUESTIONS).map(([key, q]) => [key, questionId(q)]));
+    const ids = Object.fromEntries(Object.entries(PERCEIVE_QUESTIONS).map(([key, q]) => [key, wordingHash(q)]));
     expect(ids).toMatchInlineSnapshot(`
       {
         "in_flow": "0f10b6a84deb",
@@ -149,7 +158,7 @@ describe('perceive (J2.1)', () => {
 
 describe('judge-draft (J4.3)', () => {
   it('pins the two ids', () => {
-    const ids = Object.fromEntries(Object.entries(JUDGE_DRAFT_QUESTIONS).map(([key, q]) => [key, questionId(q)]));
+    const ids = Object.fromEntries(Object.entries(JUDGE_DRAFT_QUESTIONS).map(([key, q]) => [key, wordingHash(q)]));
     expect(ids).toMatchInlineSnapshot(`
       {
         "grounded": "fa15383ca141",
@@ -161,13 +170,13 @@ describe('judge-draft (J4.3)', () => {
 
 describe('grade-step (J5.3)', () => {
   it('pins the id', () => {
-    expect(questionId(GRADE_STEP_QUESTIONS.accomplished)).toMatchInlineSnapshot(`"e9c4f8916438"`);
+    expect(wordingHash(GRADE_STEP_QUESTIONS.accomplished)).toMatchInlineSnapshot(`"e9c4f8916438"`);
   });
 });
 
 describe('judge-line', () => {
   it('pins every id — this is the wording the bench measured', () => {
-    const ids = Object.fromEntries(Object.entries(JUDGE_LINE_QUESTIONS).map(([key, q]) => [key, questionId(q)]));
+    const ids = Object.fromEntries(Object.entries(JUDGE_LINE_QUESTIONS).map(([key, q]) => [key, wordingHash(q)]));
     expect(ids).toMatchInlineSnapshot(`
       {
         "app_only": "1a42ebea1d31",
@@ -182,7 +191,7 @@ describe('judge-line', () => {
 
 describe('rank-evidence', () => {
   it('pins the twelve slot ids — the wording the bench measured', () => {
-    const ids = Object.fromEntries(Object.entries(RANK_EVIDENCE_QUESTIONS).map(([key, q]) => [key, questionId(q)]));
+    const ids = Object.fromEntries(Object.entries(RANK_EVIDENCE_QUESTIONS).map(([key, q]) => [key, wordingHash(q)]));
     expect(ids).toMatchInlineSnapshot(`
       {
         "c0": "6849d01d6175",
@@ -213,7 +222,7 @@ describe('rank-evidence', () => {
 
 describe('listen-reply', () => {
   it('pins every id, the six goal slots included', () => {
-    const ids = Object.fromEntries(Object.entries({ ...LISTEN_REPLY_QUESTIONS, ...GOAL_SLOT_QUESTIONS }).map(([key, q]) => [key, questionId(q)]));
+    const ids = Object.fromEntries(Object.entries({ ...LISTEN_REPLY_QUESTIONS, ...GOAL_SLOT_QUESTIONS }).map(([key, q]) => [key, wordingHash(q)]));
     expect(ids).toMatchInlineSnapshot(`
       {
         "answered": "85a579779a5c",
@@ -246,7 +255,7 @@ describe('listen-reply', () => {
 
 describe('gate-features', () => {
   it('pins every id — the wording J5.1 will learn a gate from', () => {
-    const ids = Object.fromEntries(Object.entries(GATE_FEATURES_QUESTIONS).map(([key, q]) => [key, questionId(q)]));
+    const ids = Object.fromEntries(Object.entries(GATE_FEATURES_QUESTIONS).map(([key, q]) => [key, wordingHash(q)]));
     expect(ids).toMatchInlineSnapshot(`
       {
         "actionable": "24e4780a22e1",
@@ -261,7 +270,7 @@ describe('gate-features', () => {
 
 describe('route-ask', () => {
   it('pins every id — seventeen tools, three more', () => {
-    const ids = Object.fromEntries(Object.entries(ROUTE_ASK_QUESTIONS).map(([key, q]) => [key, questionId(q)]));
+    const ids = Object.fromEntries(Object.entries(ROUTE_ASK_QUESTIONS).map(([key, q]) => [key, wordingHash(q)]));
     expect(Object.keys(ids)).toHaveLength(20);
     expect(ids).toMatchInlineSnapshot(`
       {
@@ -292,7 +301,7 @@ describe('route-ask', () => {
 
 describe('forecast-*', () => {
   it('pins the three target ids, and a state of numbers with the prior named as one', () => {
-    const ids = Object.fromEntries(FORECAST_SETS.map((set) => [set.id, questionId(set.question)]));
+    const ids = Object.fromEntries(FORECAST_SETS.map((set) => [set.id, wordingHash(set.question)]));
     expect(ids).toMatchInlineSnapshot(`
       {
         "forecast-meeting-overrun": "3cf6620c1a8e",
@@ -308,7 +317,7 @@ describe('forecast-*', () => {
 
 describe('audit-fact', () => {
   it('pins every id — four questions over one belief', () => {
-    const ids = Object.fromEntries(Object.entries(AUDIT_FACT_QUESTIONS).map(([key, q]) => [key, questionId(q)]));
+    const ids = Object.fromEntries(Object.entries(AUDIT_FACT_QUESTIONS).map(([key, q]) => [key, wordingHash(q)]));
     expect(Object.keys(ids)).toHaveLength(4);
     expect(ids).toMatchInlineSnapshot(`
       {
@@ -339,7 +348,7 @@ describe('audit-fact evidence', () => {
 
 describe('align-alias', () => {
   it('pins its one id, and carries a known-as name only when there is one', () => {
-    expect(questionId(ALIGN_ALIAS_QUESTIONS.same)).toMatchInlineSnapshot(`"fc092bcc1574"`);
+    expect(wordingHash(ALIGN_ALIAS_QUESTIONS.same)).toMatchInlineSnapshot(`"fc092bcc1574"`);
     const [person] = alignAlias.samples()[1];
     expect(alignAlias.build(person).state).toMatchObject({ entity_kind: 'person', name_a: 'person-c205ca11f2', name_b: 'Alex Morgan', name_a_also_known_as: 'Alex Morgan' });
     expect(alignAlias.build(alignAlias.samples()[0][0]).state).not.toHaveProperty('name_a_also_known_as');

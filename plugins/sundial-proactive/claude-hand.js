@@ -36,13 +36,13 @@ export const HAND_SCHEMA = {
  * Which install a Sundial process belongs to, and what it can do there. A
  * job's child must never inherit any of it: Sundial.app sets SUNDIAL_HOME to
  * the owner's data folder, so a test run or a `sundial` call inside a job would
- * reach the live install, and SUNDIAL_INTERNAL_TOKEN passes the web guard. So
+ * reach the live install. So
  * every SUNDIAL_* and DSH_* variable goes, and DATABASE_URL, except
  * SUNDIAL_JOB_ID. The MCP server gets its home explicitly (`handArgs`).
  */
 export const isInstallKey = (key) => (/^(SUNDIAL|DSH)_/.test(key) && key !== 'SUNDIAL_JOB_ID') || key === 'DATABASE_URL'
 /** The named ones, for a place that must list them (tmux's `env -u`); `jobEnv` strips by pattern. */
-export const INSTALL_ENV = ['SUNDIAL_HOME', 'DSH_HOME', 'SUNDIAL_WEB_PORT', 'SUNDIAL_PHONE_PORT', 'SUNDIAL_CHROME_PORT', 'SUNDIAL_LABEL', 'SUNDIAL_INTERNAL_TOKEN', 'DATABASE_URL']
+export const INSTALL_ENV = ['SUNDIAL_HOME', 'DSH_HOME', 'SUNDIAL_WEB_PORT', 'SUNDIAL_PHONE_PORT', 'SUNDIAL_CHROME_PORT', 'SUNDIAL_LABEL', 'DATABASE_URL']
 
 /** `env` without the install's variables. */
 export function jobEnv(env = process.env) {

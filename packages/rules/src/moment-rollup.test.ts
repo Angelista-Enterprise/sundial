@@ -152,14 +152,6 @@ describe('momentRollup', () => {
       expect(state.moment?.rollup.unpushedCommits).toBe(2);
     });
 
-    it('media:usage records a start/end transition but skips heartbeats', () => {
-      let state = withMoment(createInitialState('d1'));
-      state = momentRollup(state, event('media:usage', { kind: 'audio-output', phase: 'start' })).state;
-      state = momentRollup(state, event('media:usage', { kind: 'audio-output', phase: 'heartbeat' })).state;
-      state = momentRollup(state, event('media:usage', { kind: 'audio-output', phase: 'end' })).state;
-      expect(state.moment?.rollup.lifeEvents).toEqual(['media:audio-output:start', 'media:audio-output:end']);
-    });
-
     it('symbol:edited appends one summary line per batch, not one per symbol', () => {
       let state = withMoment(createInitialState('d1'));
       state = momentRollup(

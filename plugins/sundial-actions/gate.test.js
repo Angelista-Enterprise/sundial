@@ -3,8 +3,9 @@
 // tool-class cell of the table, the bash destructive-deny, and that
 // config.actions can tighten but never loosen.
 import { describe, it, expect } from 'vitest'
-import { callRecord, decideAction, escalate, GNOMON_TOOLS, judgedAction, openedByOwner, outwardCall, parseMcpToolName, shellWrite, unverifiedNotice } from './gate.js'
+import { callFacts, callRecord, decideAction, decisionRecord, escalate, GNOMON_TOOLS, judgedAction, openedByOwner, outwardCall, parseMcpToolName, shellWrite, unverifiedNotice } from './gate.js'
 import { resolveActionPolicy } from '@sundial/helpers/sundial-config.js'
+import { autonomyOf } from './index.js'
 
 // A resolved actions config, defaults matching @sundial/helpers (internal auto,
 // outward off). Most tests pass a permissive-internal config so the PRESET is
@@ -132,6 +133,20 @@ describe('config.actions is a TIGHTEN-ONLY override for gnomon tools', () => {
     expect(decide({ toolName: 'gnomon_run_shell', args: { command: 'ls' }, preset: 'danger-full-access', actions }).kind).toBe('deny')
   })
 
+  it("an off tool's refusal names the config file this install reads, wherever SUNDIAL_HOME is", () => {
+    const home = process.env.SUNDIAL_HOME
+    process.env.SUNDIAL_HOME = '/tmp/sundial-elsewhere'
+    try {
+      const actions = config({ outward: { default: 'auto', byTool: { run_shell: 'off' } } })
+      const d = decide({ toolName: 'gnomon_run_shell', args: { command: 'ls' }, preset: 'danger-full-access', actions })
+      expect(d.reason).toContain('Enable it in /tmp/sundial-elsewhere/config.json.')
+      expect(d.reason).not.toContain('~/.sundial')
+    } finally {
+      if (home === undefined) delete process.env.SUNDIAL_HOME
+      else process.env.SUNDIAL_HOME = home
+    }
+  })
+
   it('tightens workspace-write ASK → DENY when the tool is off', () => {
     const actions = config({ internal: { default: 'auto', byTool: { assert: 'off' } } })
     expect(decide({ toolName: 'gnomon_assert', preset: 'workspace-write', actions }).kind).toBe('deny')
@@ -226,6 +241,32 @@ describe('auto mode', () => {
       expect(d.reason).toContain('auto mode');
     }
   });
+
+  it('W5 step 10: at "act", a command Gnomon starts unasked still stops until actions have earned acting alone', () => {
+    const d = decide({ toolName: 'bash', args: { command: 'npm test' }, preset: undefined, autonomy: 'earning' })
+    expect(d.kind).toBe('ask')
+    expect(d.reason).toContain('earned acting alone')
+    expect(autonomyOf({ settings: { autonomy: 'act' } })).toBe('earning')
+    expect(autonomyOf({ settings: { autonomy: 'act' }, autonomy: { levels: { actions: { level: 'act' } } } })).toBe('act')
+    expect(autonomyOf({ settings: { autonomy: 'notice' } })).toBe('notice')
+  })
+
+  it('the owner\'s own preset is their yes: "earning" decides exactly as "act" did before W5, for every call, turn and config', () => {
+    let n = 0
+    for (const toolName of ['bash', 'gnomon_run_shell', 'gnomon_calendar_create', 'gnomon_claim'])
+      for (const preset of ['read-only', 'workspace-write', 'danger-full-access'])
+        for (const actions of [config(), config({ outward: { default: 'ask', byTool: {} } })])
+          for (const ownerTurn of [undefined, true, false]) {
+            const at = (autonomy) => decide({ toolName, args: { command: 'npm test' }, preset, actions, autonomy, ownerTurn })
+            expect(at('earning')).toEqual(at('act'))
+            n += 1
+          }
+    expect(n).toBe(72)
+    expect(decide({ toolName: 'gnomon_run_shell', args: { command: 'npm test' }, preset: 'danger-full-access', autonomy: 'earning' }).kind).toBe('allow')
+    // A thread on dsh's own default ('custom' since 0.1.5) that the owner opened: their yes too.
+    expect(decide({ toolName: 'bash', args: { command: 'npm test' }, preset: 'custom', autonomy: 'earning', ownerTurn: true }).kind).toBe('allow')
+    expect(decide({ toolName: 'bash', args: { command: 'npm test' }, preset: 'custom', autonomy: 'earning', ownerTurn: false }).kind).toBe('ask')
+  })
 
   it('leaves a read alone: the dial is about acting, not about looking', () => {
     // A dsh built-in that is not bash is not gnomon's to gate at any level.
@@ -331,5 +372,48 @@ describe('callRecord (X2)', () => {
     expect(callRecord({ name: 'gnomon_call', args: { name: 'gnomon_routines', args: { days: 7 } } }, 'ok')).toEqual({ tool: 'gnomon_call', server: null, action: 'gnomon_routines', inner: 'gnomon_routines', outcome: 'ok' })
     expect(callRecord({ name: 'mcp__obsidian__search_notes', args: { query: 'x' } }, 'refused', 'no')).toEqual({ tool: 'mcp__obsidian__search_notes', server: 'obsidian', action: 'search_notes', outcome: 'refused', reason: 'no' })
     expect(callRecord({ name: 'gnomon_call', args: {} }, 'failed')).toEqual({ tool: 'gnomon_call', server: null, action: 'gnomon_call', outcome: 'failed' })
+    // W6 D6: two parallel calls of one tool in one step are two rows a reader can tell apart.
+    const parallel = ['call_1', 'call_2'].map((callId) => callRecord({ name: 'gnomon_today_summary', callId, args: { date: 'x' } }, 'ok'))
+    expect(parallel.map((r) => r.callId)).toEqual(['call_1', 'call_2'])
+    expect(JSON.stringify(parallel[0])).not.toBe(JSON.stringify(parallel[1]))
+  })
+})
+
+describe('W3: action:decided refolds to the same verdict', () => {
+  const isRead = (integration, tool) => integration.reads.some((p) => (p.endsWith('*') ? tool.startsWith(p.slice(0, -1)) : tool === p))
+  const integrations = [{ name: 'obsidian', reads: ['search*'] }]
+  const calls = [
+    ['bash', { command: 'ls ~/Projects/puzzlebox-studio' }],
+    ['bash', { command: 'rm -rf ~/Projects/puzzlebox-studio' }],
+    ['gnomon_run_shell', { command: 'git status' }],
+    ['gnomon_run_shell', { command: 'rm -rf /' }],
+    ['gnomon_assert', { saidBy: 'owner', claim: 'Mira Bakker leads BOX-484' }],
+    ['gnomon_assert', { saidBy: 'me', claim: 'Mira Bakker leads BOX-484' }],
+    ['gnomon_calendar_create', { title: 'BOX-484 review' }],
+    ['gnomon_start_job', { subject: 'lantern notes' }],
+    ['mcp__obsidian__search_notes', { query: 'BOX-484' }],
+    ['mcp__obsidian__delete_vault_file', { path: 'Mira Bakker.md' }],
+    ['mcp__elsewhere__anything', {}],
+  ]
+  const presets = [undefined, 'read-only', 'workspace-write', 'danger-full-access', 'custom']
+  const actionsList = [config(), config({ outward: { default: 'ask', byTool: {} } }), config({ internal: { default: 'off', byTool: {} } })]
+
+  it('for every call, preset, config, autonomy and turn: the logged inputs alone give the logged verdict, and the arguments are not in the row', () => {
+    let n = 0
+    for (const [toolName, args] of calls)
+      for (const preset of presets)
+        for (const actions of actionsList)
+          for (const autonomy of [undefined, 'off', 'notice', 'act', 'earning'])
+            for (const ownerTurn of [undefined, true, false]) {
+              // As the pre-execute hook builds it.
+              const inputs = { preset, approvalOverride: preset === 'custom' ? 'never' : undefined, actions, autonomy, ownerTurn, facts: callFacts({ toolName, args, integrations, isIntegrationRead: isRead }) }
+              const live = decideAction({ toolName, args, preset, approvalOverride: inputs.approvalOverride, actions, resolveActionPolicy, integrations, isIntegrationRead: isRead, autonomy, ownerTurn })
+              const row = JSON.parse(JSON.stringify(decisionRecord({ name: toolName, args }, inputs, live)))
+              const refold = decideAction({ toolName: row.tool, resolveActionPolicy, ...row.inputs })
+              expect({ kind: refold.kind, reason: refold.reason ?? null }).toEqual({ kind: row.verdict, reason: row.reason })
+              for (const value of Object.values(args).filter((v) => v.length > 5)) expect(JSON.stringify(row)).not.toContain(value)
+              n += 1
+            }
+    expect(n).toBe(calls.length * presets.length * actionsList.length * 5 * 3)
   })
 })

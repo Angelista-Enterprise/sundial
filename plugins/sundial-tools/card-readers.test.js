@@ -16,7 +16,7 @@ import { createCardReaders, INSTRUMENT_ROUTES } from './card-readers.js';
  */
 const readers = (over = {}) =>
   createCardReaders({
-    route: over.route ?? vi.fn(async () => ({})),
+    read: over.read ?? vi.fn(async () => ({})),
     tool: over.tool ?? vi.fn(async () => []),
     state: over.state ?? (() => null),
   });
@@ -28,15 +28,15 @@ describe('card readers', () => {
   });
 
   it('reads the dial from the three routes the face is drawn from', async () => {
-    const route = vi.fn(async (p) =>
+    const read = vi.fn(async (p) =>
       p.startsWith('/gnomon/dial')
         ? { observedMin: 300, wallClockMin: 600 }
         : p.startsWith('/gnomon/today')
           ? { date: '2026-09-17', focus: { deepMin: 66 }, projects: [{ name: 'gnomon' }], noticed: ['a'], coverage: { trackedMin: 310, wallClockMin: 620 } }
           : { date: '2026-09-17', moments: [{ id: 'm1', startTime: '2026-09-17T09:00:00.000Z', durationMin: 30, activeMin: 20, processName: 'Arc' }] },
     );
-    const got = await readers({ route }).dial('', null, {});
-    expect(route.mock.calls.map((c) => c[0])).toEqual(['/gnomon/dial', '/gnomon/day', '/gnomon/today']);
+    const got = await readers({ read }).dial('', null, {});
+    expect(read.mock.calls.map((c) => c[0])).toEqual(['/gnomon/dial', '/gnomon/day', '/gnomon/today']);
     expect(got.observedMin).toBe(310);
     expect(got.focus).toEqual({ deepMin: 66 });
     expect(got.moments).toHaveLength(1);
@@ -44,7 +44,7 @@ describe('card readers', () => {
 
   it('keeps only the moments around an hour when one is given', async () => {
     const at = (h) => new Date(2026, 8, 17, h, 0, 0).toISOString();
-    const route = vi.fn(async (p) =>
+    const read = vi.fn(async (p) =>
       p.startsWith('/gnomon/day')
         ? {
             date: '2026-09-17',
@@ -55,19 +55,19 @@ describe('card readers', () => {
           }
         : {},
     );
-    const got = await readers({ route }).dial('', null, { hour: 15 });
+    const got = await readers({ read }).dial('', null, { hour: 15 });
     expect(got.moments.map((m) => m.id)).toEqual(['afternoon']);
   });
 
   it('reads the brief as the brief — a sentence and what is left, not the moment list', async () => {
     // The `today` card is the one-sentence brief beside the dial. Answering it
     // with the day's moments described the card next to the one that was asked about.
-    const route = vi.fn(async (p) =>
+    const read = vi.fn(async (p) =>
       p.startsWith('/gnomon/today')
         ? { date: '2026-09-17', coverage: { trackedMin: 310 }, projects: [{ name: 'gnomon', minutes: 120 }], meetings: 2, noticed: ['a', 'b'] }
         : { items: [{ title: 'Kept one', verdict: null }, { title: 'Judged one', verdict: 'useful' }] },
     );
-    const got = await readers({ route }).today('', null, {});
+    const got = await readers({ read }).today('', null, {});
     expect(got).toEqual({
       date: '2026-09-17',
       observedMin: 310,
@@ -79,22 +79,22 @@ describe('card readers', () => {
   });
 
   it('names no window of its own, so the board\'s span decides', async () => {
-    const route = vi.fn(async () => ({ days: [{ date: '2026-09-22' }] }));
-    const got = await readers({ route }).rhythm('', null, {});
+    const read = vi.fn(async () => ({ days: [{ date: '2026-09-22' }] }));
+    const got = await readers({ read }).rhythm('', null, {});
     // A `?days=` here would pin the reading to a span the owner did not choose,
     // and it was written in three places that a test had to hold in step.
-    expect(route).toHaveBeenCalledWith('/gnomon/shape');
+    expect(read).toHaveBeenCalledWith('/gnomon/shape');
     expect(got.days).toHaveLength(1);
-    const one = await readers({ route }).rhythm('', { filters: { view: 'days' } }, {});
+    const one = await readers({ read }).rhythm('', { filters: { view: 'days' } }, {});
     expect(Object.keys(one)).toEqual(['view', 'days']);
   });
 
   it('reads In play as its own card with a project filter', async () => {
     const play = vi.fn(async (p) => (p.startsWith('/gnomon/habits') ? { commitments: { open: [{ id: 'c1', project: 'sundial' }, { id: 'c2', project: 'wcs' }] } } : { goals: [{ goal: 'demo' }] }));
-    const all = await readers({ route: play }).play('', null, {});
+    const all = await readers({ read: play }).play('', null, {});
     expect(all.commitments).toHaveLength(2);
     expect(all.goals).toHaveLength(1);
-    const one = await readers({ route: play }).play('', { filters: { project: 'sundial' } }, {});
+    const one = await readers({ read: play }).play('', { filters: { project: 'sundial' } }, {});
     expect(one.commitments.map((c) => c.id)).toEqual(['c1']);
   });
 
@@ -138,14 +138,14 @@ describe('card readers', () => {
   });
 
   it('counts the roster by kind for the Explore card', async () => {
-    const route = vi.fn(async () => ({
+    const read = vi.fn(async () => ({
       entities: [
         { canonicalName: 'gnomon', kind: 'project', factCount: 9 },
         { canonicalName: 'Ada', kind: 'person', factCount: 2 },
         { canonicalName: 'sundial', kind: 'project', factCount: 4 },
       ],
     }));
-    const got = await readers({ route }).explore('', null, {});
+    const got = await readers({ read }).explore('', null, {});
     expect(got.counts).toEqual({ project: 2, person: 1 });
     expect(got.entities[0]).toEqual({ name: 'gnomon', kind: 'project', facts: 9 });
   });
@@ -162,10 +162,10 @@ describe('card readers', () => {
   });
 
   it('reads the Engine room by its tab, and says when a tab does not exist', async () => {
-    const route = vi.fn(async (p) => ({ from: p }));
-    expect((await readers({ route }).engine('', null, {})).from).toBe('/gnomon/ledger');
-    expect((await readers({ route }).engine('', { filters: { tab: 'trust' } }, {})).from).toBe('/gnomon/trust');
-    const got = await readers({ route }).engine('', { filters: { tab: 'threads' } }, {});
+    const read = vi.fn(async (p) => ({ from: p }));
+    expect((await readers({ read }).engine('', null, {})).from).toBe('/gnomon/ledger');
+    expect((await readers({ read }).engine('', { filters: { tab: 'trust' } }, {})).from).toBe('/gnomon/trust');
+    const got = await readers({ read }).engine('', { filters: { tab: 'threads' } }, {});
     expect(got.error).toContain('no "threads" tab');
     expect(got.tabs).toContain('reach');
   });

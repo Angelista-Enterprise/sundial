@@ -5,7 +5,6 @@ import { loadSundialConfig } from '@sundial/helpers/sundial-config.js';
 import { blindSpots, didITypes, judgeDidI, namesFor, needlesFor, parseDidI } from '../did-i.js';
 import { buildTimeline, keepRow, postmortemDraft, TIMELINE_TYPES, type LogRow, type MomentRow } from '../flight-recorder.js';
 import { DEFAULT_GATE_POLICY, policyForBias, type Channel } from '../gate.js';
-import { loadLatestSnapshot } from '../snapshot.js';
 import { backtestTypes, backtestWatch, resolvePeople, validateWatchRule, type WatchRule } from '../watch.js';
 import { candidateOf, whatIf, type ReplayItem } from '../what-if.js';
 import { pageWithinBudget, RESULT_BUDGET_CHARS } from './evidence-tools.js';
@@ -65,11 +64,11 @@ export const RECALL_TOOLS: GnomonTool[] = [
       date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Only this day (YYYY-MM-DD, owner time), e.g. for "did I … yesterday"'),
     },
     readOnly: true,
-    handler: async ({ what, person, days, date }) => {
+    handler: async ({ what, person, days, date }, env) => {
       const tz = zone();
-      const now = new Date().toISOString();
+      const now = env.now.toISOString();
       const span = (days as number | undefined) ?? 14;
-      const range = typeof date === 'string' ? localDayRange(date, tz) : { start: new Date(Date.now() - span * DAY_MS).toISOString(), end: now };
+      const range = typeof date === 'string' ? localDayRange(date, tz) : { start: new Date(env.now.getTime() - span * DAY_MS).toISOString(), end: now };
       const [aliasNames, people, promises] = await Promise.all([loadAliasNames(), peopleNames(), getPromises(200)]);
       const q = parseDidI(String(what), { person: person as string | undefined, aliasNames, people });
       const types = didITypes(q.action);
@@ -111,9 +110,9 @@ export const RECALL_TOOLS: GnomonTool[] = [
       offset: z.number().int().min(0).optional().describe('Where to start: the nextOffset of the previous page'),
     },
     readOnly: true,
-    handler: async ({ date, from, to, project, person, contains, postmortem, limit, offset }) => {
+    handler: async ({ date, from, to, project, person, contains, postmortem, limit, offset }, env) => {
       const tz = zone();
-      const day = (date as string | undefined) ?? localDate(new Date().toISOString(), tz);
+      const day = (date as string | undefined) ?? localDate(env.now.toISOString(), tz);
       const whole = localDayRange(day, tz);
       const start = atClock(day, from as string | undefined, whole.start, tz);
       const end = atClock(day, to as string | undefined, whole.end, tz);
@@ -157,13 +156,13 @@ export const RECALL_TOOLS: GnomonTool[] = [
       rule: z.any().optional().describe('A watch rule: an adopted rule id, or a spec object as gnomon_test_rule takes'),
     },
     readOnly: true,
-    handler: async ({ days, cap, budget, dial, mute, rule }) => {
-      const snapshot = await loadLatestSnapshot();
-      const tz = snapshot?.state.config.timezone ?? zone();
-      const settings = snapshot?.state.settings;
+    handler: async ({ days, cap, budget, dial, mute, rule }, env) => {
+      const state = await env.state();
+      const tz = state?.config.timezone ?? zone();
+      const settings = state?.settings;
       const span = (days as number | undefined) ?? 30;
-      const now = new Date().toISOString();
-      const from = new Date(Date.now() - span * DAY_MS).toISOString();
+      const now = env.now.toISOString();
+      const from = new Date(env.now.getTime() - span * DAY_MS).toISOString();
       const base = policyForBias(settings?.noticeBias ?? 0);
       const variant = {
         ...policyForBias(typeof dial === 'number' ? dial : (settings?.noticeBias ?? 0)),
@@ -191,7 +190,7 @@ export const RECALL_TOOLS: GnomonTool[] = [
       let added: ReplayItem[] | undefined;
       let ruleNote: Record<string, unknown> = {};
       if (rule !== undefined && rule !== null && rule !== '') {
-        const adopted = typeof rule === 'string' ? snapshot?.state.watch?.rules.find((r) => r.id === rule) : undefined;
+        const adopted = typeof rule === 'string' ? state?.watch?.rules.find((r) => r.id === rule) : undefined;
         let spec: unknown = adopted ?? rule;
         if (!adopted && typeof spec === 'string') {
           try {
@@ -200,7 +199,7 @@ export const RECALL_TOOLS: GnomonTool[] = [
             return { error: `No adopted rule "${String(rule)}", and it is not a JSON spec either. gnomon_test_rule with no rule lists the adopted ones.` };
           }
         }
-        const checked = adopted ? { rule: adopted as WatchRule } : validateWatchRule(resolvePeople(spec, snapshot?.state.memory.aliasNames ?? {}));
+        const checked = adopted ? { rule: adopted as WatchRule } : validateWatchRule(resolvePeople(spec, state?.memory.aliasNames ?? {}));
         if ('error' in checked) return { error: checked.error };
         const events = (await readAll(from, now, backtestTypes(checked.rule), undefined, 400_000)).map((s) => ({ id: s.id, type: `${s.signalType}:${s.eventType}`, ts: s.capturedAt, payload: s.data }));
         const { fires } = backtestWatch(checked.rule, events, { daytime: (ts) => localHour(ts, tz) >= 6 && localHour(ts, tz) < 18, timeZone: tz });

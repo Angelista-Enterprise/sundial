@@ -10,6 +10,8 @@
         if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
       } catch (e) {}
     </script>
+    <!-- One copy of the shared words for host and page alike (packages/helpers/src/vocab.ts). -->
+    <script type="importmap">{ "imports": { "@sundial/helpers/vocab.js": "/gnomon/app/vocab.js" } }</script>
     <title>Set up Sundial</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 26V6M16 26l9 3' stroke='%23d98a2b' stroke-width='3' fill='none'/%3E%3C/svg%3E" />
     <link rel="preload" as="font" type="font/ttf" href="/gnomon/font/inter-tight.ttf" crossorigin />

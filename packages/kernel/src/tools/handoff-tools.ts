@@ -2,7 +2,6 @@ import { z } from 'zod';
 import { getAllEntities, getAllProjects, getCurrentFactsWithProof, getMomentsForProject, getOpenCommitments, getProjectIntents, getPromises, getAllSignalsInRange, loadAliasNames } from '@sundial/db/index.js';
 import type { StoredCommitment } from '@sundial/db/index.js';
 import { localDate } from '@sundial/helpers/local-day.js';
-import { loadLatestSnapshot } from '../snapshot.js';
 import type { AgentFleetEntry, TicketThread } from '../types.js';
 import type { GnomonTool } from './registry.js';
 
@@ -207,7 +206,7 @@ export const HANDOFF_TOOLS: GnomonTool[] = [
       days: z.number().int().positive().max(90).optional().describe('How far back to look. Default 30.'),
     },
     readOnly: true,
-    handler: async ({ project, days }) => {
+    handler: async ({ project, days }, env) => {
       const wanted = String(project).trim().toLowerCase();
       const projects = await getAllProjects();
       const base = (root: string) => root.split('/').filter(Boolean).at(-1)?.toLowerCase() ?? '';
@@ -221,10 +220,9 @@ export const HANDOFF_TOOLS: GnomonTool[] = [
       if (!match) return { note: `No project matches "${project}".`, known: projects.map((p) => p.name).slice(0, 40) };
 
       const root = match.id;
-      const now = new Date().toISOString();
+      const now = env.now.toISOString();
       const since = new Date(Date.parse(now) - ((days as number | undefined) ?? 30) * 86_400_000).toISOString();
-      const snapshot = await loadLatestSnapshot();
-      const state = snapshot?.state;
+      const state = await env.state();
       const timeZone = state?.config?.timezone ?? 'UTC';
       const nameLc = match.name.toLowerCase();
 

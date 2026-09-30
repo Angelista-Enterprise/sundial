@@ -7,7 +7,7 @@
  * says how much to trust the words (docs/jarvis/05).
  */
 import type { JudgementResultPayload } from '@sundial/kernel/types.js';
-import { clip, noul, score, type QuestionSet } from './index.js';
+import { clip, noul, score, type QuestionSet, keyed } from './index.js';
 
 export interface JudgeDraftInput {
   kind: 'email' | 'note';
@@ -17,10 +17,10 @@ export interface JudgeDraftInput {
   evidence: string[];
 }
 
-export const JUDGE_DRAFT_QUESTIONS = {
+export const JUDGE_DRAFT_QUESTIONS = keyed('judge-draft', {
   grounded: noul('Is every fact, name, date and promise in `draft` present in `evidence`, with nothing invented or embellished?'),
   tone: score('As a message the owner would send under their own name, how does `draft` read?', ['Wrong: rude, gushing, or not something a person would send.', 'Off: stiff or generic; would need rewriting.', 'Fit: plain, polite, sendable with a small edit.', 'Right: reads as the owner, ready to send.']),
-};
+});
 
 export const judgeDraft: QuestionSet<[JudgeDraftInput]> = {
   id: 'judge-draft',

@@ -8,7 +8,7 @@
  * subjects), each already sanitized at ingest.
  */
 import { formatClock, localDate, localHour, localWeekday } from '@sundial/helpers/local-day.js';
-import type { BriefDay, BriefState, Commitment, KernelState, UpcomingEvent } from './types.js';
+import type { BriefDay, BriefState, Commitment, KernelState, UpcomingEvent, WeekBrief } from './types.js';
 
 export const EMPTY_BRIEFS: BriefState = { days: {}, prState: {}, lastMet: {}, done: {} };
 export const briefsOf = (state: KernelState): BriefState => state.briefs ?? EMPTY_BRIEFS;
@@ -205,8 +205,40 @@ export function weekReviewDue(now: string, tz: string): boolean {
   return wd === 6 || wd === 0 || (wd === 5 && localHour(now, tz) >= 13);
 }
 
+/** Today's brief card at `now`: the brief with the notice key it was raised under, and this week's review while it is due. */
+export function todayBrief(state: KernelState | null | undefined, now: number): { before: ReturnType<typeof visibleBrief>; week: Pick<WeekBrief, 'from' | 'to' | 'lines'> | null } {
+  if (!state) return { before: null, week: null };
+  const week = visibleWeek(state, now);
+  return { before: visibleBrief(state, now), week: week ? { from: week.from, to: week.to, lines: week.lines } : null };
+}
+
+/** The week in review Today shows at `now`: this week's, while it is due (Friday from 13:00 and the weekend). */
+export function visibleWeek(state: KernelState, now: number): WeekBrief | null {
+  const iso = new Date(now).toISOString();
+  const tz = state.config.timezone;
+  const week = briefsOf(state).week ?? null;
+  return week && weekReviewDue(iso, tz) && week.from === mondayOf(iso, tz) ? week : null;
+}
+
+/** The owner-local Monday of the week holding `iso`. */
+export function mondayOf(iso: string, tz: string): string {
+  const back = (localWeekday(iso, tz) + 6) % 7;
+  return new Date(Date.parse(`${localDate(iso, tz)}T12:00:00Z`) - back * 86_400_000).toISOString().slice(0, 10);
+}
+
 /** The key a meeting's prep is raised under, one per occurrence. `promiseTrack` reads it: a promise due at the meeting is said by the prep. */
 export const meetingPrepKey = (title: string, start: string): string => `meeting-prep:${title}|${Number.isFinite(Date.parse(start)) ? new Date(start).toISOString() : start}`;
+
+/** The notice key a brief is raised under: the standup draft once a day, the prep once per meeting. */
+export const briefKey = (brief: { kind: string; title: string; start: string }, timeZone: string): string =>
+  brief.kind === 'standup-draft' ? `standup-draft:${localDate(brief.start, timeZone)}` : meetingPrepKey(brief.title, brief.start);
+
+/** The brief Today shows at `now`, with its notice key: the latest one until its meeting ends, none when the owner turned briefs off in Settings. */
+export function visibleBrief(state: KernelState, now: number): (NonNullable<BriefState['latest']> & { key: string }) | null {
+  const latest = briefsOf(state).latest ?? null;
+  if (!latest || Date.parse(latest.end) <= now || (state.settings?.quiet ?? []).includes('briefs')) return null;
+  return { ...latest, key: briefKey(latest, state.config.timezone) };
+}
 
 /** The owner's word on a kind of brief: the last two verdicts on it both "wrong" turn it off until a "useful" one. */
 export function silenced(state: KernelState, kind: string): boolean {

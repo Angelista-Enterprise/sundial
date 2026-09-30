@@ -1,16 +1,15 @@
 // lane E (#12): the night shift's hands.
 //
 // The `nightShift` rule (packages/rules/src/night-shift.ts) decides WHEN a job
-// starts and watches it through the agent fleet; this file does the three
-// things the rule asks over the `night-shift` Notify channel: start, finish
-// (collect the result) and stop. Each reply is ONE signal (`job:started`,
-// `job:finished`) the rule folds.
+// starts and watches it through the agent fleet; this file is the executor's
+// `job` actor (W3) for the two effects the rule asks for: `StartJob` and
+// `StopJob` (finish or stop, then collect the result). The executor folds each
+// answer as ONE signal (`job:started`, `job:finished`) the rule reads.
 //
 // OFF unless `jobs.enabled` is true in config.json, and the owner has not said
-// yes (2026-09-29). Off, `installNightShift` registers no tool and ignores a
-// `start`, so no notice, tool or replay can start a job. It still hears `stop`
-// and `finish`, so a job started before the switch went off is stopped, not
-// orphaned (a682569).
+// yes (2026-09-29). Off, `installNightShift` registers no tool and refuses a
+// start, so no tool or replay can start a job. It still stops, so a job started
+// before the switch went off is stopped, not orphaned (a682569).
 //
 // What a job is, and is not:
 //   - an interactive `claude` in a detached tmux session, in a git worktree
@@ -30,8 +29,6 @@ import path from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { INSTALL_ENV, isInstallKey, jobEnv, resolveClaude } from './claude-hand.js'
 
-/** MUST match `NIGHT_SHIFT_CHANNEL` in packages/rules/src/night-shift.ts (duplicated, not imported, like work.js's JOB_TIMEOUT_MS). */
-export const NIGHT_SHIFT_CHANNEL = 'night-shift'
 /** Claude permission modes that approve something by themselves. A job never gets one. */
 export const APPROVING_MODES = ['acceptEdits', 'auto', 'bypassPermissions', 'dontAsk']
 
@@ -172,53 +169,33 @@ export function installNightShift(ctx, { home, jobs, runner = null, log = consol
     runner = createTmuxRunner({ home, claudePath })
   }
   if (on) for (const tool of nightTools(ctx)) ctx.tools.register(tool)
-  /** Starts already made, so a repeated Notify (delivery is at-least-once) never starts a job twice. */
-  const started = new Set()
-  const append = (type, payload) => ctx.gnomonKernel.appendSignal(type, payload).catch((e) => warn(`[${PLUGIN}] night shift: could not record ${type}: ${e instanceof Error ? e.message : String(e)}`))
   const openJob = (jobId) => {
     const open = ctx.gnomonKernel.getState?.()?.nightShift?.open
     return open && open.id === jobId ? open : null
   }
-  const folderOf = (job) => (job?.worktree ? path.basename(job.worktree) : null)
 
-  ctx.on('gnomon/notice', async (notice) => {
-    if (notice?.channel !== NIGHT_SHIFT_CHANNEL) return
-    const p = notice.payload ?? {}
-    try {
-      if (p.action === 'start') {
-        if (!on) return
-        const job = p.job
-        if (!job?.id || started.has(job.id) || openJob(job.id)?.status !== 'starting') return
-        started.add(job.id)
-        let where
-        try {
-          where = runner.start({ job, folder: String(p.folder) })
-        } catch (error) {
-          await append('job:finished', { jobId: job.id, outcome: 'failed', note: `could not start: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) })
-          return
-        }
-        log(`[${PLUGIN}] night job ${job.id} started in ${where.worktree}`)
-        await append('job:started', { jobId: job.id, ...where })
-        return
+  // W3: the executor's doer for StartJob / StopJob. It awaits each and folds the
+  // answer; a throw is a `job:finished failed`. At-most-once starts come from the
+  // effect journal, so no Set of started jobs is kept here.
+  const unregister = ctx.gnomonKernel.registerActor('job', {
+    async start({ job, folder }) {
+      if (!on) throw new Error('the night shift is off (jobs.enabled was not true when Sundial started)')
+      const where = runner.start({ job, folder: String(folder) })
+      log(`[${PLUGIN}] night job ${job.id} started in ${where.worktree}`)
+      return where
+    },
+    async stop({ jobId }) {
+      const job = openJob(jobId)
+      const folder = job?.worktree ? path.basename(job.worktree) : null
+      if (!job || !folder) return null
+      runner.stop(folder)
+      try {
+        return job.base ? runner.collect({ worktree: job.worktree, base: job.base }) : {}
+      } catch (error) {
+        return { note: `could not read the result: ${error instanceof Error ? error.message : String(error)}` }
       }
-      if (p.action === 'finish' || p.action === 'stop') {
-        const job = openJob(p.jobId)
-        const folder = folderOf(job)
-        if (!job || !folder) return
-        runner.stop(folder)
-        let result = {}
-        try {
-          result = job.base ? runner.collect({ worktree: job.worktree, base: job.base }) : {}
-        } catch (error) {
-          result = { note: `could not read the result: ${error instanceof Error ? error.message : String(error)}` }
-        }
-        const outcome = p.action === 'stop' ? 'stopped' : p.failed ? 'failed' : 'done'
-        await append('job:finished', { jobId: job.id, outcome, ...result })
-      }
-    } catch (error) {
-      warn(`[${PLUGIN}] night shift: ${error instanceof Error ? error.message : String(error)}`)
-    }
+    },
   })
   if (on) log(`[${PLUGIN}] night shift is ON: at most ${jobs.maxJobsPerNight} job(s) a night, ${jobs.maxMinutes} min and $${jobs.maxUsdPerJob} each`)
-  return () => started.clear()
+  return unregister
 }

@@ -14,7 +14,7 @@
  * confidence, how it was learned, its age, and the two Beta counts. No verdict
  * of ours travels in it.
  */
-import { clip, noul, score, type QuestionSet } from './index.js';
+import { clip, noul, score, type QuestionSet, keyed } from './index.js';
 
 export interface AuditFactInput {
   subject: string;
@@ -40,7 +40,7 @@ export interface AuditFactInput {
 
 export const AUDIT_CONTEXT = "The owner is a software developer. The assistant learned these beliefs from window titles, git activity, calendar entries, speech, and the owner's own statements.";
 
-export const AUDIT_FACT_QUESTIONS = {
+export const AUDIT_FACT_QUESTIONS = keyed('audit-fact', {
   is_false: noul('Is `belief` actually false?', {
     true: 'The claim is wrong, self-contradictory, or a parsing artifact — a file path, UI label or window-title fragment mistaken for a name.',
     false: 'The claim is plausible, or there is not enough here to call it wrong.',
@@ -51,7 +51,7 @@ export const AUDIT_FACT_QUESTIONS = {
     false: 'It has probably lapsed: a status, a tool or a collaboration that has since changed.',
   }),
   usefulness: score('How useful is `belief` for an assistant that wants to understand the owner?', ['Noise: says nothing real.', 'Trivial: true but nobody would ask.', 'Useful: helps interpret what the owner does.', 'Core: central to who the owner is or what they work on.']),
-};
+});
 
 export const auditFact: QuestionSet<[AuditFactInput]> = {
   id: 'audit-fact',

@@ -32,27 +32,27 @@ describe('composeFigure', () => {
    */
   describe('refusing rather than drawing nothing', () => {
     it('refuses a graph-neighborhood with no entity named', async () => {
-      expect(await composeFigure({ kind: 'graph-neighborhood' })).toEqual({ unavailable: expect.stringContaining('needs the name') });
+      expect(await composeFigure({ kind: 'graph-neighborhood' }, new Date())).toEqual({ unavailable: expect.stringContaining('needs the name') });
     });
 
     it('refuses when the named entity does not exist', async () => {
       mocks.findEntitiesByName.mockResolvedValue([]);
-      expect(await composeFigure({ kind: 'graph-neighborhood', name: 'nobody' })).toEqual({ unavailable: expect.stringContaining('No entity matches') });
+      expect(await composeFigure({ kind: 'graph-neighborhood', name: 'nobody' }, new Date())).toEqual({ unavailable: expect.stringContaining('No entity matches') });
     });
 
     it('refuses a neighbourhood for an entity that carries no facts — 21 of 33 real entities are in exactly this state', async () => {
       mocks.findEntitiesByName.mockResolvedValue([{ id: 'e1', canonicalName: 'isa', kind: 'person' }]);
       mocks.getEntityGraphEdges.mockResolvedValue([]);
-      expect(await composeFigure({ kind: 'graph-neighborhood', name: 'isa' })).toEqual({ unavailable: expect.stringContaining('no facts attached') });
+      expect(await composeFigure({ kind: 'graph-neighborhood', name: 'isa' }, new Date())).toEqual({ unavailable: expect.stringContaining('no facts attached') });
     });
 
     it('refuses a commitment-thread when nothing is tracked', async () => {
-      expect(await composeFigure({ kind: 'commitment-thread' })).toEqual({ unavailable: expect.stringContaining('No commitments') });
+      expect(await composeFigure({ kind: 'commitment-thread' }, new Date())).toEqual({ unavailable: expect.stringContaining('No commitments') });
     });
 
     it('refuses a trend-slice when no day in the range was observed', async () => {
       mocks.getMomentsSince.mockResolvedValue([]);
-      expect(await composeFigure({ kind: 'trend-slice', days: 7 })).toEqual({ unavailable: expect.stringContaining('Nothing was observed') });
+      expect(await composeFigure({ kind: 'trend-slice', days: 7 }, new Date())).toEqual({ unavailable: expect.stringContaining('Nothing was observed') });
     });
   });
 
@@ -61,7 +61,7 @@ describe('composeFigure', () => {
       const today = new Date().toISOString().slice(0, 10);
       mocks.getMomentsSince.mockResolvedValue([{ startTime: `${today}T10:00:00.000Z`, durationMs: 90 * 60000 }]);
 
-      const figure = await composeFigure({ kind: 'trend-slice', days: 3 });
+      const figure = await composeFigure({ kind: 'trend-slice', days: 3 }, new Date());
       if (!('kind' in figure)) throw new Error('expected a figure');
       if (figure.kind !== 'trend-slice') throw new Error('wrong kind');
 
@@ -84,7 +84,7 @@ describe('composeFigure', () => {
         { predicate: 'worksWith', object: 'isa', validFrom: '2026-06-01T09:00:00.000Z', validTo: null, confidence: 60, provenance: 'assertion' },
       ]);
 
-      const figure = await composeFigure({ kind: 'fact-chain', name: 'bob', predicate: 'worksOn' });
+      const figure = await composeFigure({ kind: 'fact-chain', name: 'bob', predicate: 'worksOn' }, new Date());
       if (!('kind' in figure) || figure.kind !== 'fact-chain') throw new Error('expected a fact-chain');
 
       expect(figure.links.map((l) => l.object)).toEqual(['wcs', 'gnomon']);
@@ -98,7 +98,7 @@ describe('composeFigure', () => {
         { predicate: 'worksOn', object: 'gnomon', validFrom: '2026-07-25T09:00:00.000Z', validTo: null, confidence: 88, provenance: 'inference' },
       ]);
 
-      const figure = await composeFigure({ kind: 'fact-chain', name: 'bob' });
+      const figure = await composeFigure({ kind: 'fact-chain', name: 'bob' }, new Date());
       if (!('kind' in figure) || figure.kind !== 'fact-chain') throw new Error('expected a fact-chain');
       expect(figure.predicate).toBe('worksOn');
     });
@@ -109,7 +109,7 @@ describe('composeFigure', () => {
       mocks.getMemoryTierCounts.mockResolvedValue({ signals: 216325, moments: 3150, knowledgeEntries: 102, entities: 33, entityFacts: 88 });
       mocks.getPipelineCoverage.mockResolvedValue({ moments: 3150, momentsWithIntent: 2913, momentsWithProject: 728 });
 
-      const figure = await composeFigure({ kind: 'census' });
+      const figure = await composeFigure({ kind: 'census' }, new Date());
       if (!('kind' in figure) || figure.kind !== 'census') throw new Error('expected a census');
 
       expect(figure.rows.find((r) => r.label === 'with a project')).toEqual({ label: 'with a project', count: 728, total: 3150 });
@@ -132,7 +132,7 @@ describe('composeFigure', () => {
         { fromEntityId: 'e1', toEntityId: 'e3', predicate: 'worksOn', provenance: 'inference', superseded: true },
       ]);
 
-      const figure = await composeFigure({ kind: 'graph-neighborhood', name: 'bob' });
+      const figure = await composeFigure({ kind: 'graph-neighborhood', name: 'bob' }, new Date());
       if (!('kind' in figure) || figure.kind !== 'graph-neighborhood') throw new Error('expected a neighbourhood');
 
       // An edge pointing INTO the centre is still a connection; "what is this

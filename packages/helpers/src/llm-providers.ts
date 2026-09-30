@@ -32,6 +32,19 @@ const KNOWN_HOSTS: [RegExp, string][] = [
   [/^api\.together\.xyz$/, 'Together'],
 ];
 
+/**
+ * The chat's default route and model, for a new thread, the companion and the
+ * work agent. dsh's `agent-default-model` names Gnomon's own route; with no
+ * `.env` model that route has no adapter ("no adapter registered for provider
+ * openai"), so an install whose only model is a saved provider uses the one
+ * `llm.use.default` names, and its model. A selection of any other route stays.
+ */
+export function chatDefault<S extends { provider: string; model: string }>(selection: S, llm: { providers: LlmProvider[]; use: Record<string, string> } | undefined, ownRoute = Boolean(process.env.SUNDIAL_LLM_BASE_URL)): S {
+  if (ownRoute || (selection.provider !== DEFAULT_PROVIDER && selection.provider !== LEGACY_PROVIDER)) return selection;
+  const p = llm?.providers.find((x) => x.id === llm.use.default);
+  return p ? { ...selection, provider: p.id, model: p.model } : selection;
+}
+
 /** Whether a base URL points at this Mac. */
 export function isLocalUrl(baseUrl: string): boolean {
   try {

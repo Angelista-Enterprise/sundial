@@ -22,6 +22,8 @@ import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { redactSecrets } from '@sundial/helpers/llm-error-class.js'
+import { chatDefault } from '@sundial/helpers/llm-providers.js'
 import { handPreamble, resolveClaude, runClaudeHand } from './claude-hand.js'
 
 const PLUGIN = 'sundial-proactive'
@@ -54,7 +56,24 @@ function promptText(message) {
     .join('\n')
 }
 export const WORK_SESSION_ID = 'gnomon-work'
-export const WORK_JOB_CHANNEL = 'work-job'
+
+/**
+ * A helper the MODEL starts with dsh's `subagent` tool gets the brief once, as
+ * it starts (the clock and the owner's memory, no reply rules): since W1 step 5
+ * nothing reaches a child as a system-prompt context, so without this it knew
+ * neither the date nor the owner. Sundial's own jobs (children of the work
+ * session) carry the brief in their prompt already. The child's first model
+ * call may already be under way when `subagent/start` fires; an injected
+ * context lands at its next round.
+ */
+export async function briefSubagent(ctx, info) {
+  const child = info?.local ? ctx.agents?.get?.(info.id) : null
+  if (!child || child.session?.header?.parentSession === WORK_SESSION_ID) return false
+  const told = await Promise.resolve(ctx.gnomonKernel?.brief?.({ sessionId: info.id, cause: { kind: 'work' } })).catch(() => null)
+  if (!told) return false
+  child.inject(createUserMessage({ content: [{ type: 'text', text: told.text }], source: { kind: 'plugin', plugin: PLUGIN, form: 'notice', summary: boundContextSummary(told.present) } }))
+  return true
+}
 
 function markerPath(home) {
   return `${home}/.daemon/work-session.json`
@@ -66,7 +85,7 @@ export async function ensureWorkAgent(ctx, { home, cwd }) {
   const live = ctx.agents.get(sessionId)
   if (live !== undefined) return { agent: live, resumed: true }
 
-  const selection = ctx.agentDefaultModel.currentSelection()
+  const selection = chatDefault(ctx.agentDefaultModel.currentSelection(), ctx.gnomonKernel?.getState()?.config.llm)
   const agentOptions = { provider: selection.provider, model: selection.model }
   const setup = async (agentCtx) => {
     installModelSelection(agentCtx, { current: selection, assembled: undefined })
@@ -226,9 +245,12 @@ export function workDonePayload(args = {}) {
 }
 
 /**
- * Register the two return-path tools and the channel handler.
+ * Register the two return-path tools and the executor's `subagent` actor (W3):
+ * `StartSubagent` runs a job, `StopSubagent` aborts it. The executor awaits the
+ * start, folds `work:started` (or `work:closed failed` on a throw), and closes a
+ * job whose `done` settles without a report.
  *
- * @returns dispose function for the agent reference (the tools are ctx-scoped).
+ * @returns dispose function for the agent reference and the actor (the tools are ctx-scoped).
  */
 export function installWorkLoop(ctx, { home, cwd, isDisposed = () => false, onShelved = () => {}, log = console.log, warn = console.warn, hands = {}, resolveClaudeFn = resolveClaude, spawnFn } = {}) {
   /** Live jobs, so shutdown can end them rather than leaving children running. */
@@ -285,7 +307,6 @@ export function installWorkLoop(ctx, { home, cwd, isDisposed = () => false, onSh
   )
 
   let worker = null
-  let queue = Promise.resolve()
 
   // Said at boot rather than left to be discovered from the first job's log
   // line. The fallback below is deliberate but it degrades SILENTLY — a wrong
@@ -302,13 +323,11 @@ export function installWorkLoop(ctx, { home, cwd, isDisposed = () => false, onSh
       : `[${PLUGIN}] no subagent provider — work jobs run on the shared work session (context accumulates, and a job cannot be stopped)`,
   )
 
-  async function run(job) {
-    if (isDisposed()) return { ran: false, reason: 'disposed' }
-    if (!job || typeof job !== 'object' || typeof job.id !== 'string' || typeof job.kind !== 'string') {
-      warn(`[${PLUGIN}] ignoring a work job with no id or kind:`, job)
-      return { ran: false, reason: 'malformed' }
-    }
-    if (claudePath) return runOnClaude(job)
+  /** One job; resolves once it is under way (`{childId, done}`), throws when it cannot start. The executor calls it off its lane and folds the answer. */
+  async function run(job, reserve) {
+    if (isDisposed()) throw new Error('the work loop is shutting down')
+    if (!job || typeof job !== 'object' || typeof job.id !== 'string' || typeof job.kind !== 'string') throw new Error('a work job with no id or kind')
+    if (claudePath) return runOnClaude(job, reserve)
     if (worker === null || worker.status === 'disposed') {
       const { agent, resumed } = await ensureWorkAgent(ctx, { home, cwd })
       worker = agent
@@ -321,12 +340,15 @@ export function installWorkLoop(ctx, { home, cwd, isDisposed = () => false, onSh
     // parent exactly as it did before — a background job getting done matters
     // more than which agent does it.
     const corrections = correctionNotes(ctx.gnomonKernel?.getState?.())
+    // W1: a job is briefed like a turn (the clock and the owner's memory), without the reply rules.
+    const told = await Promise.resolve(ctx.gnomonKernel?.brief?.({ sessionId: WORK_SESSION_ID, cause: { kind: 'work' } })).catch(() => null)
     const subagents = ctx.get?.('subagents')
     if (subagents === undefined || typeof subagents.start !== 'function') {
+      if (told) worker.inject(createUserMessage({ content: [{ type: 'text', text: told.text }], source: { kind: 'plugin', plugin: PLUGIN, form: 'notice', summary: boundContextSummary(told.present) } }))
       worker.inject(jobContext(job))
       worker.followup(jobPrompt(job, corrections))
       log(`[${PLUGIN}] working on ${job.kind}: ${job.subject} (on the work session — no subagent provider)`)
-      return { ran: true }
+      return { childId: null }
     }
 
     // One child per job. The persistent `gnomon-work` agent stays and becomes
@@ -362,7 +384,7 @@ export function installWorkLoop(ctx, { home, cwd, isDisposed = () => false, onSh
         // The same two strings the parent used to receive as an injected
         // context block and a followup — unchanged, so the briefs in
         // KIND_BRIEFS keep working exactly as written.
-        prompt: [{ type: 'text', text: `${promptText(jobContext(job))}\n\n${promptText(jobPrompt(job, corrections))}` }],
+        prompt: [{ type: 'text', text: `${told ? `${told.text}\n\n` : ''}${promptText(jobContext(job))}\n\n${promptText(jobPrompt(job, corrections))}` }],
         parent: worker,
         signal: controller.signal,
       })
@@ -370,39 +392,31 @@ export function installWorkLoop(ctx, { home, cwd, isDisposed = () => false, onSh
       clearTimeout(expiry)
       inFlight.delete(job.id)
       warn(`[${PLUGIN}] could not start a child for ${job.kind}: ${error instanceof Error ? error.message : String(error)}`)
-      return { ran: false, reason: 'start-failed' }
+      throw error
     }
 
     inFlight.set(job.id, { controller, childId: started.id })
     log(`[${PLUGIN}] working on ${job.kind}: ${job.subject} (child ${started.id})`)
 
-    // Not awaited: the channel handler must return so the next notice is not
-    // blocked behind a twenty-minute job. The job reports through its own
-    // tools, so there is nothing here to collect — only cleanup.
-    void started.result
+    // Not awaited: the lane must not wait out a twenty-minute job. The job
+    // reports through its own tools, so there is nothing here to collect — only
+    // cleanup; the executor closes it if it ends without a report.
+    const done = started.result
       .then((result) => log(`[${PLUGIN}] child ${started.id} finished (${result.stopReason})`))
       .catch((error) => warn(`[${PLUGIN}] child ${started.id} failed: ${error instanceof Error ? error.message : String(error)}`))
-      .finally(async () => {
+      .finally(() => {
         clearTimeout(expiry)
         inFlight.delete(job.id)
         started.dispose?.()
-        // A child that ended without gnomon_shelve or gnomon_work_done (an
-        // empty step, an abort) leaves the record open until the rule's
-        // twenty-minute timeout, and every queued job waits behind it. Seen
-        // 2026-09-10: a flash model reasoned 586 tokens and returned nothing.
-        // Close it now; the rule ignores a close for a job no longer open.
-        if (ctx.gnomonKernel.getState?.()?.workbench?.open?.id === job.id) {
-          await ctx.gnomonKernel
-            .appendSignal('work:closed', { jobId: job.id, outcome: 'failed', note: 'the worker ended without reporting' })
-            .catch((error) => warn(`[${PLUGIN}] could not close an unreported job: ${error instanceof Error ? error.message : String(error)}`))
-        }
       })
-
-    return { ran: true }
+    return { childId: started.id, done }
   }
 
-  /** One job on Claude Code: audited once, closed exactly once, stoppable like a dsh child. */
-  async function runOnClaude(job) {
+  /** One job on Claude Code: one `hand` call reserved and audited, closed exactly once, stoppable like a dsh child. */
+  async function runOnClaude(job, reserve) {
+    // W3: a budgeted purpose like any model call; the reservation's id is the audit row's.
+    const callId = reserve ? await reserve('hand') : undefined
+    if (callId === null) throw new Error("today's hand budget is spent")
     const corrections = correctionNotes(ctx.gnomonKernel?.getState?.())
     const prompt = [handPreamble(job), promptText(jobContext(job)), promptText(jobPrompt(job, corrections, { hand: true }))].join('\n\n')
     const controller = new AbortController()
@@ -410,19 +424,17 @@ export function installWorkLoop(ctx, { home, cwd, isDisposed = () => false, onSh
     expiry.unref?.()
     inFlight.set(job.id, { controller, childId: null })
     // The one audit point: every model call is a row in llm_audit, this one too.
-    const queries = ctx.get?.('gnomonDb')?.queries
-    const auditId = `hand-${job.id}-${Date.now()}`
     const requestedAt = Date.now()
-    await queries?.recordLlmAudit({ id: auditId, momentId: null, purpose: 'hand', model: 'claude-code', prompt, requestedAt: new Date(requestedAt).toISOString() }).catch((error) => warn(`[${PLUGIN}] hand audit: ${error.message}`))
+    const audit = await Promise.resolve(ctx.gnomonKernel.openLlmAudit?.({ ...(callId ? { id: callId } : {}), momentId: null, purpose: 'hand', model: 'claude-code', route: 'claude-code', prompt, requestedAt: new Date(requestedAt).toISOString() })).catch((error) => warn(`[${PLUGIN}] hand audit: ${error.message}`))
     log(`[${PLUGIN}] working on ${job.kind}: ${job.subject} (Claude Code)`)
 
-    void runClaudeHand({ prompt, home, claudePath, maxBudgetUsd: hands.maxBudgetUsd ?? 1, signal: controller.signal, ...(spawnFn ? { spawnFn } : {}) }).then(async ({ ok, result, error, envelope }) => {
+    const done = runClaudeHand({ prompt, home, claudePath, maxBudgetUsd: hands.maxBudgetUsd ?? 1, signal: controller.signal, ...(spawnFn ? { spawnFn } : {}) }).then(async ({ ok, result, error, envelope }) => {
       clearTimeout(expiry)
       inFlight.delete(job.id)
       const usage = envelope?.usage ?? {}
       const promptTokens = (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
-      await queries
-        ?.updateLlmAudit(auditId, {
+      await audit
+        ?.settle({
           respondedAt: new Date().toISOString(),
           latencyMs: Date.now() - requestedAt,
           success: ok,
@@ -440,22 +452,22 @@ export function installWorkLoop(ctx, { home, cwd, isDisposed = () => false, onSh
           await ctx.gnomonKernel.appendSignal('work:shelved', payload)
           onShelved(payload.title)
         } else {
-          await ctx.gnomonKernel.appendSignal('work:closed', workDonePayload({ jobId: job.id, outcome: ok ? 'nothing' : 'failed', note: ok ? 'Claude found nothing worth keeping' : error }))
+          await ctx.gnomonKernel.appendSignal('work:closed', workDonePayload({ jobId: job.id, outcome: ok ? 'nothing' : 'failed', note: ok ? 'Claude found nothing worth keeping' : redactSecrets(String(error)) }))
         }
       } catch (e) {
         warn(`[${PLUGIN}] could not report a Claude job: ${e instanceof Error ? e.message : String(e)}`)
       }
       log(`[${PLUGIN}] Claude job ${job.id} ${payload ? 'shelved' : ok ? 'found nothing' : `failed: ${error}`}${envelope?.total_cost_usd != null ? ` ($${envelope.total_cost_usd.toFixed(3)})` : ''}`)
     })
-    return { ran: true }
+    return { childId: null, done }
   }
 
-  ctx.on('gnomon/notice', (notice) => {
-    if (notice?.channel !== WORK_JOB_CHANNEL) return
-    queue = queue.then(() => run(notice.payload)).catch((error) => {
-      warn(`[${PLUGIN}] work job failed to start: ${error instanceof Error ? error.message : String(error)}`)
-      return { ran: false, reason: 'error' }
-    })
+  const unregister = ctx.gnomonKernel.registerActor?.('subagent', {
+    start: ({ job }, lane = {}) => run(job, lane.reserve),
+    // The owner's Stop: abort the child; the executor folds the close, so the slot is free.
+    stop: async ({ jobId }) => {
+      inFlight.get(jobId)?.controller.abort(`job ${jobId} stopped by the owner`)
+    },
   })
 
   // A child's plan (`todo_write`) is the owner's window on a running job. Its
@@ -468,19 +480,6 @@ export function installWorkLoop(ctx, { home, cwd, isDisposed = () => false, onSh
     }
   })
 
-  // The owner's Stop. Aborts the child and closes the record so the slot is
-  // free — the rule would otherwise hold it until the twenty-minute timeout.
-  // The close is appended whether or not a child is in flight: after a restart
-  // the record can be open with no child anywhere, and the rule ignores a
-  // close that names a job it is not holding.
-  ctx.on('gnomon/work-stop', ({ jobId } = {}) => {
-    if (typeof jobId !== 'string' || jobId === '') return
-    inFlight.get(jobId)?.controller.abort(`job ${jobId} stopped by the owner`)
-    ctx.gnomonKernel
-      .appendSignal('work:closed', { jobId, outcome: 'failed', note: 'stopped by owner' })
-      .catch((error) => warn(`[${PLUGIN}] could not record the stop: ${error instanceof Error ? error.message : String(error)}`))
-  })
-
   return () => {
     // Abort every child before dropping the parent reference. Without this a
     // reload left orphaned children spending budget against a plugin that no
@@ -488,5 +487,6 @@ export function installWorkLoop(ctx, { home, cwd, isDisposed = () => false, onSh
     for (const [jobId, { controller }] of inFlight) controller.abort(`sundial-proactive disposed while job ${jobId} was running`)
     inFlight.clear()
     worker = null
+    unregister?.()
   }
 }

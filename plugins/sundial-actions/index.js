@@ -25,7 +25,7 @@ import { isIntegrationRead, loadSundialConfig, resolveActionPolicy } from '@sund
 import { getCalendarHelperPath } from '@sundial/helpers/sundial-paths.js'
 import { mountIntegrations } from './integrations.js'
 import { calendarCreateTool, reminderCreateTool } from './tools.js'
-import { callRecord, decideAction, escalate, GNOMON_TOOLS, judgedAction, openedByOwner, outwardCall, unverifiedNotice } from './gate.js'
+import { callFacts, callRecord, decideAction, decisionRecord, escalate, GNOMON_TOOLS, judgedAction, openedByOwner, outwardCall, unverifiedNotice } from './gate.js'
 import { internalTools } from './tools.js'
 import { runShellTool } from './run-shell.js'
 import { webTools } from './web-tools.js'
@@ -38,6 +38,9 @@ export const name = 'sundial-actions'
 // is dsh's preset service — since 0.1.5 the effective preset is only reachable
 // through it, so it has to be injected rather than imported as a function.
 export const inject = ['tools', 'gnomonKernel', 'approval', 'shell', 'permissionPresets']
+
+/** W5 step 10: the owner's auto mode, under the actions capability — Act runs alone only once actions have earned it and the owner said yes. */
+export const autonomyOf = (state) => (state?.settings?.autonomy === 'act' && state?.autonomy?.levels?.actions?.level !== 'act' ? 'earning' : state?.settings?.autonomy)
 
 export function apply(ctx, config = {}) {
   // Read once at apply; a config change is picked up on reload, the same
@@ -91,7 +94,7 @@ export function apply(ctx, config = {}) {
         resolveActionPolicy,
         integrations,
         isIntegrationRead,
-        autonomy: ctx.gnomonKernel?.getState()?.settings?.autonomy,
+        autonomy: autonomyOf(ctx.gnomonKernel?.getState()),
       })
       return shell ? { ...decision, argDependent: true } : decision
     },
@@ -147,30 +150,32 @@ export function apply(ctx, config = {}) {
       const preset = session ? ctx.permissionPresets?.current(session) : undefined
       const approvalOverride = session ? ctx.approval?.overrideOf(session) : undefined
 
-      const decision = decideAction({
-        toolName: exec.name,
-        args: exec.args ?? exec.arguments,
+      // W3: the gate's inputs, the arguments reduced to the facts a verdict reads.
+      const inputs = {
         preset,
         approvalOverride,
-        actions,
-        resolveActionPolicy,
-        integrations,
-        isIntegrationRead,
+        // config.actions from the config in the log, so a tightening applies at once.
+        actions: ctx.gnomonKernel?.getState()?.config?.actions ?? actions,
         // The owner's own dial, under every verdict: below "act", anything that
-        // reaches past this record stops for their nod.
-        autonomy: ctx.gnomonKernel?.getState()?.settings?.autonomy,
+        // reaches past this record stops for their nod; at "act", what Gnomon starts unasked
+        // waits until actions have earned it (W5); the owner's own turn or preset is their yes.
+        autonomy: autonomyOf(ctx.gnomonKernel?.getState()),
         // S10: a notice-opened turn may not speak for the owner.
         ownerTurn: typeof session?.snapshotEvents === 'function' ? openedByOwner(session.snapshotEvents()) : undefined,
-      })
+        facts: callFacts({ toolName: exec.name, args: exec.args ?? exec.arguments, integrations, isIntegrationRead }),
+      }
+      const decision = decideAction({ toolName: exec.name, resolveActionPolicy, ...inputs })
 
-      // Log gnomon's own tools and bash always (verification signal), plus any
-      // non-allow verdict, so a surprised owner can see why a call did or did
-      // not run. Quiet on the flood of allowed dsh reads.
-      if (decision.kind !== 'allow' || exec.name === 'bash' || exec.name.startsWith('gnomon_')) {
+      // Gnomon's own tools, bash and an outward service call always, plus any
+      // non-allow verdict, on the record with the inputs that decided it (W3),
+      // so a surprised owner can see why a call did or did not run and the
+      // verdict can be refolded. Quiet on the flood of allowed dsh reads.
+      if (decision.kind !== 'allow' || exec.name === 'bash' || exec.name.startsWith('gnomon_') || inputs.facts.integration === 'write') {
         console.log(
           `[sundial-actions] ${decision.kind} ${exec.name} [preset=${preset ?? 'none'}]` +
             (decision.reason ? `: ${decision.reason}` : ''),
         )
+        void appendSignal('action:decided', decisionRecord(exec, inputs, decision))
       }
 
       // J4.1: the second key. A call the code would allow goes to the judge;
@@ -189,8 +194,8 @@ export function apply(ctx, config = {}) {
         }
       }
 
+      // A refusal is on the record as its `action:decided`; the call's own row comes only when it runs.
       if (decision.kind === 'allow') return next()
-      recordCall(exec, 'refused', decision.reason ?? null)
       return decision
     }),
   )

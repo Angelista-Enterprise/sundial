@@ -3,6 +3,7 @@ import type { Effect, JudgementResultPayload, KernelState, Rule } from '@sundial
 import { openGoals } from './goal-checkin.js';
 import { questionId } from './questions/index.js';
 import { GOAL_SLOT_QUESTIONS, LISTEN_REPLY_QUESTIONS, MAX_GOALS, goalSlot, listenReply } from './questions/listen-reply.js';
+import { openAsk } from '@sundial/helpers/loops.js';
 
 /**
  * J1.5 — Gnomon listens to what the owner answered.
@@ -54,7 +55,7 @@ function replyMetadata(meta: unknown): ReplyMetadata | null {
 
 export const listenToReply: Rule = (state, event) => {
   if (event.type !== 'ask:owner-answered') return { state, effects: [] };
-  const open = state.ownerAsk.open;
+  const open = openAsk(state);
   if (!open) return { state, effects: [] };
   const askId = trim(event.payload.askId);
   if (askId !== '' && askId !== open.askId) return { state, effects: [] };

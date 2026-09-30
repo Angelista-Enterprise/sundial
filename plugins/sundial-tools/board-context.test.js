@@ -17,6 +17,10 @@ const board = {
 describe('the board in the chat context (Q12)', () => {
   it('says what each card is, the span and the remarks, and not where cards sit or how they moved', () => {
     const text = boardContextText({ board, settings: { autonomy: 'act' } });
+    // The staging setting is named for the board, so it cannot be read as `state.autonomy`.
+    expect(text.split('\n')[0]).toBe('Board staging: "act".');
+    expect(text).not.toContain('Autonomy is');
+    expect(boardContextText({ board, settings: { autonomy: 'ask' } })).toMatch(/^Board staging: "ask" — gnomon_board and gnomon_lens place will refuse/);
     expect(text).toContain('The board is looking at 2026-09-22 to 2026-09-28 (7d)');
     expect(text).toContain("[the owner's remark: the dates run off the edge]");
     expect(text).toContain(`gnomon_look with id "${BOARD_LOOK_ID}"`);

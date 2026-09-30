@@ -13,7 +13,11 @@ const at = (min: number) => new Date(Date.parse(T0) + min * 60_000).toISOString(
 const ev = (type: string, payload: Record<string, unknown>, ts: string, id = `${type}-${ts}`): SanitizedEvent => ({ id, type, ts, payload, sanitized: true });
 const RULES = [callSpanTrack, scheduleTrack, focusModeTrack, noticeRoute, noticeGate];
 
-function fold(events: SanitizedEvent[], state: KernelState = createInitialState('d1')) {
+
+/** W5 step 10: the kinds under test have earned interrupting alone (the phasic path is what these tests exercise). */
+const actAlone = (s: KernelState, kinds: string[]): KernelState => ({ ...s, autonomy: { ...s.autonomy, levels: { ...s.autonomy.levels, ...Object.fromEntries(kinds.map((k) => [`notice:${k}`, { level: 'act' as const, earned: true, since: '2026-01-01T00:00:00.000Z' }])) } } });
+
+function fold(events: SanitizedEvent[], state: KernelState = actAlone(createInitialState('d1'), ['agent-permission', 'owner-question', 'absent:break'])) {
   const effects: Effect[] = [];
   for (const e of events)
     for (const rule of RULES) {

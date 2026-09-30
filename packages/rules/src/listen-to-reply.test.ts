@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createInitialState } from '@sundial/kernel/initial-state.js';
-import type { Effect, KernelState, SanitizedEvent } from '@sundial/kernel/types.js';
+import { askLoop } from '@sundial/helpers/loops.js';
+import type { Effect, KernelState, OpenLoop, SanitizedEvent } from '@sundial/kernel/types.js';
 import { applyOwnerReply, listenToReply } from './listen-to-reply.js';
 
 const TS = '2026-09-21T12:05:00.000Z';
@@ -10,7 +11,7 @@ function withOpenAsk(askId: string, question: string, over: Partial<KernelState>
   const state = createInitialState('d1');
   return {
     ...state,
-    ownerAsk: { ...state.ownerAsk, open: { askId, question, reason: 'ended 14:00 with Alex', choices: [], ts: ASKED_AT } },
+    loops: { ...state.loops, open: [askLoop({ askId, question, reason: 'ended 14:00 with Alex', choices: [], ts: ASKED_AT }) as OpenLoop] },
     meetings: { seen: { 'Puzzlez - Planning|2026-09-21T11:00:00.000Z': { title: 'Puzzlez - Planning', start: '2026-09-21T11:00:00.000Z', end: '2026-09-21T12:00:00.000Z', attendees: ['Alex'], askedAt: ASKED_AT } } },
     ...over,
   };

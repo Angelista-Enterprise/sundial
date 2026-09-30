@@ -4,6 +4,7 @@ import type { Effect, KernelState, Rule } from '@sundial/kernel/types.js';
 import { looksLikePersonName } from '@sundial/helpers/person-name.js';
 import { slugifyEntityName } from './entity-extract.js';
 import { REDACTION_ALIAS } from './entity-name-validation.js';
+import { openAsk } from '@sundial/helpers/loops.js';
 
 /**
  * Asking who the hashed people are.
@@ -158,7 +159,7 @@ export const peopleAsk: Rule = (state, event) => {
   }
 
   if (event.type !== 'clock:tick') return { state, effects: [] };
-  if (state.ownerAsk.open !== null) return { state, effects: [] };
+  if (openAsk(state) !== null) return { state, effects: [] };
   const now = Date.parse(event.ts);
   // The class's own two gates, checked before any alias is considered.
   if (people.mutedUntil !== undefined && now < Date.parse(people.mutedUntil)) return { state, effects: [] };

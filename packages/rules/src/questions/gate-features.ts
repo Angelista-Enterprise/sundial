@@ -10,7 +10,7 @@
  * one line of standing context. No gate arithmetic in the state: the first
  * lab run handed Jev the numbers and it judged numbers (law 2).
  */
-import { choice, clip, noul, score, type QuestionSet } from './index.js';
+import { choice, clip, noul, score, type QuestionSet, keyed } from './index.js';
 
 export interface GateFeaturesInput {
   title: string;
@@ -20,13 +20,13 @@ export interface GateFeaturesInput {
 
 export const GATE_CONTEXT = 'The owner is a software developer at work. The assistant may show a notice quietly on its board, push it as an alert, or say nothing.';
 
-export const GATE_FEATURES_QUESTIONS = {
+export const GATE_FEATURES_QUESTIONS = keyed('gate-features', {
   speak_now: noul('Should an assistant interrupt the owner right now to say this?', { true: 'Saying it now is worth the interruption.', false: 'It can wait, or should never be said.' }),
   value: score('How would the owner receive hearing this?', ['Annoying: noise they did not need.', 'Neutral: fine, but forgettable.', 'Useful: glad to know.', 'Important: they would want it even mid-task.']),
   channel: choice('How should `notice` be delivered?', { silent: 'Do not deliver it at all.', ambient: 'Show it somewhere it can be noticed later; do not alert.', alert: 'Push it to the owner now.' }),
   stale_soon: noul('Will `notice` be useless if the owner only sees it an hour from now?'),
   actionable: noul('Does `notice` tell the owner something they can act on, rather than merely describe?'),
-};
+});
 
 export const gateFeatures: QuestionSet<[GateFeaturesInput]> = {
   id: 'gate-features',

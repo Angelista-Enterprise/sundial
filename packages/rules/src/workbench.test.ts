@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createInitialState } from '@sundial/kernel/initial-state.js';
 import type { Effect, KernelState, SanitizedEvent } from '@sundial/kernel/types.js';
-import { briefPoints, workbench, pickJob, MAX_JOBS_PER_DAY, MAX_QUEUED_JOBS, JOB_TIMEOUT_MS, REPEAT_GRACE_MS, WORK_JOB_CHANNEL } from './workbench.js';
+import { briefPoints, workbench, pickJob, MAX_JOBS_PER_DAY, MAX_QUEUED_JOBS, JOB_TIMEOUT_MS, REPEAT_GRACE_MS } from './workbench.js';
 
 const NOW = '2026-09-04T22:30:00.000Z';
 const plus = (ms: number) => new Date(Date.parse(NOW) + ms).toISOString();
@@ -91,7 +91,7 @@ describe('workbench', () => {
     const { state: opened, effects } = workbench(withThread(away()), ev('clock:tick'));
     expect(opened.workbench.open?.kind).toBe('handoff-note');
     expect(opened.workbench.countToday).toBe(1);
-    expect(effects).toEqual([{ type: 'Notify', channel: WORK_JOB_CHANNEL, payload: expect.objectContaining({ kind: 'handoff-note', subject: 'BOX-484' }) }]);
+    expect(effects).toEqual([{ type: 'StartSubagent', job: expect.objectContaining({ kind: 'handoff-note', subject: 'BOX-484' }) }]);
 
     // A second tick does not open a second job.
     expect(workbench(opened, ev('clock:tick', {}, plus(60_000))).effects).toEqual([]);
@@ -165,7 +165,7 @@ describe('owner-requested jobs', () => {
     const { state: opened, effects } = workbench(state, ev('work:requested', { subject: 'Zed vs Cursor', brief: 'Which is better for TS monorepos?' }));
     expect(opened.workbench.open).toMatchObject({ kind: 'owner-request', subject: 'Zed vs Cursor', detail: { brief: 'Which is better for TS monorepos?' } });
     expect(opened.workbench.countToday).toBe(MAX_JOBS_PER_DAY);
-    expect(effects).toEqual([{ type: 'Notify', channel: WORK_JOB_CHANNEL, payload: expect.objectContaining({ kind: 'owner-request' }) }]);
+    expect(effects).toEqual([{ type: 'StartSubagent', job: expect.objectContaining({ kind: 'owner-request' }) }]);
   });
 
   it('a watch rule\'s job spends the day\'s job budget, and past it is dropped (U4-F19)', () => {
@@ -192,7 +192,7 @@ describe('owner-requested jobs', () => {
     expect(next.workbench.open?.subject).toBe('A');
     expect(next.workbench.open?.openedAt).toBe(plus(5000));
     expect(next.workbench.queue).toEqual([]);
-    expect(closeEffects).toEqual([{ type: 'Notify', channel: WORK_JOB_CHANNEL, payload: expect.objectContaining({ subject: 'A' }) }]);
+    expect(closeEffects).toEqual([{ type: 'StartSubagent', job: expect.objectContaining({ subject: 'A' }) }]);
   });
 
   it('a shelved job tells the owner through the gate: a candidate, phasic-weighted when they asked for it', () => {
@@ -247,7 +247,7 @@ describe('repeating jobs', () => {
 
     const due = workbench(state, ev('clock:tick', {}, at(MONDAY_9, 60_000)));
     expect(due.state.workbench.open).toMatchObject({ kind: 'owner-request', subject: 'Standup', reason: 'you asked for this every monday at 9am', detail: { brief: 'What I did last week, per project.' } });
-    expect(due.effects).toEqual([{ type: 'Notify', channel: WORK_JOB_CHANNEL, payload: expect.objectContaining({ subject: 'Standup' }) }]);
+    expect(due.effects).toEqual([{ type: 'StartSubagent', job: expect.objectContaining({ subject: 'Standup' }) }]);
     expect(due.state.workbench.repeats!.standup!.lastRunAt).toBe(MONDAY_9);
 
     // The next tick, or a replay of it, does not queue Monday again.

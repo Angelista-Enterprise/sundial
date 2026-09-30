@@ -2572,7 +2572,9 @@ button.link:hover { text-decoration: underline; }
 .thread-bar .act { height: 26px; padding: 0 10px; font-size: 12px; }
 /* Where a side thread joined the conversation. */
 .brought { display: flex; align-items: baseline; gap: 10px; margin: 6px 0; padding-top: 8px; border-top: 1px solid var(--border); font-size: 13px; color: var(--ink-subtle); }
-.brought-label { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); }
+.brought-label, .followup-label { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); }
+/* A follow-up line is a later Gnomon line: the label sits on its own row, clear of the reply above. */
+.followup-label { display: block; margin: 14px 0 2px; }
 /* The seat's old grid names would open a second column here; in the card they are plain rows. */
 .ghost > .canvas, .ghost > .ask, .ghost > .bar { grid-area: auto; grid-column: 1; }
 .ghost > .thread-bar { grid-row: 1; }
@@ -3106,6 +3108,7 @@ html, body { overflow: clip; }
 .set-name { display: grid; gap: 1px; min-width: 0; }
 .set-label { font-size: 15px; color: var(--ink); }
 .set-hint { font-size: 12px; color: var(--ink-faint); line-height: 1.35; }
+.set-warn { color: var(--ochre-text); }
 .set-opts { display: flex; gap: 2px; flex: none; }
 .set-opt {
   border: 1px solid transparent;
@@ -3123,6 +3126,8 @@ html, body { overflow: clip; }
 .set-opt:hover { color: var(--ink); background: var(--wash); }
 .set-opt[aria-checked='true'] { color: var(--ink); border-color: var(--border-strong); background: var(--wash-strong); }
 .set-opt:focus-visible { outline: 1px solid var(--ink); outline-offset: 1px; }
+/* A level not earned yet (W5 step 10): present, so the owner sees it exists, and not pressable. */
+.set-opt:disabled, .set-opt:disabled:hover { cursor: not-allowed; opacity: 0.5; color: var(--ink-faint); background: transparent; }
 /* A macOS grant: a dot and a word, on the setup page and in Settings. */
 .grant-state { font-size: 13px; white-space: nowrap; display: inline-flex; align-items: center; gap: 7px; color: var(--ink-muted); }
 .grant-state::before { content: ''; width: 7px; height: 7px; border-radius: 999px; background: var(--border-strong); }

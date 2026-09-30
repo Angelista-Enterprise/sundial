@@ -6,7 +6,6 @@ export * from './queries/snapshots.js';
 export * from './queries/projects.js';
 export * from './queries/llm-audit.js';
 export * from './queries/knowledge-entries.js';
-export * from './queries/ask-threads.js';
 export * from './queries/owner-asks.js';
 export * from './queries/retention.js';
 export * from './queries/entities.js';

@@ -20,6 +20,7 @@ import {
 } from '@deepseek-ai/dsh-llm'
 import { DEFAULT_PROVIDER, LEGACY_PROVIDER, providerKeyEnv, providerLabel } from '@sundial/helpers/llm-providers.js'
 import { loadSundialConfig } from '@sundial/helpers/sundial-config.js'
+import { readSundialEnvFile } from '@sundial/helpers/sundial-env.js'
 
 export const name = 'sundial-llm-openai'
 export const inject = ['llm']
@@ -70,31 +71,10 @@ export function reasoningField(effort) {
 }
 
 // ---------------------------------------------------------------------------
-// Env file (tiny hand-rolled parser; values are NEVER logged anywhere).
-// Mirrors packages/llm/src/config.ts + sundial-env.ts: ~/.sundial/.env is the
-// one env file, and existing process.env values win over file values.
+// Env file (read by helpers' `readSundialEnvFile`, the one parser; values are
+// NEVER logged anywhere). ~/.sundial/.env is the one env file, and existing
+// process.env values win over file values.
 // ---------------------------------------------------------------------------
-
-/** Parse KEY=VALUE lines; ignores comments/blank lines; strips one quote pair. */
-export function parseEnvFile(text) {
-  const out = {}
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.trim()
-    if (line.length === 0 || line.startsWith('#')) continue
-    const eq = line.indexOf('=')
-    if (eq <= 0) continue
-    const key = line.slice(0, eq).trim().replace(/^export\s+/, '')
-    let value = line.slice(eq + 1).trim()
-    if (
-      (value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
-      (value.startsWith("'") && value.endsWith("'") && value.length >= 2)
-    ) {
-      value = value.slice(1, -1)
-    }
-    if (key.length > 0) out[key] = value
-  }
-  return out
-}
 
 /** Read one env var: process.env wins over the parsed env file. */
 function envValue(fileEnv, key) {
@@ -631,12 +611,8 @@ export class OpenAICompatAdapter extends LlmAdapter {
 
 export function apply(ctx, config = {}) {
   const envFile = config.envFile ?? DEFAULT_ENV_FILE
-  let fileEnv = {}
-  try {
-    fileEnv = parseEnvFile(fs.readFileSync(envFile, 'utf8'))
-  } catch {
-    // Missing env file is valid — shell exports may carry everything.
-  }
+  // A missing env file is valid — shell exports may carry everything.
+  const fileEnv = readSundialEnvFile(envFile)
   // Lazy and optional: `attachments` is provided by `attachment-local`, and
   // resolving it at call time means this plugin still loads on a profile
   // without it (cordis would otherwise make it a service to WAIT for).

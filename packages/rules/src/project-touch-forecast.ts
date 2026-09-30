@@ -1,4 +1,5 @@
 import { deriveId } from '@sundial/helpers/derive-id.js';
+import { param } from '@sundial/kernel/calibrated.js';
 import { localDate as localDay, localHour } from '@sundial/helpers/local-day.js';
 import type { Effect, KernelState, ProjectTouchedPrediction, ResolvedPrediction, Rule } from '@sundial/kernel/types.js';
 import { bumpCalibration, clampProb, hasSkill, pastRate } from './forward-model.js';
@@ -85,20 +86,20 @@ type Slice = KernelState['predictions']['projectTouch'];
  * a cold forecaster: 0/1 became the base rate and the next bet went out at the
  * 2% floor.
  */
-function pooledRate(byProject: Slice['byProject']): number {
+function pooledRate(byProject: Slice['byProject'], seed: number): number {
   let n = 0;
   let hits = 0;
   for (const cell of Object.values(byProject)) {
     n += cell.n;
     hits += cell.hits;
   }
-  return (hits + UNINFORMED_TOUCH_RATE * CELL_SMOOTHING) / (n + CELL_SMOOTHING);
+  return (hits + seed * CELL_SMOOTHING) / (n + CELL_SMOOTHING);
 }
 
 /** P(this project is touched today), from its own cell, smoothed toward the pooled rate so a new project degrades to the uninformed bet. */
-export function projectTouchPrior(slice: Slice, project: string): number {
+export function projectTouchPrior(slice: Slice, project: string, seed = UNINFORMED_TOUCH_RATE): number {
   const cell = slice.byProject[project] ?? { n: 0, hits: 0 };
-  const base = pooledRate(slice.byProject);
+  const base = pooledRate(slice.byProject, seed);
   return clampProb((cell.hits + base * CELL_SMOOTHING) / (cell.n + CELL_SMOOTHING));
 }
 
@@ -296,7 +297,8 @@ export const projectTouchForecast: Rule = (state, event) => {
     kind: 'project-touched',
     day,
     project,
-    priorProb: projectTouchPrior(pruned, project),
+    // W5 loop D: the seed moves with the outcomes (`forecast.base:project-touched`, prior 0.42).
+    priorProb: projectTouchPrior(pruned, project, param(closed, 'forecast.base:project-touched').value),
   }));
 
   return {

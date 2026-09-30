@@ -32,12 +32,11 @@ export async function piiScan(text, script = PII_SCAN) {
     await rm(dir, { recursive: true, force: true })
   }
 }
-import { executeGnomonTool } from '@sundial/kernel/tools/index.js'
+import { executeGnomonTool, toolEnv } from '@sundial/kernel/tools/index.js'
 
-/** The backtest an adoption is made on: 30 days, the same report the owner was shown. */
-const backtest30 = (rule) => executeGnomonTool('gnomon_test_rule', { rule, days: 30 })
-
-export function watchTools(appendSignal, getState, test = backtest30, scan = piiScan) {
+export function watchTools(appendSignal, getState, test = null, scan = piiScan) {
+  /** The backtest an adoption is made on: 30 days, the same report the owner was shown. */
+  test ??= (rule) => executeGnomonTool('gnomon_test_rule', { rule, days: 30 }, toolEnv(getState))
   return [
     defineTool({
       name: 'gnomon_adopt_rule',

@@ -4,7 +4,7 @@ import type { AgentFleetEntry, KernelState, SanitizedEvent } from '@sundial/kern
 import { DEFAULT_SUNDIAL_CONFIG } from '@sundial/helpers/sundial-config.js';
 import { RULE_MANIFEST } from './manifest.js';
 import { reduce } from '@sundial/kernel/reduce.js';
-import { nightShift, jobFolderTail, MAX_QUEUED_NIGHT_JOBS, NIGHT_SHIFT_CHANNEL, RUNNER_REPLY_MS } from './night-shift.js';
+import { nightShift, jobFolderTail, MAX_QUEUED_NIGHT_JOBS, RUNNER_REPLY_MS } from './night-shift.js';
 
 const NOW = '2026-09-29T22:30:00.000Z';
 const plus = (ms: number) => new Date(Date.parse(NOW) + ms).toISOString();
@@ -32,7 +32,8 @@ function fold(state: KernelState, events: SanitizedEvent[]) {
   }
   return { state, effects };
 }
-const notifies = (effects: { type: string }[]) => effects.filter((e) => e.type === 'Notify') as { type: 'Notify'; channel: string; payload: Record<string, unknown> }[];
+/** W3: the runner is asked through StartJob / StopJob, not a Notify channel. */
+const notifies = (effects: { type: string }[]) => effects.filter((e) => e.type === 'StartJob' || e.type === 'StopJob') as unknown as Record<string, unknown>[];
 
 function running(): { state: KernelState; id: string } {
   const { state } = fold(base(), [request(), ev('clock:tick')]);
@@ -43,6 +44,13 @@ function running(): { state: KernelState; id: string } {
 const withFleet = (state: KernelState, entry: Partial<AgentFleetEntry>): KernelState => ({ ...state, agent: { ...state.agent, fleet: [{ id: 's1', cwd: state.nightShift!.open!.worktree!, branch: 'night/abc', state: 'working', since: NOW, ...entry } as AgentFleetEntry] } });
 
 describe('nightShift (#12): the switch', () => {
+  it('W5 step 10: the owner turning the night-jobs capability off holds the queue; ask runs it as today', () => {
+    const off = base();
+    off.autonomy.lowered['night-jobs'] = 'off';
+    expect(notifies(fold(off, [request(), ev('clock:tick')]).effects)).toEqual([]);
+    expect(notifies(fold(base(), [request(), ev('clock:tick')]).effects)).toHaveLength(1);
+  });
+
   it('nothing can start a job while jobs.enabled is off: no queue, no Notify, whatever arrives', () => {
     for (const jobs of ['unset', { ...ON, enabled: false }] as const) {
       const state = base(jobs);
@@ -54,16 +62,16 @@ describe('nightShift (#12): the switch', () => {
     }
   });
 
-  it('the whole manifest, off by default, never emits a night-shift Notify (and on, it does)', () => {
+  it('the whole manifest, off by default, never asks the runner for anything (and on, it does)', () => {
     const run = (jobs: KernelState['config']['jobs'] | 'unset') => {
       let s = base(jobs);
-      const all: { type: string; channel?: string }[] = [];
+      const all: { type: string }[] = [];
       for (const e of [request(), ev('clock:tick'), ev('clock:tick', {}, plus(60_000))]) {
         const r = reduce(s, e, RULE_MANIFEST);
         s = r.state;
-        all.push(...r.effects.map((a) => a.effect as { type: string; channel?: string }));
+        all.push(...r.effects.map((a) => a.effect));
       }
-      return { s, night: all.filter((e) => e.channel === NIGHT_SHIFT_CHANNEL) };
+      return { s, night: notifies(all) };
     };
     const off = run('unset');
     expect(off.night).toEqual([]);
@@ -75,7 +83,7 @@ describe('nightShift (#12): the switch', () => {
     const { state, id } = running();
     const off = { ...state, config: { ...state.config, jobs: { ...ON, enabled: false } } };
     const { effects } = fold(off, [ev('clock:tick', {}, plus(60_000))]);
-    expect(notifies(effects)).toEqual([{ type: 'Notify', channel: NIGHT_SHIFT_CHANNEL, payload: { action: 'stop', jobId: id, reason: 'switched-off' } }]);
+    expect(notifies(effects)).toEqual([{ type: 'StopJob', jobId: id, outcome: 'stopped', reason: 'switched-off' }]);
   });
 
   it('switched off and the runner never answers the stop, the slot still frees', () => {
@@ -100,7 +108,7 @@ describe('nightShift (#12): the lifecycle', () => {
     expect(notifies(fold(present, [request(), ev('clock:tick')]).effects)).toEqual([]);
     const { state, effects } = fold(base(), [request(), ev('clock:tick')]);
     const [start] = notifies(effects);
-    expect(start.payload).toMatchObject({ action: 'start', job: { repo: ROOT, subject: 'Fix the retry test' }, maxMinutes: ON.maxMinutes });
+    expect(start).toMatchObject({ type: 'StartJob', job: { repo: ROOT, subject: 'Fix the retry test' }, maxMinutes: ON.maxMinutes });
     expect(state.nightShift!.open!.status).toBe('starting');
   });
 
@@ -113,7 +121,7 @@ describe('nightShift (#12): the lifecycle', () => {
     spent = fold(spent, [ev('job:finished', { jobId: spent.nightShift!.open!.id, outcome: 'done', costUsd: 1.2 }, plus(60_000))]).state;
     expect(notifies(fold(spent, [ev('clock:tick', {}, plus(120_000))]).effects)).toEqual([]);
     // The next night counts afresh.
-    expect(notifies(fold(spent, [ev('clock:tick', {}, plus(24 * 3_600_000))]).effects)[0]?.payload.action).toBe('start');
+    expect(notifies(fold(spent, [ev('clock:tick', {}, plus(24 * 3_600_000))]).effects)[0]?.type).toBe('StartJob');
   });
 
   it('waits on a permission without approving it, then collects when the turn is over', () => {
@@ -126,15 +134,15 @@ describe('nightShift (#12): the lifecycle', () => {
     expect(notifies(early.effects)).toEqual([]);
     const worked = fold(withFleet(state, { state: 'working' }), [ev('agent:fleet')]).state;
     const done = fold(withFleet(worked, { state: 'waiting' }), [ev('agent:fleet')]);
-    expect(notifies(done.effects)).toEqual([{ type: 'Notify', channel: NIGHT_SHIFT_CHANNEL, payload: { action: 'finish', jobId: id, failed: false } }]);
+    expect(notifies(done.effects)).toEqual([{ type: 'StopJob', jobId: id, outcome: 'done' }]);
   });
 
   it('stops a job over its dollar cap or its time cap', () => {
     const { state, id } = running();
     const costly = fold(withFleet(state, { state: 'working', costUsd: ON.maxUsdPerJob + 0.01 }), [ev('agent:fleet')]);
-    expect(notifies(costly.effects)[0].payload).toEqual({ action: 'stop', jobId: id, reason: 'budget' });
+    expect(notifies(costly.effects)[0]).toEqual({ type: 'StopJob', jobId: id, outcome: 'stopped', reason: 'budget' });
     const late = fold(state, [ev('clock:tick', {}, plus(ON.maxMinutes * 60_000 + 60_000))]);
-    expect(notifies(late.effects)[0].payload).toEqual({ action: 'stop', jobId: id, reason: 'time' });
+    expect(notifies(late.effects)[0]).toEqual({ type: 'StopJob', jobId: id, outcome: 'stopped', reason: 'time' });
     // Asked once: a second tick does not ask again.
     expect(notifies(fold(late.state, [ev('clock:tick', {}, plus(ON.maxMinutes * 60_000 + 120_000))]).effects)).toEqual([]);
   });
@@ -157,6 +165,6 @@ describe('nightShift (#12): the lifecycle', () => {
     const qid = q.nightShift!.queue[0].id;
     expect(fold(q, [ev('job:stop-requested', { jobId: qid })]).state.nightShift!.queue).toEqual([]);
     const { state, id } = running();
-    expect(notifies(fold(state, [ev('job:stop-requested', { jobId: id })]).effects)[0].payload).toEqual({ action: 'stop', jobId: id, reason: 'owner' });
+    expect(notifies(fold(state, [ev('job:stop-requested', { jobId: id })]).effects)[0]).toEqual({ type: 'StopJob', jobId: id, outcome: 'stopped', reason: 'owner' });
   });
 });

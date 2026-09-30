@@ -1,27 +1,28 @@
 import { z } from 'zod';
-import { getBoardTraffic, getSignalsInRange, getLeftOff, getMomentById, getMomentCost, getMomentsForProject, getMultiDayCommitments, getOpenCommitments, getPromises, getRecentSignals, loadAliasNames } from '@sundial/db/index.js';
+import { formatParam, param } from '../calibrated.js';
+import { getBoardTraffic, getSignalsInRange, getMomentById, getMomentCost, getMomentsForProject, getMultiDayCommitments, getOpenCommitments, getPromises, getRecentSignals, loadAliasNames } from '@sundial/db/index.js';
 import { promiseReliability } from '../promise-reliability.js';
 import { localDate, localDayRange, localHour } from '@sundial/helpers/local-day.js';
 import { getLlmLedgerRows, type LlmLedgerGroupBy } from '@sundial/db/index.js';
 import { loadSundialConfig } from '@sundial/helpers/sundial-config.js';
 import { buildDailyContext } from '../daily-context.js';
 import { DEFAULT_PAGE_ROWS, OWNER_EVIDENCE_TYPES, pageWithinBudget, RESULT_BUDGET_CHARS, slimSignalData } from './evidence-tools.js';
-import { loadLatestSnapshot } from '../snapshot.js';
 import { sharedCheckouts } from '../agent-fleet.js';
 import { backtestTypes, describeRule, resolvePeople, validateWatchRule, WATCH_FLAG_TYPES, WATCH_GRAMMAR } from '../watch.js';
 import { MINE_TYPES, mineRules } from '../watch-mine.js';
 import { summarizeBacktest } from '../watch-backtest.js';
-import { buildSituation } from '../situation.js';
+import { readSituation } from '../read/situation.js';
 import { routineForecast, routineLabel, topRoutines } from '../routines.js';
 import type { GnomonTool } from './registry.js';
+import { openAsk } from '@sundial/helpers/loops.js';
 
 /** The owner's day, not UTC's. Read per call rather than cached so an edited config.json takes effect without a restart. */
 function ownerTimeZone(): string {
   return loadSundialConfig().timezone;
 }
 
-function today(): string {
-  return localDate(new Date().toISOString(), ownerTimeZone());
+function today(now: Date): string {
+  return localDate(now.toISOString(), ownerTimeZone());
 }
 
 /**
@@ -165,15 +166,15 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
       "Get the current activity context per the daemon's latest known state — and `situation`, the one summary the owner's screen also shows: what is next on the calendar, what is open on the project they are in (commitments, unpushed commits, hot files), and where they left off on each recent project. Answer \"where am I / what is open / where did I leave X\" from `situation` first. Also: the active window and open moment, plus `resolvedProject` — the focused window's own project attribution, which is null when the window carries no reliable project locator (a browser tab, a chat app). Treat that null as the answer; `ambientProjectPointer` is a labelled low-confidence fallback, not a peer of it. May lag live reality by up to the daemon's snapshot interval (60s).",
     schema: {},
     readOnly: true,
-    handler: async () => {
-      const snapshot = await loadLatestSnapshot();
-      if (!snapshot) return { note: 'No snapshot yet — the daemon may not have run since Phase 2.' };
-      const { window, moment, project, focusMode } = snapshot.state;
+    handler: async (_args, env) => {
+      const state = await env.state();
+      if (!state) return { note: 'No snapshot yet — the daemon may not have run since Phase 2.' };
+      const { window, moment, project, focusMode } = state;
       // The live slices the fold keeps beside the window (2026-09-05): what is
       // in the browser, whether a call is on, a command that keeps failing,
       // commits nobody has seen, the files worked in most today. Same facts the
       // presence line gives the chat model, here for an MCP client (Claude Code).
-      const s = snapshot.state;
+      const s = state;
       const hot = Object.values(s.files?.hot ?? {})
         .sort((a, b) => b.changes - a.changes)
         .slice(0, 3)
@@ -195,7 +196,7 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
         agents: s.agent?.fleet ?? [],
         // Folders two sessions work in at once: a build or commit in one ships
         // the other's unsaved edits. If yours is here, you have a sibling.
-        sharedCheckouts: sharedCheckouts(s.agent?.fleet ?? [], new Date().toISOString()),
+        sharedCheckouts: sharedCheckouts(s.agent?.fleet ?? [], env.now.toISOString()),
         // lane D — #6: where an interruption would go now: mac, phone, or hold (a call, a focus mode).
         route: s.route ?? null,
       };
@@ -217,11 +218,11 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
         live,
         // The question Gnomon is waiting on, with its id — so a model that
         // lost the wake-up turn can still record the answer against it.
-        ownerAsk: s.ownerAsk?.open ? { askId: s.ownerAsk.open.askId, question: s.ownerAsk.open.question, choices: s.ownerAsk.open.choices, askedAt: s.ownerAsk.open.ts } : null,
+        ownerAsk: openAsk(s) ? { askId: openAsk(s)!.askId, question: openAsk(s)!.question, choices: openAsk(s)!.choices, askedAt: openAsk(s)!.ts } : null,
         // S1 — the one situation the screen draws too: what is next, what is
         // open on this project, where the owner left off on each. Read this
         // first for "where am I", "what is open", "where did I leave X".
-        situation: buildSituation(s, { leftOff: await getLeftOff(new Date(Date.now() - 14 * 86_400_000).toISOString()) }),
+        situation: await readSituation({ state: s, now: env.now.getTime() }),
       };
     },
   },
@@ -234,16 +235,16 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
       days: z.number().int().positive().max(30).optional().describe('Only tickets seen in the last N days (default 14)'),
     },
     readOnly: true,
-    handler: async ({ id, days }) => {
-      const snapshot = await loadLatestSnapshot();
-      if (!snapshot) return { note: 'No snapshot yet.' };
-      const all = Object.values(snapshot.state.tickets ?? {});
+    handler: async ({ id, days }, env) => {
+      const state = await env.state();
+      if (!state) return { note: 'No snapshot yet.' };
+      const all = Object.values(state.tickets ?? {});
       if (typeof id === 'string' && id.trim() !== '') {
         const key = id.trim().toUpperCase();
         const thread = all.find((t) => t.id === key);
         return thread ? { thread, evidence: `gnomon_signals with contains="${key}" (and a date) returns the rows` } : { note: `${key} has not been seen in the last 30 days.` };
       }
-      const since = new Date(Date.now() - ((days as number | undefined) ?? 14) * 86_400_000).toISOString();
+      const since = new Date(env.now.getTime() - ((days as number | undefined) ?? 14) * 86_400_000).toISOString();
       // A key only ever seen in a list (a board, a backlog) was in view, never looked at.
       const threads = all.filter((t) => t.lastSeen >= since && t.days.length > 0).sort((a, b) => b.days.length - a.days.length || b.lastSeen.localeCompare(a.lastSeen));
       // Seen on three days or more, from two kinds of source or more, and never
@@ -261,11 +262,11 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
       days: z.number().int().positive().max(60).optional().describe('How many past days to replay (default 14, at most 60 — a rule that holds for days needs weeks of history)'),
     },
     readOnly: true,
-    handler: async ({ rule, days }) => {
-      const snapshot = await loadLatestSnapshot();
-      const zone = snapshot?.state.config.timezone ?? ownerTimeZone();
+    handler: async ({ rule, days }, env) => {
+      const state = await env.state();
+      const zone = state?.config.timezone ?? ownerTimeZone();
       if (rule === undefined || rule === null) {
-        const w = snapshot?.state.watch ?? { rules: [], runtime: {} };
+        const w = state?.watch ?? { rules: [], runtime: {} };
         const last = (id: string) => w.stats?.[id]?.recent.at(-1) ?? w.runtime[id]?.lastFiredAt ?? null;
         return { adopted: w.rules.map((r) => ({ ...r, words: describeRule(r), paused: w.paused?.includes(r.id) ?? false, version: w.stats?.[r.id]?.version ?? 1, fires: w.stats?.[r.id]?.fires ?? 0, verdicts: w.stats?.[r.id]?.verdicts ?? null, lastFiredAt: last(r.id) })) };
       }
@@ -277,11 +278,11 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
           return { valid: false, error: 'rule must be a JSON object' };
         }
       }
-      const checked = validateWatchRule(resolvePeople(spec, snapshot?.state.memory.aliasNames ?? {}));
+      const checked = validateWatchRule(resolvePeople(spec, state?.memory.aliasNames ?? {}));
       if ('error' in checked) return { valid: false, error: checked.error };
       const span = (days as number | undefined) ?? 14;
-      const now = new Date().toISOString();
-      const from = new Date(Date.now() - span * 86_400_000).toISOString();
+      const now = env.now.toISOString();
+      const from = new Date(env.now.getTime() - span * 86_400_000).toISOString();
       const events: { id: string; type: string; ts: string; payload: unknown }[] = [];
       const PAGE = 5000;
       for (let offset = 0; offset < 400_000; offset += PAGE) {
@@ -290,7 +291,7 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
         if (rows.length < PAGE) break;
       }
       const hour = (ts: string) => localHour(ts, zone);
-      const settings = snapshot?.state.settings;
+      const settings = state?.settings;
       return summarizeBacktest(checked.rule, events, { days: span, zone, dial: settings?.noticeBias ?? 0, silent: settings?.autonomy === 'off', now, daytime: (ts) => hour(ts) >= 6 && hour(ts) < 18 });
     },
   },
@@ -300,12 +301,12 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
       "Find watch rules worth proposing, from the owner's own record and without a model: high values held or repeated, long silences, a routine that stops short, an app or site they asked about on three days, types behind notices they rated useful. Each candidate was replayed over the older and the recent half of 30 days and kept only with 1–10 fires in each half and a steady rate, and dropped when half its fires coincide with a notice Gnomon already raises. Returns up to 5 specs with their numbers. Their titles and sentences are placeholders: write them in the owner's words, then test the result with gnomon_test_rule before proposing it.",
     schema: {},
     readOnly: true,
-    handler: async () => {
-      const snapshot = await loadLatestSnapshot();
-      const zone = snapshot?.state.config.timezone ?? ownerTimeZone();
+    handler: async (_args, env) => {
+      const state = await env.state();
+      const zone = state?.config.timezone ?? ownerTimeZone();
       const days = 30;
-      const now = new Date().toISOString();
-      const from = new Date(Date.now() - days * 86_400_000).toISOString();
+      const now = env.now.toISOString();
+      const from = new Date(env.now.getTime() - days * 86_400_000).toISOString();
       const read = async (types: string[]) => {
         const out: { id: string; type: string; ts: string; payload: unknown }[] = [];
         for (let offset = 0; offset < 400_000; offset += 5000) {
@@ -315,8 +316,8 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
         }
         return out;
       };
-      const [events, asks, verdicts, notices] = await Promise.all([read([...MINE_TYPES, ...WATCH_FLAG_TYPES]), read(['ask:route-predicted']), read(['feedback:verdict']), read(['notice:candidate'])]);
-      const rules = snapshot?.state.watch?.rules ?? [];
+      const [events, asks, verdicts, notices] = await Promise.all([read([...MINE_TYPES, ...WATCH_FLAG_TYPES]), read(['ask:route-predicted', 'chat:owner']), read(['feedback:verdict']), read(['notice:candidate'])]);
+      const rules = state?.watch?.rules ?? [];
       const useful = new Map<string, { kind: string; type?: string; n: number }>();
       for (const v of verdicts) {
         const p = v.payload as { artifactKind?: string; artifactId?: string; verdict?: string };
@@ -331,8 +332,9 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
         now,
         days,
         zone,
-        routines: Object.values(snapshot?.state.routines?.learned ?? {}).filter((r) => r.support >= 3),
-        asks: asks.map((a) => ({ ts: a.ts, query: String((a.payload as { query?: unknown }).query ?? '') })),
+        routines: Object.values(state?.routines?.learned ?? {}).filter((r) => r.support >= 3),
+        // The owner's words: the retired route prediction's `query` before W5 step 8, `chat:owner` since.
+        asks: asks.map((a) => ({ ts: a.ts, query: String((a.payload as { query?: unknown; text?: unknown }).query ?? (a.payload as { text?: unknown }).text ?? '') })),
         useful: [...useful.values()],
         builtins: notices.filter((n) => !String((n.payload as { kind?: unknown }).kind ?? '').startsWith('watch:')).map((n) => n.ts),
       });
@@ -358,8 +360,8 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
       limit: z.number().int().positive().max(200).optional().describe('How many sessions to return on this page. Default 60, and the size budget may return fewer.'),
     },
     readOnly: true,
-    handler: async ({ date, offset, limit }) =>
-      summarizeDay((date as string | undefined) ?? today(), { offset: offset as number | undefined, limit: limit as number | undefined }),
+    handler: async ({ date, offset, limit }, env) =>
+      summarizeDay((date as string | undefined) ?? today(env.now), { offset: offset as number | undefined, limit: limit as number | undefined }),
   },
   {
     name: 'gnomon_moment_detail',
@@ -490,15 +492,15 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
   {
     name: 'gnomon_routines',
     description:
-      'Get what the owner habitually does: the sequences of apps they repeat (the procedural tier), strongest first, plus `forecast` — the step they usually take next from where they are right now, when a learned routine predicts one. A step is `App/class`, where class is work or personal by the owner\'s own taxonomy; a routine never carries window content. Use this for "what do I usually do after standup", "am I in my normal flow", and to notice when the owner is off their usual path — but hold it lightly: measured out of sample, a routine predicts the next step about 27% of the time (roughly one in four), so it is a tendency to mention once, never a rule to enforce. `support` is how many times the exact sequence recurred.',
+      'Get what the owner habitually does: the sequences of apps they repeat (the procedural tier), strongest first, plus `forecast` — the step they usually take next from where they are right now, when a learned routine predicts one. A step is `App/class`, where class is work or personal by the owner\'s own taxonomy; a routine never carries window content. Use this for "what do I usually do after standup", "am I in my normal flow", and to notice when the owner is off their usual path — but hold it lightly: `note` says how often such a forecast held, with its n, and it is a tendency to mention once, never a rule to enforce. `support` is how many times the exact sequence recurred.',
     schema: {
       limit: z.number().int().positive().max(64).optional().describe('How many routines to return. Default 10.'),
     },
     readOnly: true,
-    handler: async ({ limit }) => {
-      const snapshot = await loadLatestSnapshot();
-      if (!snapshot) return { note: 'No snapshot yet — the daemon may not have run since Phase 2.' };
-      const { trail, learned } = snapshot.state.routines;
+    handler: async ({ limit }, env) => {
+      const state = await env.state();
+      if (!state) return { note: 'No snapshot yet — the daemon may not have run since Phase 2.' };
+      const { trail, learned } = state.routines;
       const forecast = routineForecast(trail, learned);
       return {
         routines: topRoutines(learned, (limit as number | undefined) ?? 10).map((r) => ({
@@ -513,7 +515,7 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
           forecast === null
             ? null
             : { next: forecast.expectedProcess, from: routineLabel(forecast.routine), support: forecast.routine.support, matchedSteps: forecast.matched },
-        note: 'Out-of-sample precision of a forecast is about 27% (roughly one in four). Mention a tendency once; never enforce it.',
+        note: `Forecasts of the next step held ${formatParam(param(state, 'routine.next'))}. Mention a tendency once; never enforce it.`,
       };
     },
   },
@@ -526,15 +528,15 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
       groupBy: z.enum(['day', 'card']).optional().describe('The axis. Default day.'),
     },
     readOnly: true,
-    handler: async ({ days, groupBy }) => {
+    handler: async ({ days, groupBy }, env) => {
       const timeZone = ownerTimeZone();
       const span = (days as number | undefined) ?? 7;
       const axis = ((groupBy as string | undefined) ?? 'day') as 'day' | 'card';
       // Calendar-day arithmetic, for the same DST reason as the ledger below.
-      const [y, m, d] = today().split('-').map(Number);
+      const [y, m, d] = today(env.now).split('-').map(Number);
       const from = new Date(Date.UTC(y, m - 1, d - (span - 1))).toISOString().slice(0, 10);
       const rows = await getBoardTraffic(axis, timeZone, localDayRange(from, timeZone).start);
-      return { groupBy: axis, days: span, from, to: today(), rows };
+      return { groupBy: axis, days: span, from, to: today(env.now), rows };
     },
   },
   {
@@ -546,18 +548,18 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
       groupBy: z.enum(['day', 'purpose', 'model', 'errorClass']).optional().describe('The axis. Default day.'),
     },
     readOnly: true,
-    handler: async ({ days, groupBy }) => {
+    handler: async ({ days, groupBy }, env) => {
       const timeZone = ownerTimeZone();
       const span = (days as number | undefined) ?? 7;
       const axis = ((groupBy as string | undefined) ?? 'day') as LlmLedgerGroupBy;
       // Calendar-day arithmetic, not 24h subtraction: a DST boundary inside the
       // window would otherwise move the oldest day by an hour and drop or
       // double-count whatever sat against its edge.
-      const [y, m, d] = today().split('-').map(Number);
+      const [y, m, d] = today(env.now).split('-').map(Number);
       const from = new Date(Date.UTC(y, m - 1, d - (span - 1))).toISOString().slice(0, 10);
       const since = localDayRange(from, timeZone).start;
       const rows = await getLlmLedgerRows(axis, timeZone, since);
-      return { groupBy: axis, days: span, from, to: today(), rows };
+      return { groupBy: axis, days: span, from, to: today(env.now), rows };
     },
   },
 ];

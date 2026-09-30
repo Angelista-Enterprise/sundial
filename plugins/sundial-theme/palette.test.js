@@ -16,11 +16,13 @@
 // It pins the LIVE client. `client.js` (the old tenant inside dsh's React app)
 // is dark since Gnomon took over `/`, and pinning dead code proves nothing.
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
+/** The views' source: views.js and the flat view-*.js files it re-exports (W4 step 14). */
+const viewSource = () => readdirSync(join(HERE, 'shell')).filter((f) => f === 'views.js' || (f.startsWith('view-') && f.endsWith('.js') && !f.endsWith('.test.js'))).map((f) => readFileSync(join(HERE, 'shell', f), 'utf8')).join('\n')
 const css = readFileSync(join(HERE, 'shell/app.css'), 'utf8')
 const dial = readFileSync(join(HERE, 'shell/dial.js'), 'utf8')
 const surfaces = readFileSync(join(HERE, 'shell/surfaces.js'), 'utf8')
@@ -280,7 +282,7 @@ describe('the paper palette', () => {
     // header and every neighbouring row keep saying it did not. Nothing about
     // the picture looks broken; it is simply no longer the same scale.
     const rules = css.replace(/\/\*[\s\S]*?\*\//g, '').replace(/@(?:media|container)[^{]*\{(?:[^{}]*\{[^}]*\})*[^{}]*\}/g, '')
-    const views = readFileSync(join(HERE, 'shell/views.js'), 'utf8')
+    const views = viewSource()
     const drawn = new Set([...views.matchAll(/goalTrail\(\{[^}]*width:\s*(\d+)/g)].map(([, w]) => w))
     expect(drawn.size, `every trail must be drawn at one width, found ${[...drawn].join(' / ')}`).toBe(1)
     const lists = ['.goal-line', '.person-line', '.mem-line']
@@ -307,7 +309,7 @@ describe('the paper palette', () => {
     const tracks = new Set(wide.map(([, last]) => last))
     expect(tracks.size, `every clock row and its hour labels must end on one track, found ${[...tracks].join(' / ')}`).toBe(1)
     // And that track is the width the picture is actually painted at.
-    const drawn = new Set([...readFileSync(join(HERE, 'shell/views.js'), 'utf8').matchAll(/dayClock\(\{[^}]*width:\s*(\d+)/g)].map(([, w]) => w))
+    const drawn = new Set([...viewSource().matchAll(/dayClock\(\{[^}]*width:\s*(\d+)/g)].map(([, w]) => w))
     expect(drawn.size, `every clock must be drawn at one width, found ${[...drawn].join(' / ')}`).toBe(1)
     expect([...tracks][0], 'the clock track and the width dayClock paints at are one number').toBe(`${[...drawn][0]}px`)
   })
@@ -341,7 +343,7 @@ describe('the paper palette', () => {
     expect(Number(slab[1]), 'tall enough that the band under the bar can separate').toBeGreaterThanOrEqual(300)
     const source = readFileSync(join(HERE, 'shell/gate-ladder.js'), 'utf8')
     expect(/setAttribute\('viewBox', `0 0 \$\{width\} \$\{height\}`\)/.test(source), 'the viewBox must be the measured box').toBe(true)
-    expect(/ResizeObserver/.test(readFileSync(join(HERE, 'shell/views.js'), 'utf8')), 'and a card the owner drags must repaint').toBe(true)
+    expect(/ResizeObserver/.test(viewSource()), 'and a card the owner drags must repaint').toBe(true)
   })
 
   it('sizes a card against its pane, not against the window', () => {

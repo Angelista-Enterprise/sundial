@@ -21,7 +21,7 @@ export function createRerank({ judgeNow, getState, log = console.log }) {
   return async function rerank(query, hits) {
     if (!Array.isArray(hits) || hits.length < 2 || typeof query !== 'string' || query.trim() === '') return hits
     const built = rankEvidence.build({ query, question: query, candidates: hits.map((h) => `${h.label ?? ''}: ${h.text ?? ''}`) })
-    const judged = await judgeNow({ purpose: 'rank', questionSetId: rankEvidence.id, momentId: null, state: built.state, questions: built.questions })
+    const judged = await judgeNow({ purpose: 'rank', questionSetId: rankEvidence.id, momentId: null, state: built.state, questions: built.questions, caller: 'rerank' })
     if (judged === null) return hits
 
     const scored = hits.map((hit, i) => ({ hit, slot: slotKey(i), relevance: relevance(judged.answers?.[slotKey(i)]) }))

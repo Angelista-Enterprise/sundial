@@ -692,3 +692,47 @@ describe('momentClose', () => {
     });
   });
 });
+
+describe('W6 D1: activeMs never exceeds the duration', () => {
+  it('on a fixture day of flicks and straddling input windows, through the whole manifest', async () => {
+    const { reduce } = await import('@sundial/kernel/reduce.js');
+    const { RULE_MANIFEST } = await import('./manifest.js');
+    let state: KernelState = createInitialState('d1');
+    const rows: { durationMs: number; data: { activeMs: number } }[] = [];
+    const T0 = Date.parse('2026-09-29T08:00:03.000Z');
+    const at = (s: number) => new Date(T0 + s * 1000).toISOString();
+    const events: SanitizedEvent[] = [];
+    // A day in miniature: Code for 95 s, a 12-s flick to Arc, Code again, a 7-s flick, Terminal.
+    const switches: [number, string][] = [[0, 'Code'], [95, 'Arc'], [107, 'Code'], [300, 'Slack'], [307, 'Terminal'], [600, 'Code']];
+    for (const [s, app] of switches) events.push(windowEvent(at(s), app, `${app} window`));
+    // A 10-s input window every 10 s on the minute grid, each with keys: most straddle a switch.
+    for (let s = 7; s <= 900; s += 10) events.push({ id: `in-${s}`, type: 'input:activity', ts: at(s), payload: { keyDownCount: 5, mouseClickCount: 1, windowMs: 10_000 }, sanitized: true });
+    for (let s = 60; s <= 900; s += 60) events.push(clockTickEvent(at(s)));
+    events.push(windowEvent(at(900), 'loginwindow', ''));
+    events.sort((a, b) => a.ts.localeCompare(b.ts));
+    for (const event of events) {
+      const out = reduce(state, event, RULE_MANIFEST);
+      state = out.state;
+      for (const { effect } of out.effects) if (effect.type === 'WriteDB' && effect.table === 'moments') rows.push(effect.row as never);
+    }
+    expect(rows.length).toBeGreaterThanOrEqual(3);
+    for (const row of rows) expect(row.data.activeMs).toBeLessThanOrEqual(row.durationMs);
+    // The flicks' time went to their successors: the written moments cover the day without a gap.
+    expect(rows.reduce((sum, r) => sum + r.durationMs, 0)).toBe(900_000);
+    expect(rows).toHaveLength(4);
+  });
+
+  it('a merged sub-20-s predecessor carries its start (and so its duration) into the successor', () => {
+    let s = createInitialState('d1');
+    s = momentClose(s, windowEvent('2026-09-29T08:00:00.000Z', 'Code')).state;
+    s = momentClose(s, windowEvent('2026-09-29T08:02:00.000Z', 'Arc')).state;
+    s = momentClose(s, windowEvent('2026-09-29T08:02:12.000Z', 'Code')).state;
+    expect(s.moment).toMatchObject({ startTime: '2026-09-29T08:02:12.000Z', carriedFrom: '2026-09-29T08:02:00.000Z' });
+    // A second flick keeps the chain's first start; the drop is still judged on its own 15 s.
+    s = momentClose(s, windowEvent('2026-09-29T08:02:27.000Z', 'Arc')).state;
+    expect(s.moment?.carriedFrom).toBe('2026-09-29T08:02:00.000Z');
+    const closed = momentClose(s, windowEvent('2026-09-29T08:03:00.000Z', 'Code'));
+    const row = closed.effects.find((e) => e.type === 'WriteDB')?.row as { startTime: string; durationMs: number };
+    expect(row).toMatchObject({ startTime: '2026-09-29T08:02:00.000Z', durationMs: 60_000 });
+  });
+});

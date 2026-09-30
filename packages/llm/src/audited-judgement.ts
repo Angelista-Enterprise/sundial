@@ -1,7 +1,6 @@
-import { createEventId } from '@sundial/helpers/event-id.js';
 import { classifyLlmError } from '@sundial/helpers/llm-error-class.js';
 import { estimateBilledPromptTokens } from '@sundial/helpers/llm-billed-tokens.js';
-import { recordLlmAudit, updateLlmAudit } from '@sundial/db/index.js';
+import { openLlmAudit } from './audit.js';
 import { SYSTEMONE_DEFAULT_MODEL, callSystemOne, type SystemOneAnswer, type SystemOneQuestion } from './systemone.js';
 import { callSystemOneTextModel } from './systemone-text-model.js';
 import { getLlmConfig } from './config.js';
@@ -29,6 +28,8 @@ export interface AuditedJudgementOptions {
   /** Retry lineage, as `AuditedLlmCallOptions` carries it. */
   attempt?: number;
   parentCallId?: string | null;
+  /** W3: the reservation's id, used as the row's id (see `AuditedLlmCallOptions.callId`). */
+  callId?: string;
 }
 
 export interface AuditedJudgementResult {
@@ -60,18 +61,17 @@ export async function runAuditedJudgement(options: AuditedJudgementOptions): Pro
   const backend = options.backend ?? 'jev';
   const bareModel = options.model ?? SYSTEMONE_DEFAULT_MODEL;
   const model = backend === 'text-model' ? (getLlmConfig(options.purpose)?.model ?? 'unconfigured') : `${SYSTEMONE_PROVIDER}/${bareModel}`;
-  const auditId = createEventId();
   const prompt = JSON.stringify({ state: options.state, questions: options.questions });
 
-  await recordLlmAudit({
-    id: auditId,
+  const audit = await openLlmAudit({
+    ...(options.callId ? { id: options.callId } : {}),
     momentId: options.momentId,
     purpose: options.purpose,
     model,
     prompt,
-    requestedAt: new Date().toISOString(),
     attempt: options.attempt ?? 1,
     parentCallId: options.parentCallId ?? null,
+    route: judgeProvider(backend, options.purpose).provider,
   });
 
   const start = Date.now();
@@ -81,7 +81,7 @@ export async function runAuditedJudgement(options: AuditedJudgementOptions): Pro
         ? await callSystemOneTextModel(options.state, options.questions, { purpose: options.purpose, timeoutMs: options.timeoutMs })
         : await callSystemOne(options.state, options.questions, { model: bareModel, timeoutMs: options.timeoutMs });
     const answered = Object.keys(result.answers).length;
-    await updateLlmAudit(auditId, {
+    await audit.settle({
       respondedAt: new Date().toISOString(),
       latencyMs: Date.now() - start,
       statusCode: result.statusCode,
@@ -94,21 +94,22 @@ export async function runAuditedJudgement(options: AuditedJudgementOptions): Pro
       totalTokens: result.inputTokens === null ? undefined : result.inputTokens + (result.outputTokens ?? 0),
     });
     reportLlmOutcome({ ...judgeProvider(backend, options.purpose), ok: true, statusCode: result.statusCode ?? null });
-    return { auditId, answers: result.answers, model, latencyMs: result.latencyMs };
+    return { auditId: audit.id, answers: result.answers, model, latencyMs: result.latencyMs };
   } catch (error) {
     // lane H (H3)
     const statusCode = statusOf(error);
     reportLlmOutcome({ ...judgeProvider(backend, options.purpose), ok: false, statusCode });
-    await updateLlmAudit(auditId, {
+    await audit.settle({
       respondedAt: new Date().toISOString(),
       latencyMs: Date.now() - start,
       ...(statusCode !== null ? { statusCode } : {}),
       success: false,
       error: error instanceof Error ? error.message : String(error),
       errorClass: classifyLlmError(error),
+      retryAfterMs: (error as { retryAfterMs?: number | null } | null)?.retryAfterMs ?? null, // an `LlmHttpError`'s Retry-After
       billedPromptTokens: estimateBilledPromptTokens(prompt),
     });
-    if (typeof error === 'object' && error !== null) (error as { auditId?: string }).auditId = auditId;
+    if (typeof error === 'object' && error !== null) (error as { auditId?: string }).auditId = audit.id;
     throw error;
   }
 }

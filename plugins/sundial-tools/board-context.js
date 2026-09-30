@@ -5,7 +5,7 @@
 // context as a new user message whenever any part of it changes, and the board
 // changes while Gnomon works on it, so one owner message carried two to three
 // copies of the whole context in its history. Now the context says only what
-// changes rarely (the autonomy level, the span, how to stage); the cards come
+// changes rarely (the board staging setting, the span, how to stage); the cards come
 // back from `gnomon_look` with id "board", and at the end of every
 // `gnomon_board` result.
 //
@@ -79,8 +79,8 @@ function planLines(board) {
 }
 
 /**
- * The `gnomon:board` runtime context: what changes rarely — the autonomy
- * level, how to stage, the span, what each card is, the owner's plan edit.
+ * The `gnomon:board` runtime context: what changes rarely — the board's
+ * staging setting, how to stage, the span, what each card is, the owner's plan edit.
  * Where cards sit, the sections, the scenes and the recent moves come back
  * from `gnomon_look` id "board" and after every `gnomon_board` call. Empty
  * until there is a board, as before.
@@ -90,7 +90,8 @@ export function boardContextText(state, today) {
   if (!board) return '';
   const autonomy = state?.settings?.autonomy ?? 'act';
   return [
-    `Autonomy is "${autonomy}"${autonomy === 'act' ? '' : ' — gnomon_board and gnomon_lens place will refuse; describe what you would have shown instead'}.`,
+    // The board's own staging setting, not `state.autonomy` (what each capability has earned): named so the two cannot be read as one.
+    `Board staging: "${autonomy}"${autonomy === 'act' ? '' : ' — gnomon_board and gnomon_lens place will refuse; describe what you would have shown instead'}.`,
     BOARD_COACHING,
     spanLine(board, today),
     `The cards on the board (read one with gnomon_look; "this pane" means one of these; gnomon_look with id "${BOARD_LOOK_ID}" adds where each sits and the recent moves, and every gnomon_board result ends with that):`,

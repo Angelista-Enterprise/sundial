@@ -23,9 +23,15 @@ function steppingClock(start, step) {
   return () => (t += step);
 }
 
+/** `openLlmAudit`'s shape over the two fake writes, so the assertions read the rows it would write. */
+const openAuditOver = (queries) => async (row) => {
+  await queries.recordLlmAudit(row);
+  return { id: row.id, settle: (patch) => queries.updateLlmAudit(row.id, patch) };
+};
+
 function recorderWith(queries, overrides = {}) {
   return createLlmAuditRecorder({
-    queries,
+    openAudit: openAuditOver(queries),
     getMomentId: () => 'moment-1',
     newId: () => 'audit-1',
     clock: steppingClock(1_000_000, 250),
@@ -142,6 +148,8 @@ describe('createLlmAuditRecorder', () => {
       model: 'qwen/qwen3.8-2.4t-a95b',
       prompt: '[system] You are Gnomon.\n\n[user] what did I do today?',
       requestedAt: new Date(1_000_000).toISOString(),
+      // W5: the dsh route, for `llm:failed` and the breaker (not a column).
+      route: expect.any(String),
     });
     // Nothing is patched until the stream ends.
     expect(queries.updateLlmAudit).not.toHaveBeenCalled();

@@ -1,6 +1,7 @@
 import type { KernelState, ResumeLine, ResumePieces } from './types.js';
 import { localHour } from '@sundial/helpers/local-day.js';
 import { isMeetingRoom } from '@sundial/helpers/person-name.js';
+import { openAsk } from '@sundial/helpers/loops.js';
 
 /**
  * S1 — what is true right now, in one object (docs/jarvis/09).
@@ -201,7 +202,7 @@ export function buildSituation(state: KernelState, extras: SituationExtras = {},
     todayAllDay,
     openHere: { commitments, unpushed: ahead ? { branch: ahead.branch, ahead: ahead.ahead } : null, hotFiles },
     leftOff: extras.leftOff ?? [],
-    waitingForYou: { question: state.ownerAsk?.open?.question ?? null, shelf: extras.shelfWaiting ?? 0 },
+    waitingForYou: { question: openAsk(state)?.question ?? null, shelf: extras.shelfWaiting ?? 0 },
     resume: freshResume(state, nowMs, extras.home ?? null),
     note: state.resume?.note ?? null,
     resumeUse: state.resume?.learn ?? null,

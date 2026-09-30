@@ -1,15 +1,16 @@
+import { EXTRACTABLE_ENTITY_KINDS } from '@sundial/helpers/vocab.js';
 import type { Rule } from '@sundial/kernel/types.js';
 import { assessNovelty } from './llm-novelty-gate.js';
 
 export interface ExtractedFactCandidate {
-  entityKind: 'person' | 'project' | 'tool' | 'topic' | 'owner' | 'goal';
+  entityKind: (typeof EXTRACTABLE_ENTITY_KINDS)[number];
   canonicalName: string;
   predicate: string;
   object: string;
   confidence: number;
 }
 
-const VALID_ENTITY_KINDS = new Set(['person', 'project', 'tool', 'topic', 'owner', 'goal']);
+const VALID_ENTITY_KINDS = new Set<string>(EXTRACTABLE_ENTITY_KINDS);
 export const MAX_EXTRACTED_FACTS_PER_PASS = 10;
 
 /**

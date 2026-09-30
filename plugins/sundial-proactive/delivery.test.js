@@ -47,6 +47,32 @@ describe('createDelivery', () => {
     expect(native).toHaveBeenCalledTimes(1)
   })
 
+  it('W1: a notice that wakes a turn is briefed first, the notice as its cause, folded before the turn starts', async () => {
+    const order = []
+    const brief = vi.fn(async (input) => ({ text: 'Right now it is …', present: 'Right now: the owner is idle.', recorded: Promise.resolve().then(() => order.push('recorded')) }))
+    const agent = fakeAgent()
+    agent.inject.mockImplementation((m) => order.push(`inject:${m.content[0].text.slice(0, 12)}`))
+    agent.followup.mockImplementation(() => order.push('followup'))
+    const { delivery } = harness(agent, { brief })
+    await delivery.deliver(notice('phasic-notice', { kind: 'owner-question', askId: 'ask-9', noticeKey: 'owner-question:ask-9' }))
+    expect(brief).toHaveBeenCalledWith({ sessionId: 'gnomon-companion', cause: { kind: 'notice', noticeKey: 'owner-question:ask-9', askId: 'ask-9' } })
+    expect(order).toEqual(['recorded', 'inject:Gnomon notic', 'inject:Right now it', 'followup'])
+  })
+
+  it('W1 step 6: says which notice it injected where, so the shell needs no parse of the context', async () => {
+    const announce = vi.fn()
+    const { delivery } = harness(fakeAgent(), { announce })
+    await delivery.deliver(notice('tonic-notice'))
+    expect(announce).toHaveBeenCalledWith({ noticeKey: 'absent:break', observation: 'No break since 13:20.', sessionId: null })
+  })
+
+  it('W1: a tonic notice is not briefed', async () => {
+    const brief = vi.fn()
+    const { delivery } = harness(fakeAgent(), { brief })
+    await delivery.deliver(notice('tonic-notice'))
+    expect(brief).not.toHaveBeenCalled()
+  })
+
   it('injects a tonic notice WITHOUT waking anyone — the ambient channel never interrupts', async () => {
     const { delivery, agent } = harness()
     const result = await delivery.deliver(notice('tonic-notice'))
@@ -191,6 +217,57 @@ describe('createDelivery', () => {
     const { delivery } = harness(fakeAgent(), { notifyNative, notifyPhone })
     await delivery.deliver(notice('phasic-notice'))
     expect(notifyPhone).toHaveBeenCalledTimes(1)
+  })
+
+  // W2 step 6: addressed delivery.
+  describe('addressed to a chat', () => {
+    const line = (over = {}) => ({ channel: 'tonic-notice', payload: { kind: 'followup:unpushed', observation: 'Pushed: puzzlebox-studio is up to date (263 commits were waiting).', evidence: [], weight: 2, noticeKey: 'followup:unpushed:abc', plain: true, sessionId: 'session-7f', acts: ['line'], ...over } })
+    const thread = (status = 'idle') => ({ id: 'session-7f', status, inject: vi.fn(), followup: vi.fn(), session: { append: vi.fn() } })
+
+    it('draws the line in that thread, on its log at once, and nowhere else', async () => {
+      const companion = fakeAgent()
+      const s = thread()
+      const record = vi.fn()
+      const notifyNative = vi.fn()
+      const notifyPhone = vi.fn()
+      const { delivery } = harness(companion, { getThread: async (id) => (id === 'session-7f' ? s : null), record, notifyNative, notifyPhone })
+      expect(await delivery.deliver(line())).toEqual({ delivered: true, channel: 'tonic' })
+      const [type, message, opts] = s.session.append.mock.calls[0]
+      expect([type, opts]).toEqual(['user/message', { surfaceOp: 'append' }])
+      expect(message.source).toMatchObject({ kind: 'plugin', form: 'notice', summary: 'Follow-up: Pushed: puzzlebox-studio is up to date (263 commits were waiting).' })
+      expect(s.inject).not.toHaveBeenCalled()
+      expect(s.followup).not.toHaveBeenCalled()
+      expect(companion.inject).not.toHaveBeenCalled()
+      expect(notifyNative).not.toHaveBeenCalled()
+      expect(notifyPhone).not.toHaveBeenCalled()
+      expect(record.mock.calls).toEqual([['notice:delivered', { noticeKey: 'followup:unpushed:abc', sessionId: 'session-7f', acts: ['line'] }]])
+    })
+
+    it('a running thread takes the line at its next step', async () => {
+      const s = thread('running')
+      const { delivery } = harness(fakeAgent(), { getThread: async () => s })
+      await delivery.deliver(line())
+      expect(s.inject).toHaveBeenCalledTimes(1)
+      expect(s.session.append).not.toHaveBeenCalled()
+    })
+
+    it('a thread that is gone drops the notice as session-gone, and records it', async () => {
+      const record = vi.fn()
+      const companion = fakeAgent()
+      const { delivery } = harness(companion, { getThread: async () => { throw new Error('session session-7f not found') }, record })
+      expect(await delivery.deliver(line())).toEqual({ delivered: false, reason: 'session-gone' })
+      expect(companion.inject).not.toHaveBeenCalled()
+      expect(record.mock.calls).toEqual([['notice:dropped', { noticeKey: 'followup:unpushed:abc', sessionId: 'session-7f', reason: 'session-gone', kind: 'followup:unpushed' }]])
+    })
+
+    it('a null session is the conversation', async () => {
+      const companion = fakeAgent()
+      const getThread = vi.fn()
+      const { delivery } = harness(companion, { getThread })
+      await delivery.deliver(line({ sessionId: null, acts: ['inject'] }))
+      expect(getThread).not.toHaveBeenCalled()
+      expect(companion.inject).toHaveBeenCalledTimes(1)
+    })
   })
 
   it('never rejects into the effect executor when delivery throws', async () => {

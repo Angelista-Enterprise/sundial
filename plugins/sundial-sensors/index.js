@@ -38,6 +38,7 @@ export async function apply(ctx, config = {}) {
     appendSignal: (type, payload, ts) => ctx.gnomonKernel.appendSignal(type, payload, ts),
     getState: () => ctx.gnomonKernel.getState(),
     getAllProjects: () => ctx.gnomonDb.queries.getAllProjects(),
+    reserveLlmCall: (purpose, options) => ctx.gnomonKernel.reserveLlmCall(purpose, options),
   })
 
   // Sensors: boot rehydration + git sweep + the 1s poll tick, all torn down

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 /**
  * Identity of a STATE observation, so an event that says nothing new is never
  * written to the log.
@@ -63,7 +64,14 @@ const STATE_SCOPES: Record<string, string | null> = {
   'browser:arc-space': null,
   // lane H (H2): Sundial's own health, read once a minute; logged only on a change.
   'sensor:health': null,
+  // W6 P19: what OCR read, per region. The sensor dedupes the raw text, but sanitizing makes
+  // captures that differed only in a redacted value identical: 20% of the record's rows (15,204 of
+  // 75,133) repeated their region's last stored payload. Signed by hash: the text is long.
+  'screen:ocr': 'region',
 };
+
+/** Types whose signature is a hash of the payload rather than the payload itself (kept small in the snapshot). */
+const HASHED = new Set(['screen:ocr']);
 
 /**
  * Bound on `state.observed`. Keys are one per state type, times one per scope for
@@ -99,7 +107,7 @@ export function stateSignature(type: string, payload: Record<string, unknown>): 
       .map((k) => [k, (signed as Record<string, unknown>)[k]]),
   );
 
-  return { key: scope ? `${type}|${scope}` : type, value };
+  return { key: scope ? `${type}|${scope}` : type, value: HASHED.has(type) ? createHash('sha256').update(value).digest('hex').slice(0, 16) : value };
 }
 
 /** True when this observation is byte-identical to the last one recorded for its subject. */

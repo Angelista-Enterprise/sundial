@@ -17,8 +17,8 @@ export function noticeContext({ kind, observation, evidence, weight, noticeKey, 
     Array.isArray(evidence) && evidence.length > 0 ? `Evidence: ${evidence.join('; ')}.` : null,
     `Notice key: ${noticeKey}`,
     // A question carries its id in the context too, not only in the wake-up
-    // turn: the context is what survives in the transcript, and the id is
-    // what the web shell binds the companion's words to.
+    // turn: the context is what survives in the transcript, for the model.
+    // (The web shell binds the companion's words by the brief's folded cause, W1.)
     kind === 'owner-question' && typeof askId === 'string' && askId !== '' ? `Ask id: ${askId}` : null,
   ].filter((line) => typeof line === 'string' && line !== '')
 
@@ -31,6 +31,23 @@ export function noticeContext({ kind, observation, evidence, weight, noticeKey, 
       summary: boundContextSummary(`Gnomon noticed: ${observation}`),
     },
   })
+}
+
+/** W1: a turn's brief, as the context it is (the present as its one-line account). */
+export function briefMessage({ text, present }) {
+  return createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'plugin', plugin: PLUGIN, form: 'notice', summary: boundContextSummary(present) } })
+}
+
+/**
+ * A follow-up line (W2): one sentence in the chat where Gnomon raised the thing,
+ * no model turn. The summary's `Follow-up: ` prefix is what `shell/frames.js`
+ * draws as Gnomon's own line, live and on replay; the model reads the same words
+ * as context on its next turn there.
+ */
+export const FOLLOWUP_PREFIX = 'Follow-up: '
+export function followupLine({ observation }) {
+  const text = `${FOLLOWUP_PREFIX}${observation}`
+  return createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'plugin', plugin: PLUGIN, form: 'notice', summary: boundContextSummary(text) } })
 }
 
 /**

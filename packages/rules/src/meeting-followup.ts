@@ -4,6 +4,7 @@ import { namedAttendees } from './people-ask.js';
 import { formatClock } from '@sundial/helpers/local-day.js';
 import { meetingJobKey } from './workbench.js';
 import { directionOf, meetingPromiseId, promiseLine } from './promise-track.js';
+import { openAsk } from '@sundial/helpers/loops.js';
 
 /** The window after a meeting's end in which the question is worth asking. */
 export const FOLLOWUP_MIN_AFTER_MS = 2 * 60 * 1000;
@@ -152,11 +153,15 @@ export const meetingFollowup: Rule = (state, event) => {
   // or an unscheduled call, whose words were counted before it had a key.
   // Overlapping entries (a meeting and its room booking) heard the same words:
   // one pass for them, the entry with the most attendees first.
+  // W6 P2: NOT gated on `wasAbsent`. That test counts the owner's microphone only (S11), against a
+  // bar measured on both channels, so a call the owner mostly listened to read as a room they were
+  // not in and no meeting on the live record ever got a pass. What the far side promised the owner
+  // is worth reading whether or not the owner spoke; the absence test still keeps the question.
   const span = (m: { start: string; end: string }) => [Date.parse(m.start), Date.parse(m.end)] as const;
   const passed = Object.values(seen).filter((m) => m.extractAt).map(span);
   for (const [key, meeting] of Object.entries(seen).sort(([, a], [, b]) => b.attendees.length - a.attendees.length)) {
     const since = now - Date.parse(meeting.end);
-    if (meeting.extractAt || since < 0 || since > FOLLOWUP_MAX_AFTER_MS || wasAbsent(meeting)) continue;
+    if (meeting.extractAt || since < 0 || since > FOLLOWUP_MAX_AFTER_MS) continue;
     const isCall = key.startsWith('call|');
     if (!isCall && (meeting.voices ?? 0) === 0) continue;
     if (!changed) {
@@ -170,7 +175,7 @@ export const meetingFollowup: Rule = (state, event) => {
     if (twin) continue;
     effects.push({ type: 'RunMeetingPromises', meetingKey: key, title: meeting.title, start: meeting.start, end: meeting.end, attendees: meeting.attendees, ts: event.ts });
   }
-  if (state.ownerAsk.open === null && state.commitments.promiseAsk === null) {
+  if (openAsk(state) === null && state.commitments.promiseAsk === null) {
     const due = Object.entries(seen).find(([, meeting]) => {
       if (meeting.askedAt !== null || wasAbsent(meeting)) return false;
       const since = now - Date.parse(meeting.end);

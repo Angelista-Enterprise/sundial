@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { expandSecrets, mcpConfigFor, mountIntegrations, readEnvFile } from './integrations.js'
+import { expandSecrets, mcpConfigFor, mountIntegrations } from './integrations.js'
 
 const obsidian = {
   name: 'obsidian',
@@ -18,20 +18,6 @@ const obsidian = {
   toolCallTimeoutMs: 30_000,
 }
 const notion = { ...obsidian, name: 'notion', transport: 'streamable-http', command: '', env: {}, url: 'https://mcp.notion.com/mcp', headers: { Authorization: 'Bearer ${NOTION_TOKEN}' } }
-
-describe('readEnvFile', () => {
-  it('parses KEY=VALUE lines, strips quotes, skips comments and junk', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'gnomon-env-'))
-    const path = join(dir, '.env')
-    writeFileSync(path, '# comment\nOBSIDIAN_API_KEY="abc123"\nPLAIN=x=y\n\nnot a line\n=nokey\n')
-    expect(readEnvFile(path)).toEqual({ OBSIDIAN_API_KEY: 'abc123', PLAIN: 'x=y' })
-    rmSync(dir, { recursive: true, force: true })
-  })
-
-  it('is empty when the file is absent', () => {
-    expect(readEnvFile('/nonexistent/.env')).toEqual({})
-  })
-})
 
 describe('expandSecrets', () => {
   it('expands $NAME and ${NAME}, and passes literals through', () => {

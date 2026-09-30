@@ -74,7 +74,6 @@ describe('projectTrack', () => {
 
     expect(effects).toEqual([
       { type: 'WriteDB', table: 'projects', row: { id: '~/Playground/odysseus', name: 'odysseus', rootPath: '~/Playground/odysseus', organizationId: 'playground' } },
-      { type: 'WriteDB', table: 'organizations', row: { id: 'playground', name: 'playground' } },
     ]);
   });
 
@@ -107,16 +106,7 @@ describe('projectTrack', () => {
 
     expect(effects).toEqual([
       { type: 'WriteDB', table: 'projects', row: { id: '~/Projects/acme/foo', name: 'foo', rootPath: '~/Projects/acme/foo', organizationId: 'acme' } },
-      { type: 'WriteDB', table: 'organizations', row: { id: 'acme', name: 'acme' } },
     ]);
-  });
-
-  it('emits no organization row when the project has no remote-derived org', () => {
-    const state = createInitialState('device-1');
-
-    const { effects } = projectTrack(state, projectDetectedEvent('/Users/x/Projects/gnomon', 'gnomon'));
-
-    expect(effects.some((e) => e.type === 'WriteDB' && e.table === 'organizations')).toBe(false);
   });
 
   it('does nothing when the payload has no projectRoot', () => {

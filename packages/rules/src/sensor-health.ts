@@ -24,6 +24,8 @@ export const AUTH_FAILURES_TO_SAY = 3;
 export const WAKE_GAP_MS = 3 * MINUTE;
 /** Worth little by tomorrow, and it wants an interruption: under the gate's two-hour urgent line. */
 export const HEALTH_HALF_LIFE_MS = 60 * MINUTE;
+/** W6 D9: down this long while the Mac was on, and the next start says so. */
+export const DOWN_TO_SAY_MS = 60 * MINUTE;
 
 /** The audio helper states that mean hearing is on and nothing is being heard, in words. */
 const MIC_SAYS: Record<string, string> = {
@@ -59,6 +61,39 @@ function without(h: SensorHealthState, key: string): SensorHealthState {
   return { ...h, troubles: rest };
 }
 
+/**
+ * One `sensor-health` candidate, said once per incident: the shape every
+ * health notice uses (W5's breaker too). `key` names what broke.
+ */
+export function healthCandidate(state: KernelState, ts: string, eventId: string, key: string, since: string, observation: string, evidence: string[]): ReturnType<Rule>['effects'][number] {
+  return {
+    type: 'EmitEvent',
+    event: {
+      id: deriveId(ts, eventId, 'sensor-health', `${key}:${since}`),
+      type: 'notice:candidate',
+      ts,
+      payload: {
+        timestamp: ts,
+        shape: 'transition',
+        kind: 'sensor-health',
+        // Per thing that broke: the next time the same grant drops, the gate
+        // knows it said this before (a habituation key must recur).
+        key: `sensor-health:${key}`,
+        // A helper's own report, not a guess about the owner: high and fixed,
+        // so an interruption clears full cost (2.7 − 0.8 ≥ 1.6) the first time.
+        surprise: 3,
+        precision: 0.9,
+        valueHalfLifeMs: HEALTH_HALF_LIFE_MS,
+        observation,
+        evidence: [...evidence, `since ${formatClock(since, state.config.timezone)}`],
+        concerns: [],
+        // Its own sentence: no model turn writes it up.
+        plain: true,
+      },
+    },
+  };
+}
+
 /** Every trouble that has stood long enough and was not said yet, as one candidate each. */
 function raiseDue(state: KernelState, h: SensorHealthState, ts: string, eventId: string, tick: boolean): { h: SensorHealthState; effects: ReturnType<Rule>['effects'] } {
   const effects: ReturnType<Rule>['effects'] = [];
@@ -70,32 +105,7 @@ function raiseDue(state: KernelState, h: SensorHealthState, ts: string, eventId:
     // would otherwise say a helper that was stale when the lid closed.
     if (t.holdMs > 0 && !tick) continue;
     troubles = { ...troubles, [key]: { ...t, raisedAt: ts } };
-    effects.push({
-      type: 'EmitEvent',
-      event: {
-        id: deriveId(ts, eventId, 'sensor-health', `${key}:${t.since}`),
-        type: 'notice:candidate',
-        ts,
-        payload: {
-          timestamp: ts,
-          shape: 'transition',
-          kind: 'sensor-health',
-          // Per thing that broke: the next time the same grant drops, the gate
-          // knows it said this before (a habituation key must recur).
-          key: `sensor-health:${key}`,
-          // A helper's own report, not a guess about the owner: high and fixed,
-          // so an interruption clears full cost (2.7 − 0.8 ≥ 1.6) the first time.
-          surprise: 3,
-          precision: 0.9,
-          valueHalfLifeMs: HEALTH_HALF_LIFE_MS,
-          observation: t.observation,
-          evidence: [...t.evidence, `since ${formatClock(t.since, state.config.timezone)}`],
-          concerns: [],
-          // Its own sentence: no model turn writes it up.
-          plain: true,
-        },
-      },
-    });
+    effects.push(healthCandidate(state, ts, eventId, key, t.since, t.observation, t.evidence));
   }
   return { h: { ...h, troubles }, effects };
 }
@@ -191,7 +201,8 @@ export const sensorHealth: Rule = (state, event) => {
     t !== 'llm:auth-ok' &&
     t !== 'llm:budget-exhausted' &&
     t !== 'push:sent' &&
-    t !== 'push:failed'
+    t !== 'push:failed' &&
+    t !== 'sundial:up'
   )
     return { state, effects: [] };
   let h: SensorHealthState = state.sensorHealth ?? idle();
@@ -202,7 +213,21 @@ export const sensorHealth: Rule = (state, event) => {
     if (h.lastTickAt !== null && Date.parse(ts) - Date.parse(h.lastTickAt) > WAKE_GAP_MS) {
       h = { ...h, troubles: Object.fromEntries(Object.entries(h.troubles).map(([k, v]) => [k, v.raisedAt === null ? { ...v, since: ts } : v])) };
     }
-    h = { ...h, lastTickAt: ts };
+    // W6 D9: the heartbeat, as minutes up per local day; a said downtime clears on the first tick after it.
+    const day = localDate(ts, state.config.timezone);
+    const up = h.uptime ?? [];
+    const uptime = up.at(-1)?.day === day ? [...up.slice(0, -1), { day, minutes: up.at(-1)!.minutes + 1 }] : [...up, { day, minutes: 1 }].slice(-7);
+    h = without({ ...h, lastTickAt: ts, uptime }, 'downtime');
+  } else if (t === 'sundial:up') {
+    // W6 D9: down while the Mac was on — since the last heartbeat, or since the Mac booted if that came after it.
+    const last = typeof p.lastSeenAt === 'string' ? Date.parse(p.lastSeenAt) : NaN;
+    const boot = typeof p.macBootAt === 'string' ? Date.parse(p.macBootAt) : NaN;
+    const from = Math.max(last, Number.isFinite(boot) ? boot : last);
+    if (Number.isFinite(from) && Date.parse(ts) - from > DOWN_TO_SAY_MS) {
+      const since = new Date(from).toISOString();
+      const hours = Math.round((Date.parse(ts) - from) / 360_000) / 10;
+      h = withTrouble(h, 'downtime', since, 0, `Sundial was not running for ${hours} hours while this Mac was on, so nothing was recorded from ${formatClock(since, state.config.timezone)} until now.`, [`down ${hours} h`]);
+    }
   } else if (t === 'input:activity') h = onInput(h, p as InputPayload, ts);
   else if (t === 'sensor:health') h = onHealth(h, p as HealthPayload, ts);
   else if (t === 'llm:auth-failed' || t === 'llm:auth-ok') {

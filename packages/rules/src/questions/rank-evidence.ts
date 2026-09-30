@@ -10,7 +10,7 @@
  * answers it" — the probability the consuming tool gates on (law 5, law 6).
  */
 import type { JudgeQuestion } from '@sundial/kernel/types.js';
-import { clip, score, type QuestionSet } from './index.js';
+import { clip, score, type QuestionSet, keyed } from './index.js';
 
 export const MAX_CANDIDATES = 12;
 export const CANDIDATE_MAX_CHARS = 300;
@@ -26,7 +26,7 @@ export const slotKey = (i: number): string => `c${i}`;
 const slotQuestion = (i: number): JudgeQuestion => score(`How well does \`candidates.${slotKey(i)}\` answer \`question\`?`, LEVELS);
 
 /** The twelve slot questions, fixed. */
-export const RANK_EVIDENCE_QUESTIONS: Record<string, JudgeQuestion> = Object.fromEntries(Array.from({ length: MAX_CANDIDATES }, (_, i) => [slotKey(i), slotQuestion(i)]));
+export const RANK_EVIDENCE_QUESTIONS: Record<string, JudgeQuestion> = keyed('rank-evidence', Object.fromEntries(Array.from({ length: MAX_CANDIDATES }, (_, i) => [slotKey(i), slotQuestion(i)])));
 
 /** P(level ≥ 2) off the vector; null when the answer carries no vector. */
 export function relevance(answer: { probabilities?: Record<string, number>; score?: number } | undefined): number | null {

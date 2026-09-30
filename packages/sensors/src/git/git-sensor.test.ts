@@ -81,4 +81,17 @@ describe('GitSensor — A§3.6: per-root debounce (not one shared timer)', () =>
     await vi.advanceTimersByTimeAsync(5000);
     expect(events).toEqual([]);
   });
+
+  it('W6 D2: a bare `git push` carries the branch the last status read saw', async () => {
+    vi.mocked(gitCapture.readGitStatus).mockResolvedValue({ ...statusFor('a1'), branch: 'feat/box-484' });
+    const pushes: unknown[] = [];
+    const sensor = new GitSensor((e) => e.type === 'git:push' && pushes.push(e.payload.branch));
+    sensor.registerKnownRoot(REPO_A);
+    await vi.advanceTimersByTimeAsync(1100);
+    sensor.notifyShellCommand('git push', REPO_A, 0);
+    sensor.notifyShellCommand('git push origin main', REPO_A, 0);
+    sensor.notifyShellCommand('git push', REPO_B, 0);
+    expect(pushes).toEqual(['feat/box-484', 'main', null]);
+    sensor.stop();
+  });
 });

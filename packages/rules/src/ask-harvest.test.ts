@@ -1,5 +1,6 @@
 import { createInitialState } from '@sundial/kernel/initial-state.js';
-import type { Effect, KernelState, OpenOwnerAsk, SanitizedEvent } from '@sundial/kernel/types.js';
+import { askLoop } from '@sundial/helpers/loops.js';
+import type { Effect, KernelState, OpenLoop, OpenOwnerAsk, SanitizedEvent } from '@sundial/kernel/types.js';
 import { describe, expect, it } from 'vitest';
 import { applyLlmResult } from './apply-llm-result.js';
 import { ASK_BACKFILL_INTERVAL_MS, ASK_HARVEST_DRAINED, ASK_HARVEST_DUE, MAX_ASK_PROPOSALS, askHarvest, askHarvestBackfill, askHarvestInstructions, askHarvestPrompt, parseAskProposals } from './ask-harvest.js';
@@ -10,7 +11,7 @@ const scheduled = (effects: Effect[]) => effects.filter((e): e is Extract<Effect
 
 function stateWith(open: OpenOwnerAsk | null): KernelState {
   const base = createInitialState('d1');
-  return { ...base, config: { ...base.config, ownerAliases: ['Pat'] }, ownerAsk: { ...base.ownerAsk, open } };
+  return { ...base, config: { ...base.config, ownerAliases: ['Pat'] }, loops: { ...base.loops, open: open === null ? [] : [askLoop(open) as OpenLoop] } };
 }
 
 function ask(question: string): OpenOwnerAsk {

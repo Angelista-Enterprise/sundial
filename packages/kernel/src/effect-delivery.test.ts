@@ -48,12 +48,8 @@ describe('effectDeliveryGuarantee', () => {
   });
 
   it('agrees with itself across the WriteDB tables, which share one variant', () => {
-    const organizations: Effect = {
-      type: 'WriteDB',
-      table: 'organizations',
-      row: { id: 'acme', name: 'acme' },
-    };
-    expect(effectDeliveryGuarantee(organizations)).toBe('at-least-once');
+    const asks: Effect = { type: 'WriteDB', table: 'owner_asks', row: { id: 'owner-ask:1', question: 'q', reason: null, askedAt: '2026-01-01', answer: null, answeredAt: null, outcome: 'expired' } };
+    expect(effectDeliveryGuarantee(asks)).toBe('at-least-once');
   });
 
   /**

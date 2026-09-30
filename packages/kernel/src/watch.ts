@@ -564,7 +564,7 @@ function holdsOne({ op, value }: WatchCondition, v: unknown, now: number): boole
 }
 
 /** Whether a row of the rule's type matches, at `ts` (what an age condition measures from; the row's own time when a row arrives). */
-export function matchesWatch(rule: WatchRule, type: string, payload: unknown, ts?: string): boolean {
+export function matchesWatch(rule: Pick<WatchRule, 'when'>, type: string, payload: unknown, ts?: string): boolean {
   if (type !== rule.when.type) return false;
   const now = ts === undefined ? Number.NaN : Date.parse(ts);
   if (!(rule.when.where ?? []).every((c) => holds(c, payload, now))) return false;

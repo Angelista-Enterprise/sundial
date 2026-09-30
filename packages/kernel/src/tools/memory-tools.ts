@@ -4,11 +4,10 @@ import { promiseReliability } from '../promise-reliability.js';
 import { localDate } from '@sundial/helpers/local-day.js';
 import { loadSundialConfig } from '@sundial/helpers/sundial-config.js';
 import { factRecordLine } from '../fact-tests.js';
-import { loadLatestSnapshot } from '../snapshot.js';
 import type { GnomonTool } from './registry.js';
 
-function today(): string {
-  return localDate(new Date().toISOString(), loadSundialConfig().timezone);
+function today(now: Date): string {
+  return localDate(now.toISOString(), loadSundialConfig().timezone);
 }
 
 /**
@@ -28,8 +27,8 @@ export const MEMORY_TOOLS: GnomonTool[] = [
     description: "Get the day's detected anomalies (unusual activity patterns) with the companion's note about each.",
     schema: { date: z.string().optional().describe('YYYY-MM-DD, defaults to today') },
     readOnly: true,
-    handler: async ({ date }) => {
-      const entries = await getKnowledgeEntriesForDate((date as string | undefined) ?? today(), loadSundialConfig().timezone);
+    handler: async ({ date }, env) => {
+      const entries = await getKnowledgeEntriesForDate((date as string | undefined) ?? today(env.now), loadSundialConfig().timezone);
       return entries.filter((entry) => entry.kind === 'companion-insight');
     },
   },
@@ -109,10 +108,10 @@ export const MEMORY_TOOLS: GnomonTool[] = [
       "Given a person/project/tool/topic's name, return its full fact timeline — including superseded facts, so \"who was I working with on this before X\" is answerable; a belief that makes a testable prediction carries `record` (\"right 12 of 13\", marked gathering under 20 outcomes) — and `appearances`: the moments the name shows up in, each saying WHERE (meeting = among the attendees, said = in the transcript, screen = on screen or in a window title, reading = in Gnomon's own summary). A name only on screen is weaker evidence than a meeting; say which.",
     schema: { name: z.string().describe('Free-text name to match against known entities (case-insensitive substring)') },
     readOnly: true,
-    handler: async ({ name }) => {
+    handler: async ({ name }, env) => {
       const matches = await findEntitiesByName(name as string);
       // lane C: a belief's record against what the owner then did, from the fold.
-      const records = (await loadLatestSnapshot())?.state.factTests?.records ?? {};
+      const records = (await env.state())?.factTests?.records ?? {};
       const withRecord = <T extends { id: string }>(fact: T) => {
         const r = records[fact.id];
         const line = r ? factRecordLine(r) : null;

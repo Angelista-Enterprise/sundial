@@ -10,7 +10,9 @@ import { SessionId } from '@deepseek-ai/dsh-session'
  * sessions in the sidebar. `SessionId()` brands any string, so a readable
  * constant is as valid as a uuid.
  */
-export const COMPANION_SESSION_ID = 'gnomon-companion'
+export { COMPANION_SESSION_ID } from '@sundial/helpers/vocab.js'
+import { COMPANION_SESSION_ID } from '@sundial/helpers/vocab.js'
+import { chatDefault } from '@sundial/helpers/llm-providers.js'
 
 /**
  * Marker recording that the companion session has been created at least once,
@@ -58,7 +60,7 @@ export async function ensureCompanion(ctx, { home, cwd }) {
   const live = ctx.agents.get(sessionId)
   if (live !== undefined) return { agent: live, dispose: undefined }
 
-  const selection = ctx.agentDefaultModel.currentSelection()
+  const selection = chatDefault(ctx.agentDefaultModel.currentSelection(), ctx.gnomonKernel?.getState()?.config.llm)
   const agentOptions = { provider: selection.provider, model: selection.model }
   // Mirrors the headless runner: without this the session carries no model
   // selection, and the web UI's model picker has nothing to show or change.

@@ -10,8 +10,9 @@
  * the same thing pressing the button twice does.
  */
 import crypto from 'node:crypto';
+import { VERDICTS } from './vocab.js';
 
-export const VERDICTS = ['useful', 'not-now', 'wrong'] as const;
+export { VERDICTS };
 export type Verdict = (typeof VERDICTS)[number];
 
 export function signVerdict(token: string, artifactKind: string, artifactId: string, verdict: string): string {

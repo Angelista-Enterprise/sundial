@@ -8,6 +8,7 @@
 // disputing the observation, and the gate learns from it. Until now only the
 // notice card and the shelf offered it; every other surface had two taps and
 // so could not say the one thing the gate can act on.
+import { VERDICTS } from '@sundial/helpers/vocab.js'
 import { el } from './surfaces.js'
 import { whenVisible } from './read.js'
 
@@ -36,7 +37,7 @@ export async function postVerdict(artifactKind, artifactId, verdict, note) {
 export function verdictActs(artifactKind, artifactId, { onSettled = null, words = VERDICT_WORDS } = {}) {
   const wrap = el('span', { class: 'verdicts' })
   const settle = (text) => wrap.replaceChildren(el('span', { class: 'verdict-done', text }))
-  for (const verdict of ['useful', 'not-now', 'wrong']) {
+  for (const verdict of VERDICTS) {
     wrap.append(
       el('button', {
         type: 'button',

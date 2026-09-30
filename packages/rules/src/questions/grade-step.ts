@@ -5,7 +5,7 @@
  * the step failed and the plan moves on; the report shows every grade.
  */
 import type { JudgementResultPayload } from '@sundial/kernel/types.js';
-import { clip, noul, type QuestionSet } from './index.js';
+import { clip, noul, type QuestionSet, keyed } from './index.js';
 
 export interface GradeStepInput {
   goal: string;
@@ -14,9 +14,9 @@ export interface GradeStepInput {
   resultBody: string;
 }
 
-export const GRADE_STEP_QUESTIONS = {
+export const GRADE_STEP_QUESTIONS = keyed('grade-step', {
   accomplished: noul('Does `result` accomplish `step` for the goal in `goal` — the thing the step asked for is actually there, not a plan to do it or an apology for not doing it?'),
-};
+});
 
 export const gradeStep: QuestionSet<[GradeStepInput]> = {
   id: 'grade-step',

@@ -1,4 +1,5 @@
 import { deriveId } from '@sundial/helpers/derive-id.js';
+import { param } from '@sundial/kernel/calibrated.js';
 import { localDate as localDay, localHour } from '@sundial/helpers/local-day.js';
 import type { Effect, HourFragmentedPrediction, KernelState, ResolvedPrediction, Rule } from '@sundial/kernel/types.js';
 import { bumpCalibration, clampProb, hasSkill, pastRate } from './forward-model.js';
@@ -101,7 +102,7 @@ function cellFor(prevFragmented: boolean | null): Cell {
  * degenerate fixed point that retired `project-continuity`. Both quantities
  * count hits; they are not the same quantity.
  */
-function observedRate(byPrevState: KernelState['predictions']['fragmentation']['byPrevState']): number {
+function observedRate(byPrevState: KernelState['predictions']['fragmentation']['byPrevState'], seed: number): number {
   const n = byPrevState['prev-frag'].n + byPrevState['prev-calm'].n;
   const hits = byPrevState['prev-frag'].hits + byPrevState['prev-calm'].hits;
   // Smoothed toward the uninformed rate, not a bare `hits / n`, and the live
@@ -115,13 +116,13 @@ function observedRate(byPrevState: KernelState['predictions']['fragmentation']['
   // smoothed toward the pooled rate, and the pooled rate is smoothed toward the
   // measured prior. Without the second layer the "prior" a thin cell falls back
   // to is itself a one-sample estimate.
-  return (hits + UNINFORMED_FRAGMENT_RATE * CELL_SMOOTHING) / (n + CELL_SMOOTHING);
+  return (hits + seed * CELL_SMOOTHING) / (n + CELL_SMOOTHING);
 }
 
 /** P(this hour reaches the threshold), from its cell, smoothed toward the pooled rate so a thin cell degrades to the uninformed bet. */
-export function fragmentationPrior(fragmentation: KernelState['predictions']['fragmentation'], cell: Cell): number {
+export function fragmentationPrior(fragmentation: KernelState['predictions']['fragmentation'], cell: Cell, seed = UNINFORMED_FRAGMENT_RATE): number {
   const counts = fragmentation.byPrevState[cell];
-  const base = observedRate(fragmentation.byPrevState);
+  const base = observedRate(fragmentation.byPrevState, seed);
   return clampProb((counts.hits + base * CELL_SMOOTHING) / (counts.n + CELL_SMOOTHING));
 }
 
@@ -269,7 +270,8 @@ export const hourFragmentedForecast: Rule = (state, event) => {
   const carried = closed.predictions.fragmentation;
   const prevFragmented = carried.prevDay === day ? carried.prevFragmented : null;
   const cell = cellFor(prevFragmented);
-  const priorProb = fragmentationPrior(carried, cell);
+  // W5 loop D: the seed moves with the outcomes (`forecast.base:hour-fragmented`, prior 0.14).
+  const priorProb = fragmentationPrior(carried, cell, param(closed, 'forecast.base:hour-fragmented').value);
   const pred: HourFragmentedPrediction = {
     id: deriveId(event.ts, event.id, 'hour-fragmented', key),
     createdAt: event.ts,

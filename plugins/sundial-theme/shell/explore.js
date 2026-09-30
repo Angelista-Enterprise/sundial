@@ -11,6 +11,7 @@
 // Reads go through `/gnomon/api/read`, which runs the SAME read-only tools the
 // model has — so what the owner can see here and what Gnomon can say are one
 // record read two ways.
+import { ASSERTABLE_ENTITY_KINDS } from '@sundial/helpers/vocab.js'
 import { el } from './surfaces.js'
 import { flatten, momentDetail, momentRow, momentSentence, projectName } from './moment-detail.js'
 import { factLine, factSentence, ownerFirst } from './blocks.js'
@@ -471,7 +472,7 @@ export function openExplore(query = '', { quiet = false, kind = null, date = nul
 // ── An entity ─────────────────────────────────────────────────────────────
 
 /** Kinds the assert route accepts; a fact on anything else is read-only here. */
-const ASSERTABLE = new Set(['owner', 'person', 'project', 'tool', 'topic', 'goal'])
+const ASSERTABLE = new Set(ASSERTABLE_ENTITY_KINDS)
 const JSON_HEADERS = { 'content-type': 'application/json' }
 
 export async function openEntity(name, { quiet = false, host = null, id = `entity:${name.toLowerCase()}` } = {}) {

@@ -10,10 +10,10 @@ import type { Rule } from '@sundial/kernel/types.js';
  * which says nothing about whether the owner typed anything; the executor
  * returns before spending a call when there are no owner turns in the window.
  *
- * Only says "the window from `since` is due". Reading the dsh session store,
- * redacting, the `extract` call and the candidate emission all happen in the
- * executor, which is the only place that can reach a session store — a pure
- * rule reads state and an event and nothing else.
+ * Only says "the window from `since` is due". Reading the window's `chat:owner`
+ * rows, the `extract` call and the candidate emission all happen in the
+ * executor (a database read); a pure rule reads state and an event and
+ * nothing else.
  */
 export const conversationFactExtract: Rule = (state, event) => {
   if (event.type !== 'day:boundary') return { state, effects: [] };

@@ -4,7 +4,6 @@ import { localDate, wakingDate } from '@sundial/helpers/local-day.js';
 import { loadSundialConfig } from '@sundial/helpers/sundial-config.js';
 import { agentYield, agentYieldLine } from '../agent-yield.js';
 import { addDays, DRIFT_THRESHOLDS, driftSentence, heldTrends, mondayOf, wakingClock, weeklyDrift } from '../drift.js';
-import { loadLatestSnapshot } from '../snapshot.js';
 import { pageWithinBudget, RESULT_BUDGET_CHARS } from './evidence-tools.js';
 import type { GnomonTool } from './registry.js';
 
@@ -21,13 +20,13 @@ export const TREND_TOOLS: GnomonTool[] = [
       weeks: z.number().int().min(1).max(13).optional().describe('How many weeks back, newest last. Default 8.'),
     },
     readOnly: true,
-    handler: async ({ weeks }) => {
-      const snapshot = await loadLatestSnapshot();
-      const days = snapshot?.state.drift?.days;
+    handler: async ({ weeks }, env) => {
+      const state = await env.state();
+      const days = state?.drift?.days;
       if (!days || Object.keys(days).length === 0) return { note: 'No drift days recorded yet. They are rebuilt from the log on the first boot with this version.' };
       const all = weeklyDrift(days);
-      const tz = snapshot.state.config.timezone;
-      const current = mondayOf(wakingDate(new Date().toISOString(), tz));
+      const tz = state.config.timezone;
+      const current = mondayOf(wakingDate(env.now.toISOString(), tz));
       const holding = heldTrends(all, current);
       return {
         weeks: all.slice(-((weeks as number | undefined) ?? 8)).map((w) => ({ ...w, dayEnd: w.dayEnd === null ? null : wakingClock(w.dayEnd) })),
@@ -47,13 +46,13 @@ export const TREND_TOOLS: GnomonTool[] = [
       offset: z.number().int().min(0).optional().describe('The `nextOffset` of the previous page.'),
     },
     readOnly: true,
-    handler: async ({ weeks, project, offset }) => {
+    handler: async ({ weeks, project, offset }, env) => {
       const tz = loadSundialConfig().timezone;
-      const thisWeek = mondayOf(localDate(new Date().toISOString(), tz));
+      const thisWeek = mondayOf(localDate(env.now.toISOString(), tz));
       const firstWeek = addDays(thisWeek, -7 * (((weeks as number | undefined) ?? 4) - 1));
       // A day of slack either side for the zone; the week filter below is exact.
       const from = new Date(Date.parse(`${firstWeek}T00:00:00.000Z`) - DAY_MS).toISOString();
-      const to = new Date(Date.now() + 60_000).toISOString();
+      const to = new Date(env.now.getTime() + 60_000).toISOString();
       const signals = await getAllSignalsInRange(from, to, ['agent:fleet', 'agent:session', 'git:pr-status']);
       const rows = agentYield(
         signals.map((s) => ({ type: `${s.signalType}:${s.eventType}`, ts: s.capturedAt, data: s.data })),

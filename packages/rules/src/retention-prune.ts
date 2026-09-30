@@ -45,6 +45,10 @@ export const retentionPrune: Rule = (state, event) => {
   effects.push({ type: 'DeleteRows', olderThan: event.ts, signalTypes: ['screen'], apps: [...STRICT_SENSITIVE_APPS] });
   // lane Q (Q10): LLM prompt and response text, and the completed effect journal, after 30 days.
   effects.push({ type: 'DeleteRows', olderThan: new Date(Date.parse(event.ts) - Math.min(AUDIT_BODY_DAYS, state.config.retentionDays) * 24 * 60 * 60 * 1000).toISOString(), trim: 'audit-bodies' });
+  // W1: the chat (`chat:*`) keeps the same horizon as the prompt bodies, so logging it exposes nothing `llm_audit` did not already hold.
+  effects.push({ type: 'DeleteRows', olderThan: new Date(Date.parse(event.ts) - Math.min(AUDIT_BODY_DAYS, state.config.retentionDays) * 24 * 60 * 60 * 1000).toISOString(), signalTypes: ['chat'] });
+  // W3: the answers a tool consulted inside a turn (`judgement:consulted`, a few hundred a day), on the same horizon.
+  effects.push({ type: 'DeleteRows', olderThan: new Date(Date.parse(event.ts) - Math.min(AUDIT_BODY_DAYS, state.config.retentionDays) * 24 * 60 * 60 * 1000).toISOString(), signalTypes: ['judgement'], eventTypes: ['consulted'] });
 
   return {
     state: { ...state, retention: { lastPrunedAt: event.ts } },

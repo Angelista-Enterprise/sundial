@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { getDb, resetDb } from '../db-client.js';
-import { upsertProject, getProjectByRootPath, getAllProjects } from './projects.js';
+import { upsertProject, getAllProjects } from './projects.js';
 
 async function setupTestDb() {
   resetDb();
@@ -28,19 +28,5 @@ describe('upsertProject', () => {
     const all = await getAllProjects();
     expect(all).toHaveLength(1);
     expect(all[0].name).toBe('repo-renamed');
-  });
-
-  it('getProjectByRootPath finds an upserted project', async () => {
-    await upsertProject({ id: '/repo', name: 'repo', rootPath: '/repo' });
-
-    const found = await getProjectByRootPath('/repo');
-
-    expect(found?.id).toBe('/repo');
-    expect(found?.organizationId).toBeNull();
-  });
-
-  it('returns null for a root path that was never detected', async () => {
-    const found = await getProjectByRootPath('/never-seen');
-    expect(found).toBeNull();
   });
 });

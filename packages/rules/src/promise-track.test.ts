@@ -86,6 +86,19 @@ describe('meetingFollowup asks for one promise pass per meeting (U1-F2)', () => 
     expect(silent.effects.filter((e) => e.type === 'RunMeetingPromises'), 'nothing heard, nothing to read').toEqual([]);
   });
 
+  it('W6 P2: a call the owner mostly listened to still gets its pass — the absence test is for the question, not for what was said', () => {
+    // Hearing awake; the far side talked (system), the owner said little (mic): under one mic line a minute.
+    let state = meetingFollowup(upcoming(base()), tick('2026-09-29T07:50:00.000Z')).state;
+    state = { ...state, hearing: { ...state.hearing, listening: true } };
+    state = meetingFollowup(state, tick('2026-09-29T08:01:00.000Z')).state;
+    for (let i = 0; i < 40; i += 1) state = meetingFollowup(state, ev('audio:transcript', `2026-09-29T08:${String(2 + (i % 27)).padStart(2, '0')}:00.000Z`, { spokenText: 'Mira Bakker: the BOX-484 build is green', channel: 'system' })).state;
+    for (let i = 0; i < 14; i += 1) state = meetingFollowup(state, ev('audio:transcript', `2026-09-29T08:${String(2 + i).padStart(2, '0')}:30.000Z`, { spokenText: "I'll send you the draft", channel: 'mic' })).state;
+    const ended = meetingFollowup(state, tick('2026-09-29T08:31:00.000Z'));
+    expect(ended.effects.filter((e) => e.type === 'RunMeetingPromises')).toHaveLength(1);
+    // The question still reads it as a room the owner was not in (14 mic lines in 30 minutes).
+    expect(ended.effects.filter((e) => e.type === 'EmitEvent')).toEqual([]);
+  });
+
   it('reads overlapping entries (a meeting and its room booking) once, for the one with the most attendees', () => {
     const both = (s: KernelState) => {
       s.schedule.upcoming = [

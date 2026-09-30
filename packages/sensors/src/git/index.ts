@@ -88,9 +88,16 @@ export class GitSensor {
     if (push && cwd && exitCode !== 1 && exitCode !== 128) {
       this.onEvent({
         type: 'git:push',
-        payload: { timestamp: new Date().toISOString(), cwd, branch: push.branch, remote: push.remote, command },
+        // W6 D2: a bare `git push` names no branch; the one the last status read saw is the one pushed.
+        payload: { timestamp: new Date().toISOString(), cwd, branch: push.branch ?? this.lastBranchOf(cwd), remote: push.remote, command },
       });
     }
+  }
+
+  /** The branch the last status read of `cwd` saw (the status key's first field), or null. */
+  private lastBranchOf(cwd: string): string | null {
+    const branch = this.lastStatusKeyPerCwd.get(cwd)?.split('\0')[0];
+    return branch && branch !== 'null' && branch !== 'undefined' ? branch : null;
   }
 
   private scheduleCheck(cwd: string, delayMs = DEBOUNCE_MS): void {

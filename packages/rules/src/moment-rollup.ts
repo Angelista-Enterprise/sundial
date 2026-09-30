@@ -87,11 +87,6 @@ interface GitStatusPayload {
   cwd?: string;
 }
 
-interface MediaUsagePayload {
-  kind?: string;
-  phase?: string;
-}
-
 interface CalendarActivePayload {
   event?: { title?: string; attendees?: string[] };
 }
@@ -153,7 +148,7 @@ function devActivityPatch(rollup: MomentRollup, known: KernelState['project']['k
  *
  * C1 (fixes A§4.1's "or (b) it joins the rollup" disposition) adds
  * `git:status` (feeds the same `gitBranch` field `git:commit` does),
- * `media:usage` (start/end only, heartbeats skipped) and `symbol:edited`
+ * `media:usage` (retired in W6 P17: `media:state` replaced it) and `symbol:edited`
  * (one summary line per batch) as their own branches, plus `git:push`/
  * `git:pr-status`/`calendar:context-event`/`audio:device-changed`/
  * `clipboard:activity` folded into the generic `lifeEvents` list alongside
@@ -204,10 +199,14 @@ export const momentRollup: Rule = (state, event) => {
     // Credit the emission's own window, not a fixed constant — the sensor reports
     // `windowMs` per emission and it drifts (10021ms, 10009ms, 10007ms observed).
     const windowMs = typeof payload.windowMs === 'number' && payload.windowMs > 0 ? Math.min(payload.windowMs, 60_000) : 0;
+    // W6 D1: never more attended time than the moment has been open. A 10-s
+    // window that began before the moment did was credited whole, and 36% of
+    // the record's moments ended with `activeMs` over their duration.
+    const openMs = Math.max(0, Date.parse(event.ts) - Date.parse(state.moment.carriedFrom ?? state.moment.startTime));
     return withRollup(state, {
       typingEventCount: rollup.typingEventCount + 1,
       inputEventCount: rollup.inputEventCount + events,
-      activeMs: rollup.activeMs + (events > 0 ? windowMs : 0),
+      activeMs: Math.min(rollup.activeMs + (events > 0 ? windowMs : 0), Math.max(rollup.activeMs, openMs)),
     });
   }
 
@@ -228,11 +227,6 @@ export const momentRollup: Rule = (state, event) => {
     return withRollup(state, { gitBranch: branch, unpushedCommits: ahead, ...devActivityPatch(rollup, state.project.known, state.config.projectAliases, payload.cwd) });
   }
 
-  // C1 — skips `heartbeat` (fires every 30s for as long as audio output
-  // stays on; recording every one would drown out genuinely rare events in
-  // the capped `lifeEvents` list) and folds kind+phase into one string
-  // rather than adding a dedicated MomentRollup field for a signal this
-  // coarse.
   /**
    * The sampled replacement for `media:usage`. Only CHANGES reach the log (the
    * ingest gate drops an identical sample), so every event here is a transition —
@@ -277,25 +271,8 @@ export const momentRollup: Rule = (state, event) => {
     return Object.keys(patch).length > 0 ? withRollup(state, patch) : { state, effects: [] };
   }
 
-  // Pre-cutover only: `media:usage` start/end pairs, kept so a replay of the log
-  // written before the sampling rewrite still produces meeting truth. Nothing emits
-  // these any more; this branch is dead once those rows are purged or age out.
-  if (event.type === 'media:usage') {
-    const { kind, phase } = event.payload as MediaUsagePayload;
-    if (phase === 'heartbeat' || !kind || !phase) return { state, effects: [] };
-    // P2b — promote to the structured meeting-truth booleans (mic ⇐
-    // audio-input, camera ⇐ camera) in addition to the existing lifeEvents
-    // string. `start`/`end` set the boolean; anything else leaves it. Once a
-    // mic/cam turned on during a moment it stays flagged for that moment even
-    // if it later turns off — the moment overlapped a call, which is the truth
-    // the daily wants (`||`-ed with attendees for real-meeting detection).
-    const patch: Partial<MomentRollup> = { lifeEvents: appendCapped(rollup.lifeEvents, `media:${kind}:${phase}`, MAX_LIFE_EVENTS) };
-    if (phase === 'start') {
-      if (kind === 'audio-input') patch.micActive = true;
-      if (kind === 'camera') patch.cameraActive = true;
-    }
-    return withRollup(state, patch);
-  }
+  // W6 P17: the pre-cutover `media:usage` start/end branch went: the retired sensor's rows are all
+  // gone from the log (0 on the record), so no replay needs it.
 
   // C1 — one summary line per file-change batch (already capped at 20 files
   // per event by the sensor itself), not one entry per edited symbol.

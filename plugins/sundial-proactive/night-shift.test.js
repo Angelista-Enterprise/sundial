@@ -4,7 +4,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { APPROVING_MODES, NIGHT_SHIFT_CHANNEL, assertWorktree, claudeArgs, createTmuxRunner, installNightShift, worktreeFor } from './night-shift.js'
+import { APPROVING_MODES, assertWorktree, claudeArgs, createTmuxRunner, installNightShift, worktreeFor } from './night-shift.js'
 import { jobEnv } from './claude-hand.js'
 
 const HOME = '/Users/mira/.sundial'
@@ -12,17 +12,15 @@ const JOB = { id: 'job-01ABC', repo: '~/Projects/puzzlebox-studio', subject: 'Fi
 const ON = { enabled: true, maxUsdPerJob: 2, maxUsdPerNight: 5, maxJobsPerNight: 2, maxMinutes: 90 }
 
 function fakeCtx(open = { id: JOB.id, status: 'starting' }) {
-  const handlers = []
+  const actors = new Map()
   const state = { nightShift: { open, queue: [] }, project: { known: { '~/Projects/puzzlebox-studio': { name: 'puzzlebox-studio' } } } }
   const ctx = {
     tools: { register: vi.fn() },
-    gnomonKernel: { appendSignal: vi.fn(async () => {}), getState: () => state },
-    on: vi.fn((event, handler) => handlers.push([event, handler])),
+    gnomonKernel: { appendSignal: vi.fn(async () => {}), getState: () => state, registerActor: vi.fn((kind, actor) => (actors.set(kind, actor), () => actors.delete(kind))) },
   }
-  const notice = async (payload) => {
-    for (const [event, handler] of handlers) if (event === 'gnomon/notice') await handler({ channel: NIGHT_SHIFT_CHANNEL, payload })
-  }
-  return { ctx, state, notice }
+  // W3: the executor calls the `job` actor for StartJob / StopJob and folds what it returns.
+  const job = () => actors.get('job')
+  return { ctx, state, job }
 }
 const fakeRunner = () => ({
   start: vi.fn(() => ({ worktree: worktreeFor(HOME, 'ABC'), branch: 'night/ABC', base: 'a1b2c3' })),
@@ -32,12 +30,12 @@ const fakeRunner = () => ({
 const quiet = { log: () => {}, warn: () => {} }
 
 describe('night shift (#12): off by default', () => {
-  it('off, it registers no tool, and a start reaches no runner', async () => {
+  it('off, it registers no tool, and a start reaches no runner: it is refused', async () => {
     for (const jobs of [undefined, { ...ON, enabled: false }]) {
-      const { ctx, notice } = fakeCtx()
+      const { ctx, job } = fakeCtx()
       const runner = fakeRunner()
       installNightShift(ctx, { home: HOME, jobs, runner, ...quiet })
-      await notice({ action: 'start', job: JOB, folder: 'ABC' })
+      await expect(job().start({ type: 'StartJob', job: JOB, folder: 'ABC' })).rejects.toThrow(/night shift is off/)
       expect(ctx.tools.register).not.toHaveBeenCalled()
       expect(runner.start).not.toHaveBeenCalled()
       expect(ctx.gnomonKernel.appendSignal).not.toHaveBeenCalled()
@@ -47,52 +45,44 @@ describe('night shift (#12): off by default', () => {
 
 describe('night shift (#12): switched off with a job under way', () => {
   it('still stops it, so the tmux session is not orphaned', async () => {
-    const { ctx, notice } = fakeCtx()
+    const { ctx, job } = fakeCtx()
     const runner = fakeRunner()
     ctx.gnomonKernel.getState = () => ({ nightShift: { open: { ...JOB, status: 'stopping', worktree: worktreeFor(HOME, 'ABC'), base: 'a1b2c3' } } })
     installNightShift(ctx, { home: HOME, jobs: { ...ON, enabled: false }, runner, ...quiet })
-    await notice({ action: 'stop', jobId: JOB.id })
+    expect(await job().stop({ type: 'StopJob', jobId: JOB.id, outcome: 'stopped' })).toEqual({ commits: 2, note: '2 files changed' })
     expect(runner.stop).toHaveBeenCalledWith('ABC')
-    expect(ctx.gnomonKernel.appendSignal).toHaveBeenCalledWith('job:finished', expect.objectContaining({ jobId: JOB.id, outcome: 'stopped' }))
   })
 })
 
 describe('night shift (#12): on, with a fake runner', () => {
-  it('starts once per job, even when the start is delivered twice, and reports where', async () => {
-    const { ctx, notice } = fakeCtx()
+  it('starts through the runner and answers where; unregisters on dispose', async () => {
+    const { ctx, job } = fakeCtx()
     const runner = fakeRunner()
-    installNightShift(ctx, { home: HOME, jobs: ON, runner, ...quiet })
+    const dispose = installNightShift(ctx, { home: HOME, jobs: ON, runner, ...quiet })
     expect(ctx.tools.register.mock.calls.map(([t]) => t.name)).toEqual(['gnomon_night_job', 'gnomon_night_job_stop'])
-    await notice({ action: 'start', job: JOB, folder: 'ABC' })
-    await notice({ action: 'start', job: JOB, folder: 'ABC' })
-    expect(runner.start).toHaveBeenCalledTimes(1)
-    expect(ctx.gnomonKernel.appendSignal).toHaveBeenCalledWith('job:started', { jobId: JOB.id, worktree: worktreeFor(HOME, 'ABC'), branch: 'night/ABC', base: 'a1b2c3' })
+    expect(await job().start({ type: 'StartJob', job: JOB, folder: 'ABC' })).toEqual({ worktree: worktreeFor(HOME, 'ABC'), branch: 'night/ABC', base: 'a1b2c3' })
+    expect(runner.start).toHaveBeenCalledWith({ job: JOB, folder: 'ABC' })
+    dispose()
+    expect(job()).toBeUndefined()
   })
 
-  it('a start the rule is not waiting for is ignored; a failed start is reported as failed', async () => {
-    const idle = fakeCtx(null)
-    const runner = fakeRunner()
-    installNightShift(idle.ctx, { home: HOME, jobs: ON, runner, ...quiet })
-    await idle.notice({ action: 'start', job: JOB, folder: 'ABC' })
-    expect(runner.start).not.toHaveBeenCalled()
+  it('a failed start throws, for the executor to fold as failed', async () => {
     const t = fakeCtx()
     const broken = { ...fakeRunner(), start: vi.fn(() => { throw new Error('not a git repository') }) }
     installNightShift(t.ctx, { home: HOME, jobs: ON, runner: broken, ...quiet })
-    await t.notice({ action: 'start', job: JOB, folder: 'ABC' })
-    expect(t.ctx.gnomonKernel.appendSignal).toHaveBeenCalledWith('job:finished', { jobId: JOB.id, outcome: 'failed', note: 'could not start: not a git repository' })
+    await expect(t.job().start({ type: 'StartJob', job: JOB, folder: 'ABC' })).rejects.toThrow('not a git repository')
   })
 
-  it('finish and stop end the session, collect the branch, and report once', async () => {
+  it('a stop ends the session and collects the branch; one for no open job says so with null', async () => {
     const open = { id: JOB.id, status: 'finishing', worktree: '~/.sundial/night-shift/ABC', base: 'a1b2c3' }
-    for (const [action, outcome] of [['finish', 'done'], ['stop', 'stopped']]) {
-      const { ctx, notice } = fakeCtx(open)
-      const runner = fakeRunner()
-      installNightShift(ctx, { home: HOME, jobs: ON, runner, ...quiet })
-      await notice({ action, jobId: JOB.id })
-      expect(runner.stop).toHaveBeenCalledWith('ABC')
-      expect(runner.collect).toHaveBeenCalledWith({ worktree: open.worktree, base: 'a1b2c3' })
-      expect(ctx.gnomonKernel.appendSignal.mock.calls).toEqual([['job:finished', { jobId: JOB.id, outcome, commits: 2, note: '2 files changed' }]])
-    }
+    const { ctx, job } = fakeCtx(open)
+    const runner = fakeRunner()
+    installNightShift(ctx, { home: HOME, jobs: ON, runner, ...quiet })
+    expect(await job().stop({ type: 'StopJob', jobId: JOB.id, outcome: 'done' })).toEqual({ commits: 2, note: '2 files changed' })
+    expect(runner.stop).toHaveBeenCalledWith('ABC')
+    expect(runner.collect).toHaveBeenCalledWith({ worktree: open.worktree, base: 'a1b2c3' })
+    expect(await job().stop({ type: 'StopJob', jobId: 'job-other', outcome: 'stopped' })).toBeNull()
+    expect(ctx.gnomonKernel.appendSignal).not.toHaveBeenCalled()
   })
 
   it('the request tool queues for a known project only', async () => {
@@ -141,7 +131,7 @@ describe('night shift (#12): what a job is allowed', () => {
     // The pane runs Claude through `env -u`, so the install's variables never reach it, whatever the tmux server holds.
     const command = calls[2].slice(9)
     expect(command[0]).toBe('/usr/bin/env')
-    for (const key of ['SUNDIAL_HOME', 'DSH_HOME', 'SUNDIAL_WEB_PORT', 'SUNDIAL_PHONE_PORT', 'SUNDIAL_CHROME_PORT', 'SUNDIAL_LABEL', 'SUNDIAL_INTERNAL_TOKEN', 'DATABASE_URL']) expect(command).toContain(key)
+    for (const key of ['SUNDIAL_HOME', 'DSH_HOME', 'SUNDIAL_WEB_PORT', 'SUNDIAL_PHONE_PORT', 'SUNDIAL_CHROME_PORT', 'SUNDIAL_LABEL', 'DATABASE_URL']) expect(command).toContain(key)
     expect(command).not.toContain('SUNDIAL_JOB_ID')
     // Every `-u` names a key, and Claude comes right after the list.
     expect(command[command.indexOf('/opt/claude') - 2]).toBe('-u')

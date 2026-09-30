@@ -1,5 +1,6 @@
+import { VERDICTS } from '@sundial/helpers/vocab.js';
 import type { FeedbackEntry, FeedbackVerdict, KernelState, Rule } from '@sundial/kernel/types.js';
-import { gradeAnswer } from './judgement-track.js';
+import { gradeRows, rememberVerdict } from './judgement-track.js';
 import { DEFAULT_GATE_POLICY } from './notice-gate.js';
 import { askClass, quietClass } from './owner-ask.js';
 import { MAX_ACCUMULATED } from './surprise-drive.js';
@@ -15,7 +16,7 @@ const MAX_RECENT_FEEDBACK = 50;
  * week of sensor agreement.
  */
 const OWNER_CONFIRMATION_DELTA = 1;
-const VALID_VERDICTS = new Set<FeedbackVerdict>(['useful', 'wrong', 'not-now']);
+const VALID_VERDICTS = new Set<FeedbackVerdict>(VERDICTS);
 /**
  * Exported so a writer of verdicts (once the `gnomon feedback` CLI; today
  * `/gnomon/api/feedback` keeps its own list) can pin its accepted list against the
@@ -216,7 +217,11 @@ export const feedbackTrack: Rule = (state, event) => {
   // `useful` still moves nothing, for the reason it never did: quieting a key
   // the owner called useful would punish the gate for being right.
   const quietedClass = artifactKind === 'owner_ask' && (verdict === 'not-now' || verdict === 'wrong') ? askClass(artifactId) : undefined;
-  const ownerAsk = quietedClass
+  // W5 loop H: `useful` raises it too — the class is heard at full volume again, as a notice key is.
+  const raisedClass = artifactKind === 'owner_ask' && verdict === 'useful' && state.ownerAsk.classGain?.[askClass(artifactId)] !== undefined ? askClass(artifactId) : undefined;
+  const ownerAsk = raisedClass
+    ? { ...state.ownerAsk, classGain: Object.fromEntries(Object.entries(state.ownerAsk.classGain).filter(([cls]) => cls !== raisedClass)) }
+    : quietedClass
     ? {
         ...state.ownerAsk,
         classGain: {
@@ -250,20 +255,22 @@ export const feedbackTrack: Rule = (state, event) => {
   // hit, `wrong` a miss, `not-now` says nothing about the answers — it is the
   // timing verdict, and grading it here would teach a question that a true
   // answer was false, the conflation this rule exists to keep apart.
+  //
+  // W5 step 4: a knowledge entry written from a notice also finds the notice's answers
+  // (by the insight's key), and the verdict is kept so an answer that arrives after it — the
+  // nightly fact audit, a rejudge — is graded when it lands (`judgementTrack`).
   const judgement =
     verdict === 'not-now'
       ? state.judgement
       : (() => {
-          const behind = artifactKind === 'moment' ? state.judgement.recent.filter((r) => r.momentId === artifactId) : (state.judgement.recentByArtifact ?? []).filter((r) => r.artifactId === artifactId);
-          if (behind.length === 0) return state.judgement;
-          const questions = { ...state.judgement.questions };
-          for (const r of behind) {
-            for (const [id, p] of Object.entries(r.p)) {
-              const record = questions[id];
-              if (record) questions[id] = gradeAnswer(record, p, verdict === 'useful', event.ts);
-            }
-          }
-          return { ...state.judgement, questions };
+          const insightKey = artifactKind === 'knowledge_entry' ? state.memory.recentInsights.find((i) => i.id === artifactId)?.noticeKey : undefined;
+          const keys = new Set([artifactId, ...(insightKey ? [insightKey] : [])]);
+          const done = new Set((state.judgement.verdicts ?? []).filter((v) => keys.has(v.artifactId)).flatMap((v) => v.graded));
+          const found = artifactKind === 'moment' ? state.judgement.recent.filter((r) => r.momentId === artifactId) : (state.judgement.recentByArtifact ?? []).filter((r) => r.artifactId !== null && keys.has(r.artifactId));
+          const behind = found.filter((r) => !done.has(r.questionSetId));
+          const useful = verdict === 'useful';
+          const verdicts = [...keys].reduce((v, key) => rememberVerdict(v, key, useful, event.ts, behind.map((r) => r.questionSetId)), state.judgement.verdicts);
+          return { ...state.judgement, questions: behind.length === 0 ? state.judgement.questions : gradeRows(state.judgement.questions, behind, useful, event.ts), verdicts };
         })();
 
   // A `useful` verdict on a FACT is evidence, and until 2026-08-14 it was the one
@@ -304,16 +311,9 @@ export const feedbackTrack: Rule = (state, event) => {
     };
   }
 
-  // And on an ANSWER, only if the owner kept it. An unkept answer is history
-  // rather than memory: nothing indexed it, so there is nothing to withdraw and
-  // the verdict is recorded and stops there.
-  if (verdict === 'wrong' && artifactKind === 'ask_thread') {
-    const keptEntryId = state.ask.recent.find((t) => t.id === artifactId)?.rememberedEntryId;
-    return {
-      state: carried,
-      effects: keptEntryId ? [{ type: 'RetractKnowledgeEntry', entryId: keptEntryId, reason: `owner verdict: wrong (kept answer ${artifactId})`, ts: event.ts }] : [],
-    };
-  }
+  // An ANSWER (`ask_thread`: a chat turn, `<session>#<n>`) is history, not memory: the verdict is
+  // recorded and stops here. W6 P4 retired the Ask surface's kept answers (`state.ask`, last folded
+  // 2026-08-15); the four the owner kept are knowledge entries, and a verdict on one lands there.
 
   // Only a `wrong` verdict on a FACT retracts a belief. `not-now` is explicitly
   // about timing, so it never touches belief — the distinction those three

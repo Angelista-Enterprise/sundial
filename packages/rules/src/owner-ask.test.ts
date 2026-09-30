@@ -1,7 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { createInitialState } from '@sundial/kernel/initial-state.js';
-import type { Effect, KernelState, OpenOwnerAsk, SanitizedEvent } from '@sundial/kernel/types.js';
-import { askClass, askPrecision, ownerAsk, quietClass, rebuildAskClassGain, unanswerable } from './owner-ask.js';
+import { createInitialState, hydrateSnapshot } from '@sundial/kernel/initial-state.js';
+import { askLoop, openAsk } from '@sundial/helpers/loops.js';
+import type { Effect, KernelState, OpenLoop, OpenOwnerAsk, SanitizedEvent } from '@sundial/kernel/types.js';
+import { reduce } from '@sundial/kernel/reduce.js';
+import { RULE_MANIFEST } from './index.js';
+import { loopTrack } from './loop-track.js';
+import { askClass, askPrecision, ownerAsk as countAsk, quietClass, rebuildAskClassGain, unanswerable } from './owner-ask.js';
+
+// W2 M3: the open question is an `owner-ask` loop `loopTrack` folds; `ownerAsk` counts and records it after, on the same event.
+function ownerAsk(state: KernelState, event: SanitizedEvent): { state: KernelState; effects: Effect[] } {
+  const a = loopTrack(state, event);
+  const b = countAsk(a.state, event);
+  return { state: b.state, effects: [...a.effects, ...b.effects] };
+}
 
 const NOW = '2026-01-01T09:00:00.000Z';
 
@@ -30,8 +41,29 @@ const OPEN: OpenOwnerAsk = {
 
 function withOpen(open: OpenOwnerAsk | null, counts: { askedCount?: number; answeredCount?: number } = {}): KernelState {
   const state = createInitialState('d1');
-  return { ...state, ownerAsk: { ...state.ownerAsk, open, askedCount: counts.askedCount ?? 1, answeredCount: counts.answeredCount ?? 0, recent: [] } };
+  return { ...state, ownerAsk: { ...state.ownerAsk, askedCount: counts.askedCount ?? 1, answeredCount: counts.answeredCount ?? 0, recent: [] }, loops: { ...state.loops, open: open === null ? [] : [askLoop(open) as OpenLoop] } };
 }
+
+describe('W2 M3: the order the manifest folds an answer in', () => {
+  it('listenToReply and askHarvest read the open question, then loopTrack closes it and ownerAsk records it — all on the one event', () => {
+    const base = withOpen(OPEN);
+    const state = { ...base, config: { ...base.config, ownerAliases: ['Mira Bakker'] } };
+    const out = reduce(state, answered({ askId: 'owner-ask:1', answer: 'Its own project, puzzlebox-studio.' }, '2026-01-01T09:05:00.000Z'), RULE_MANIFEST);
+    const harvest = out.effects.find((e) => e.effect.type === 'ScheduleLLM' && e.ruleName === 'askHarvest');
+    expect(JSON.stringify(harvest?.effect)).toContain(OPEN.question);
+    expect(openAsk(out.state)).toBeNull();
+    expect(out.state.ownerAsk.answeredCount).toBe(1);
+    expect(out.effects.filter((e) => e.effect.type === 'WriteDB' && e.ruleName === 'ownerAsk')).toHaveLength(1);
+  });
+
+  it('a wake-up due and an ask gone on the same tick: both happen', () => {
+    const state = hydrateSnapshot('d1', { ownerAsk: { ...withOpen(OPEN).ownerAsk, open: OPEN }, wakeups: { open: [{ key: 'check-box-484', at: '2026-01-02T09:00:30.000Z', reason: 'check BOX-484', scheduledAt: NOW }] } } as unknown as Partial<KernelState>);
+    const out = ownerAsk(state, tick('2026-01-02T09:01:00.000Z'));
+    expect(openAsk(out.state)).toBeNull();
+    expect(emitted(out.effects).map((e) => e.event.payload.kind)).toEqual(['wakeup']);
+    expect(written(out.effects)[0]?.row.outcome).toBe('expired');
+  });
+});
 
 describe('ownerAsk', () => {
   it('ignores events it does not own', () => {
@@ -44,7 +76,7 @@ describe('ownerAsk', () => {
   it('opens a question and emits it as an ordinary notice candidate, not a private channel', () => {
     const { state: next, effects } = ownerAsk(createInitialState('d1'), opened({ askId: 'owner-ask:1', question: 'Which project is this?', reason: 'two match' }));
 
-    expect(next.ownerAsk.open).toEqual({ askId: 'owner-ask:1', question: 'Which project is this?', reason: 'two match', choices: [], ts: NOW });
+    expect(openAsk(next)).toEqual({ askId: 'owner-ask:1', question: 'Which project is this?', reason: 'two match', choices: [], ts: NOW });
     expect(next.ownerAsk.askedCount).toBe(1);
 
     const [candidate] = emitted(effects);
@@ -57,7 +89,7 @@ describe('ownerAsk', () => {
   it('a WAITING ask skips the gate: no candidate, one ask-open Notify, and the open slot says so', () => {
     const { state: next, effects } = ownerAsk(createInitialState('d1'), opened({ askId: 'owner-ask:1', question: 'Which project is this?', mode: 'wait' }));
 
-    expect(next.ownerAsk.open?.waiting).toBe(true);
+    expect(openAsk(next)?.waiting).toBe(true);
     expect(emitted(effects)).toEqual([]);
     expect(effects).toEqual([{ type: 'Notify', channel: 'ask-open', payload: { askId: 'owner-ask:1' } }]);
   });
@@ -67,7 +99,7 @@ describe('ownerAsk', () => {
   // the tool's schema, so a bad list would otherwise reach state and the screen.
   describe('one-tap answers', () => {
     const choicesOf = (choices: unknown) =>
-      ownerAsk(createInitialState('d1'), opened({ askId: 'a', question: 'Which project?', choices })).state.ownerAsk.open?.choices;
+      openAsk(ownerAsk(createInitialState('d1'), opened({ askId: 'a', question: 'Which project?', choices })).state)?.choices;
 
     it('keeps a short closed set in the order it was offered', () => {
       expect(choicesOf(['sundial', 'overture', 'neither'])).toEqual(['sundial', 'overture', 'neither']);
@@ -114,13 +146,13 @@ describe('ownerAsk', () => {
 
   it('ignores an empty question', () => {
     const { state: next } = ownerAsk(createInitialState('d1'), opened({ question: '   ' }));
-    expect(next.ownerAsk.open).toBeNull();
+    expect(openAsk(next)).toBeNull();
   });
 
   it('closes on an answer and writes the durable row', () => {
     const { state: next, effects } = ownerAsk(withOpen(OPEN), answered({ askId: 'owner-ask:1', answer: "It's its own project." }, '2026-01-01T09:05:00.000Z'));
 
-    expect(next.ownerAsk.open).toBeNull();
+    expect(openAsk(next)).toBeNull();
     expect(next.ownerAsk.answeredCount).toBe(1);
 
     const [row] = written(effects);
@@ -165,7 +197,7 @@ describe('ownerAsk', () => {
   it('expires an ignored question after a day and RECORDS the silence — an answered-only table would look perfectly calibrated', () => {
     const { state: next, effects } = ownerAsk(withOpen(OPEN), tick('2026-01-02T09:01:00.000Z'));
 
-    expect(next.ownerAsk.open).toBeNull();
+    expect(openAsk(next)).toBeNull();
     // Not counted as answered: being ignored is not a reply.
     expect(next.ownerAsk.answeredCount).toBe(0);
 
@@ -184,17 +216,17 @@ describe('ownerAsk', () => {
 
   it('remembers an answered question and refuses to open the same one again within six hours', () => {
     const answered = ownerAsk(withOpen(OPEN), { id: 'e-a', type: 'ask:owner-answered', ts: NOW, payload: { askId: 'owner-ask:1', answer: 'Fine, nothing to keep' } } as never);
-    expect(answered.state.ownerAsk.open).toBeNull();
+    expect(openAsk(answered.state)).toBeNull();
     expect(answered.state.ownerAsk.recent).toEqual([{ askId: 'owner-ask:1', question: OPEN.question, answer: 'Fine, nothing to keep', answeredAt: NOW }]);
     // Same words, different id, five minutes later: the companion trying to recover an id. Dropped.
     const later = new Date(Date.parse(NOW) + 5 * 60_000).toISOString();
     const again = ownerAsk(answered.state, { ...opened({ askId: 'owner-ask:2', question: `  ${OPEN.question.toUpperCase()} ` }), ts: later } as never);
-    expect(again.state.ownerAsk.open).toBeNull();
+    expect(openAsk(again.state)).toBeNull();
     expect(again.effects).toEqual([]);
     // Seven hours later the same words are a new question.
     const nextDay = new Date(Date.parse(NOW) + 7 * 60 * 60_000).toISOString();
     const fresh = ownerAsk(answered.state, { ...opened({ askId: 'owner-ask:3', question: OPEN.question }), ts: nextDay } as never);
-    expect(fresh.state.ownerAsk.open?.askId).toBe('owner-ask:3');
+    expect(openAsk(fresh.state)?.askId).toBe('owner-ask:3');
   });
 
   it('does not prefix the gate key twice when the ask id already carries owner-ask:', () => {
@@ -205,7 +237,7 @@ describe('ownerAsk', () => {
   it('derives the same ids when the same open event is replayed', () => {
     const first = ownerAsk(createInitialState('d1'), opened({ question: 'Which project?' }));
     const second = ownerAsk(createInitialState('d1'), opened({ question: 'Which project?' }));
-    expect(first.state.ownerAsk.open?.askId).toBe(second.state.ownerAsk.open?.askId);
+    expect(openAsk(first.state)?.askId).toBe(openAsk(second.state)?.askId);
     expect(emitted(first.effects)[0].event.id).toBe(emitted(second.effects)[0].event.id);
   });
 
@@ -219,20 +251,20 @@ describe('ownerAsk', () => {
     it('refuses a question quoting a person-<hash> alias', () => {
       const question = 'Who is person-9f8e7d6c5b? They were in "Android developer meeting" with you and person-a1a2a3a4a5, Acme Office, person-b1b2b3b4b5.';
       const { state, effects } = ownerAsk(createInitialState('d1'), opened({ askId: 'owner-ask:who-person-9f8e7d6c5b', question }));
-      expect(state.ownerAsk.open).toBeNull();
+      expect(openAsk(state)).toBeNull();
       expect(state.ownerAsk.askedCount).toBe(0);
       expect(effects).toEqual([]);
     });
 
     it('refuses a question quoting a [private] or [hidden] placeholder', () => {
       for (const question of ['What were you doing in [private] this morning?', 'Was [hidden] work or not?']) {
-        expect(ownerAsk(createInitialState('d1'), opened({ question })).state.ownerAsk.open).toBeNull();
+        expect(openAsk(ownerAsk(createInitialState('d1'), opened({ question })).state)).toBeNull();
       }
     });
 
     it('still opens an ordinary question, and one that merely mentions a person by name', () => {
       for (const question of ['How did the standup go?', 'Was the meeting with Alex about the migration?']) {
-        expect(ownerAsk(createInitialState('d1'), opened({ question })).state.ownerAsk.open?.question).toBe(question);
+        expect(openAsk(ownerAsk(createInitialState('d1'), opened({ question })).state)?.question).toBe(question);
       }
     });
 

@@ -49,7 +49,6 @@ export const SERVICES = [
   { sep: true, title: 'Experiments' },
   { id: 'forecasting', label: 'Forecasts', what: 'The shape of your day, predicted and scored.', path: 'experiments.forecasting' },
   { id: 'gateFeatures', label: 'Gate features', what: 'Logs what the judge saw beside every notice decision.', path: 'experiments.gateFeatures' },
-  { id: 'learnedGate', label: 'Learned gate', what: 'A fitted model replaces the fixed notice bar. Only once it wins on held-out data.', path: 'experiments.learnedGate', needs: 'About 100 notices you marked Useful, Not now or Wrong.' },
   { id: 'ownerState', label: 'Your state in the gate', what: 'How you feel prices an interruption.', path: 'experiments.ownerStateInGateCost', needs: 'Two weeks of self-report taps, scoring 0.15 or better.' },
 ]
 
@@ -102,7 +101,7 @@ const isOn = (v) => v !== false && v !== 'off' && v !== 'unset' && v !== null
  * The rows the card draws: each service with its value in the saved file, the
  * value this process booted with, its choices, and its last signal.
  */
-export function describe(config, booted, freshness, claude = {}) {
+export function describe(config, pendingRestart, freshness, claude = {}) {
   const last = new Map(freshness.map((f) => [`${f.signalType}:${f.eventType}`, f.lastCapturedAt]))
   const value = (s) => (s.claude ? claude[s.claude] === true : valueOf(s, config))
   const byId = new Map(SERVICES.filter((s) => !s.sep).map((s) => [s.id, s]))
@@ -117,7 +116,8 @@ export function describe(config, booted, freshness, claude = {}) {
         what: s.what,
         needs: s.needs ?? null,
         value: value(s),
-        changed: s.path ? valueOf(s, config) !== valueOf(s, booted) : false,
+        // W3: waiting for a restart, by the log's own list (`state.config.pendingRestart`).
+        changed: s.path ? pendingRestart.some((p) => s.path === p || s.path.startsWith(`${p}.`) || p.startsWith(`${s.path}.`)) : false,
         live: Boolean(s.claude),
         under: s.under ?? null,
         choices: (s.path || s.claude) && !s.text ? choices(s) : null,

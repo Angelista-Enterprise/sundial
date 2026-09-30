@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { BACKFILL_MANIFEST } from '@sundial/rules/manifest.js';
-import { findRepos, readCommits, readMeetings } from './backfill.js';
+import { findRepos, readCommits, readMeetings, runBackfill } from './backfill.js';
+import { initializeDatabase, resetDb } from '@sundial/db/index.js';
 
 const root = mkdtempSync(path.join(tmpdir(), 'sundial-backfill-'));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -64,4 +65,24 @@ describe('back-fill', () => {
   it('folds a back-filled event only through rules that are true about the past', () => {
     expect(BACKFILL_MANIFEST.map((r) => r.name)).toEqual(['entityExtract']);
   });
+
+  it('W6 D7: a back-filled row keeps its real time as its ts and says when it was appended (observedAt)', async () => {
+    const env = { ...process.env };
+    process.env.DATABASE_URL = `file:${path.join(root, 'backfill.db')}`;
+    resetDb();
+    await initializeDatabase();
+    try {
+      const appended: { type: string; payload: Record<string, unknown>; ts?: string }[] = [];
+      const before = new Date().toISOString();
+      await runBackfill({ roots: [path.join(root, 'code')], gitDays: 30, calendarDays: 0, mailDays: 0 }, async (type, payload, ts) => void appended.push({ type, payload, ts }));
+      const commit = appended.find((a) => a.type === 'git:commit')!;
+      expect(commit.ts).toBe(commit.payload.timestamp);
+      expect(String(commit.payload.observedAt) >= before).toBe(true);
+      expect(commit.payload).toMatchObject({ backfill: true });
+    } finally {
+      resetDb();
+      process.env = env;
+    }
+  });
 });
+

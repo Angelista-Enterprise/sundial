@@ -1,5 +1,6 @@
 import { createInitialState } from '@sundial/kernel/initial-state.js';
-import type { Effect, KernelState, SanitizedEvent } from '@sundial/kernel/types.js';
+import { askLoop } from '@sundial/helpers/loops.js';
+import type { Effect, KernelState, OpenLoop, SanitizedEvent } from '@sundial/kernel/types.js';
 import { describe, expect, it } from 'vitest';
 import { WHO_ASK_PREFIX, namedAttendees, peopleAsk } from './people-ask.js';
 
@@ -106,7 +107,7 @@ describe('peopleAsk', () => {
   it('does not ask while another question is open, and never about a named attendee', () => {
     const state = withMeeting(['Alex', 'Jordan']);
     expect(peopleAsk(state, tick('2026-09-07T10:05:00.000Z')).effects).toEqual([]);
-    const busy = { ...withMeeting(['person-c205ca11f2']), ownerAsk: { open: { askId: 'owner-ask:1', question: 'q', reason: '', choices: [], ts: END }, askedCount: 1, answeredCount: 0, recent: [], lastBackfillAt: null, backfillDone: false, classGain: {} } };
+    const busy = { ...withMeeting(['person-c205ca11f2']), loops: { ...createInitialState('d').loops, open: [askLoop({ askId: 'owner-ask:1', question: 'q', reason: '', choices: [], ts: END }) as OpenLoop] } };
     expect(peopleAsk(busy, tick('2026-09-07T10:05:00.000Z')).effects).toEqual([]);
   });
 

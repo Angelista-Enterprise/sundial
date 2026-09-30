@@ -1,6 +1,9 @@
 node_modules/
 dist/
 *.tsbuildinfo
+# Declarations tsc emits beside a plugin's .js: plugins have no build step.
+plugins/**/*.d.ts
+plugins/**/*.d.ts.map
 .DS_Store
 .pnpm-store/
 

@@ -22,7 +22,11 @@ describe('ScreenVisionSensor (J3.3)', () => {
       expect(body.images[0]).toBe(Buffer.from('jpegbytes').toString('base64'));
       return new Response(JSON.stringify({ response: '{"facts":["A pull request diff is open"]}' }), { status: 200 });
     }) as unknown as typeof fetch;
-    const sensor = new ScreenVisionSensor({ enabled: true, model: 'gemma4:e4b-mlx', intervalMs: 1000, framePath: frame, fetchImpl });
+    const rows: { id?: string; purpose: string; model: string }[] = [];
+    const settles: { success: boolean }[] = [];
+    const openAudit = async (row: { purpose: string; model: string }) => (rows.push(row), { settle: async (patch: { success: boolean }) => void settles.push(patch) });
+    const reserve = async () => 'call-v1';
+    const sensor = new ScreenVisionSensor({ enabled: true, model: 'gemma4:e4b-mlx', intervalMs: 1000, framePath: frame, fetchImpl, openAudit, reserve });
     expect(sensor.poll(10_000)).toEqual([]);
     fs.writeFileSync(frame, 'jpegbytes');
     const now = Date.now();
@@ -32,9 +36,34 @@ describe('ScreenVisionSensor (J3.3)', () => {
     expect(calls).toHaveLength(1);
     expect(events).toHaveLength(1);
     expect(events[0].payload).toMatchObject({ facts: ['A pull request diff is open'], model: 'gemma4:e4b-mlx' });
+    // W3: the call is one ledger row, opened before and settled after.
+    expect(rows).toMatchObject([{ id: 'call-v1', purpose: 'vision', model: 'gemma4:e4b-mlx', route: 'ollama' }]);
+    expect(settles).toMatchObject([{ success: true }]);
     // Same frame, next interval: not sent again.
     expect(sensor.poll(now + 5000)).toEqual([]);
     expect(calls).toHaveLength(1);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('W5: a refused reservation (cap or breaker) sends nothing and opens no row', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gnomon-vision-'));
+    const frame = path.join(dir, 'screen-frame.jpg');
+    fs.writeFileSync(frame, 'jpegbytes');
+    let fetched = 0;
+    let opened = 0;
+    const sensor = new ScreenVisionSensor({
+      enabled: true,
+      model: 'gemma4:e4b-mlx',
+      intervalMs: 1000,
+      framePath: frame,
+      fetchImpl: (async () => (fetched++, new Response('{}'))) as unknown as typeof fetch,
+      openAudit: async () => (opened++, { settle: async () => undefined }),
+      reserve: async () => null,
+    });
+    sensor.poll(Date.now());
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sensor.poll(Date.now() + 10)).toEqual([]);
+    expect([fetched, opened]).toEqual([0, 0]);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });

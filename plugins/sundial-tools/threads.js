@@ -18,9 +18,7 @@
  * by the test beside this file. `archived` is counted rather than listed: the
  * card counts it too, and the owner has to press to see it.
  */
-
-/** The companion's seat id. Spelled out in the shell and the proactive plugin too; a plugin cannot import another's module. */
-const COMPANION_SESSION_ID = 'gnomon-companion';
+import { COMPANION_SESSION_ID } from '@sundial/helpers/vocab.js';
 
 /**
  * A session the rail hides: Gnomon's own work sessions, ones with no turn in

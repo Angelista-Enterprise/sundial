@@ -13,12 +13,13 @@
 // button on a banner and the owner saying "not now" in chat are the same fact
 // arriving by different roads; making them two facts would mean two habituation
 // paths that could disagree.
+import { VERDICTS as VERDICT_LIST } from '@sundial/helpers/vocab.js'
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, watch, writeFileSync } from 'node:fs'
 
 const RUNTIME_DIR = (home) => `${home}/.daemon`
 const REQUEST_FILE = 'notice-request.json'
 const VERDICT_PREFIX = 'notice-verdict-'
-const VERDICTS = new Set(['useful', 'wrong', 'not-now'])
+const VERDICTS = new Set(VERDICT_LIST)
 
 /**
  * Writes the request the launcher polls for.

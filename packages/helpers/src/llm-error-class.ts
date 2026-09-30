@@ -123,3 +123,16 @@ export function redactUrlCredentials(text: string): string {
     return withoutQuery.replace(/^(https?:\/\/)[^/@]*@/i, '$1');
   });
 }
+
+/**
+ * W3: `redactUrlCredentials`, and a key-shaped word anywhere in the text. A
+ * provider's error body can echo the key it refused (`Incorrect API key
+ * provided: sk-…`), and an `Authorization: Bearer …` header can ride along in
+ * a thrown request dump. Applied before any provider error text is written to
+ * `llm_audit` or put on an event.
+ */
+export function redactSecrets(text: string): string {
+  return redactUrlCredentials(text)
+    .replace(/\bsk-[A-Za-z0-9_-]{6,}/g, 'sk-[redacted]')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{6,}/gi, 'Bearer [redacted]');
+}

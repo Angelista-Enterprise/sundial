@@ -31,3 +31,4 @@ export * from './screen-text-filter.js';
 export * from './screen-track.js';
 
 export { settingsTrack } from './settings-track.js';
+export { configTrack } from './config-track.js';

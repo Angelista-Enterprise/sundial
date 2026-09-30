@@ -64,7 +64,7 @@ function report(goalId: string, p: GoalPursuit, ts: string, eventId: string): Ef
 }
 
 /**
- * J5.3 — goal pursuit, L6. For a goal the owner marked ACTIVE: once a week a
+ * J5.3 — goal pursuit, L6. For a goal the owner marked ACTIVE: once a week (the Monday boundary) a
  * plan (`RunGoalPlan`, the tier-3 text model, on demand), whose internal steps
  * run one at a time as dsh agent jobs through the workbench (`work:requested`
  * with `goalId`/`stepId`), each result graded by the judge (`grade-step`),
@@ -77,14 +77,14 @@ export const goalPursuit: Rule = (state, event) => {
   const pursuit = state.goals.pursuit ?? {};
   const withPursuit = (next: Record<string, GoalPursuit>): KernelState => ({ ...state, goals: { ...state.goals, pursuit: next } });
 
-  if (event.type === 'day:boundary' || event.type === 'goal:pursue') {
-    const requested = event.type === 'goal:pursue' ? (event.payload as { goalId?: unknown }).goalId : null;
-    if (event.type === 'day:boundary' && localWeekday(event.ts, state.config.timezone) !== 'Monday') return { state, effects: [] };
+  // W6 P17: `goal:pursue` (the owner asking for a plan now) had no producer, so its branch went;
+  // a goal is planned on the Monday boundary, once a week.
+  if (event.type === 'day:boundary') {
+    if (localWeekday(event.ts, state.config.timezone) !== 'Monday') return { state, effects: [] };
     const effects: Effect[] = [];
     for (const goal of activeGoals(state)) {
-      if (typeof requested === 'string' && requested !== goal.entityId) continue;
       const current = pursuit[goal.entityId];
-      if (current && Date.parse(event.ts) - Date.parse(current.plannedAt) < WEEK_MS && requested === null) continue;
+      if (current && Date.parse(event.ts) - Date.parse(current.plannedAt) < WEEK_MS) continue;
       effects.push({ type: 'RunGoalPlan', goalId: goal.entityId, goalName: goalLabel(goal), progress: (state.goals.progress[goal.entityId] ?? []).slice(-10).map((e) => e.momentId), ts: event.ts });
     }
     return { state, effects };

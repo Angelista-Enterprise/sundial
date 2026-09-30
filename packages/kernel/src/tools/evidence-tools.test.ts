@@ -13,6 +13,7 @@
 // so a small default is a cheap look rather than a gamble, and `nextOffset`
 // returns rows the model has NOT already seen.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { toolEnv } from '../tool-env.js';
 
 const mocks = vi.hoisted(() => ({
   getSignalsInRange: vi.fn(),
@@ -116,7 +117,7 @@ describe('gnomon_signals paging', () => {
     mocks.countSignalsInRange.mockResolvedValue(412);
     mocks.getSignalsInRange.mockResolvedValue([signal(1), signal(2)]);
 
-    const out = (await tool('gnomon_signals').handler({ date: '2026-09-12' } as never)) as { total: number; count: number; nextOffset?: number; note?: string };
+    const out = (await tool('gnomon_signals').handler({ date: '2026-09-12' } as never, toolEnv())) as { total: number; count: number; nextOffset?: number; note?: string };
 
     // The count cannot come from `rows.length` — rows is one page. A separate
     // indexed COUNT is what buys the small default its honesty.
@@ -133,7 +134,7 @@ describe('gnomon_signals paging', () => {
     mocks.countSignalsInRange.mockResolvedValue(100);
     mocks.getSignalsInRange.mockResolvedValue(Array.from({ length: 25 }, (_, i) => signal(i)));
 
-    const out = (await tool('gnomon_signals').handler({ date: '2026-09-12' } as never)) as { nextOffset: number; note: string };
+    const out = (await tool('gnomon_signals').handler({ date: '2026-09-12' } as never, toolEnv())) as { nextOffset: number; note: string };
 
     expect(out.nextOffset).toBe(25);
     expect(out.note).toContain('offset: 25');
@@ -144,7 +145,7 @@ describe('gnomon_signals paging', () => {
     mocks.countSignalsInRange.mockResolvedValue(100);
     mocks.getSignalsInRange.mockResolvedValue([signal(25)]);
 
-    const out = (await tool('gnomon_signals').handler({ date: '2026-09-12', offset: 25 } as never)) as { offset: number };
+    const out = (await tool('gnomon_signals').handler({ date: '2026-09-12', offset: 25 } as never, toolEnv())) as { offset: number };
 
     expect(mocks.getSignalsInRange.mock.calls[0]![4]).toBe(25);
     expect(out.offset).toBe(25);
@@ -155,7 +156,7 @@ describe('gnomon_signals paging', () => {
     mocks.countSignalsInRange.mockResolvedValue(1);
     mocks.getSignalsInRange.mockResolvedValue([{ ...signal(1), signalType: 'audio', eventType: 'transcript', data: { spokenText: said } }]);
 
-    const out = (await tool('gnomon_signals').handler({ date: '2026-09-22', signalType: 'audio', from: '09:00', to: '09:30', contains: 'hint' } as never)) as { rows?: unknown; from: string; contains: string } & Record<string, unknown>;
+    const out = (await tool('gnomon_signals').handler({ date: '2026-09-22', signalType: 'audio', from: '09:00', to: '09:30', contains: 'hint' } as never, toolEnv())) as { rows?: unknown; from: string; contains: string } & Record<string, unknown>;
 
     const [start, end, , types, , contains] = mocks.getSignalsInRange.mock.calls[0]!;
     expect([start, end]).toEqual(['2026-09-22T09:00:00.000Z', '2026-09-22T09:30:00.000Z']);
@@ -171,7 +172,7 @@ describe('gnomon_signals paging', () => {
     mocks.countSignalsInRange.mockResolvedValue(2);
     mocks.getSignalsInRange.mockResolvedValue([signal(1), signal(2)]);
 
-    const out = (await tool('gnomon_signals').handler({ date: '2026-09-12' } as never)) as { nextOffset?: number; note?: string };
+    const out = (await tool('gnomon_signals').handler({ date: '2026-09-12' } as never, toolEnv())) as { nextOffset?: number; note?: string };
 
     expect(out.nextOffset).toBeUndefined();
     expect(out.note).toBeUndefined();
@@ -186,7 +187,7 @@ describe('gnomon_signals paging', () => {
       Array.from({ length: 200 }, (_, i) => ({ ...signal(i), data: { command: 'x'.repeat(500) } })),
     );
 
-    const out = await tool('gnomon_signals').handler({ date: '2026-09-12', limit: 200 } as never);
+    const out = await tool('gnomon_signals').handler({ date: '2026-09-12', limit: 200 } as never, toolEnv());
 
     expect(JSON.stringify(out).length).toBeLessThan(RESULT_BUDGET_CHARS + 1_000);
   });
@@ -209,7 +210,7 @@ describe('gnomon_code_activity paging', () => {
   it('pages the FILE list and reports how many the day holds in all', async () => {
     mocks.getCodeActivityForDate.mockResolvedValue(summary(120));
 
-    const out = (await tool('gnomon_code_activity').handler({ date: '2026-09-12' } as never)) as {
+    const out = (await tool('gnomon_code_activity').handler({ date: '2026-09-12' } as never, toolEnv())) as {
       files: { file: string }[];
       fileCount: number;
       nextOffset?: number;
@@ -226,7 +227,7 @@ describe('gnomon_code_activity paging', () => {
   it('gives commits their own count, because one offset cannot mean two lists', async () => {
     mocks.getCodeActivityForDate.mockResolvedValue(summary(5));
 
-    const out = (await tool('gnomon_code_activity').handler({ date: '2026-09-12' } as never)) as { commitCount: number; nextOffset?: number };
+    const out = (await tool('gnomon_code_activity').handler({ date: '2026-09-12' } as never, toolEnv())) as { commitCount: number; nextOffset?: number };
 
     expect(out.commitCount).toBe(1);
     expect(out.nextOffset).toBeUndefined();
@@ -235,8 +236,8 @@ describe('gnomon_code_activity paging', () => {
   it('starts where the caller asked, with no row shared with page one', async () => {
     mocks.getCodeActivityForDate.mockResolvedValue(summary(120));
 
-    const first = (await tool('gnomon_code_activity').handler({ date: '2026-09-12' } as never)) as { files: { file: string }[]; nextOffset: number };
-    const second = (await tool('gnomon_code_activity').handler({ date: '2026-09-12', offset: first.nextOffset } as never)) as { files: { file: string }[] };
+    const first = (await tool('gnomon_code_activity').handler({ date: '2026-09-12' } as never, toolEnv())) as { files: { file: string }[]; nextOffset: number };
+    const second = (await tool('gnomon_code_activity').handler({ date: '2026-09-12', offset: first.nextOffset } as never, toolEnv())) as { files: { file: string }[] };
 
     const firstFiles = new Set(first.files.map((f) => f.file));
     expect(second.files.some((f) => firstFiles.has(f.file))).toBe(false);

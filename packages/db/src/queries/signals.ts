@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, gt, gte, inArray, lt, lte, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, gte, inArray, lt, or, sql } from 'drizzle-orm';
 import { localDate, localDayRange } from '@sundial/helpers/local-day.js';
 import { getDb } from '../db-client.js';
 import { signals } from '../schemas/db-schema.js';
@@ -185,52 +185,6 @@ export async function getSignalFreshness(): Promise<SignalFreshness[]> {
     .from(signals)
     .groupBy(signals.signalType, signals.eventType)
     .orderBy(signals.signalType, signals.eventType);
-}
-
-export interface RedactionSummary {
-  from: string;
-  to: string;
-  events: number; // number of privacy:redacted signals in range
-  total: number; // total individual values scrubbed
-  byProperty: { property: string; count: number }[]; // desc by count
-  bySourceType: { sourceType: string; count: number }[]; // desc by count
-}
-
-/**
- * The read surface for the `privacy:redacted` trail (P4) — aggregates every
- * `privacy` signal in `[from, to]` into per-property and per-source-type
- * redaction counts. The retired CLI's `gnomon privacy` rendered it; since that
- * CLI was deleted (9a6988c) nothing calls it, so the trail has no read surface
- * again (almanac/concepts/sanitize-at-ingest). Reads
- * rows and folds in JS rather than json_extract-ing in SQL — the payload's
- * `properties` is a variable-keyed map, not a fixed column set.
- */
-export async function getRedactionSummary(from: string, to: string): Promise<RedactionSummary> {
-  const db = getDb();
-  const rows = await db
-    .select({ data: signals.data })
-    .from(signals)
-    .where(and(eq(signals.signalType, 'privacy'), gte(signals.capturedAt, from), lte(signals.capturedAt, to)));
-
-  const byProperty = new Map<string, number>();
-  const bySourceType = new Map<string, number>();
-  let total = 0;
-  for (const row of rows) {
-    const payload = JSON.parse(row.data) as { properties?: Record<string, number>; total?: number; sourceType?: string };
-    const properties = payload.properties ?? {};
-    let rowTotal = 0;
-    for (const [property, count] of Object.entries(properties)) {
-      byProperty.set(property, (byProperty.get(property) ?? 0) + count);
-      rowTotal += count;
-    }
-    total += rowTotal;
-    if (payload.sourceType) bySourceType.set(payload.sourceType, (bySourceType.get(payload.sourceType) ?? 0) + (payload.total ?? rowTotal));
-  }
-
-  const toSorted = <K extends string>(m: Map<string, number>, key: K) =>
-    [...m.entries()].map(([k, count]) => ({ [key]: k, count }) as { [P in K]: string } & { count: number }).sort((a, b) => b.count - a.count);
-
-  return { from, to, events: rows.length, total, byProperty: toSorted(byProperty, 'property'), bySourceType: toSorted(bySourceType, 'sourceType') };
 }
 
 /**
@@ -423,11 +377,13 @@ export async function getToolCalls(): Promise<ToolCallRow[]> {
            coalesce(json_extract(data, '$.action'), json_extract(data, '$.tool')) AS action,
            count(*) AS calls,
            sum(CASE WHEN json_extract(data, '$.outcome') = 'failed' THEN 1 ELSE 0 END) AS failed,
-           sum(CASE WHEN json_extract(data, '$.outcome') = 'refused' THEN 1 ELSE 0 END) AS refused,
+           sum(CASE WHEN event_type = 'decided' OR json_extract(data, '$.outcome') = 'refused' THEN 1 ELSE 0 END) AS refused,
            max(captured_at) AS lastAt
       FROM signals
-     WHERE signal_type = 'action' AND event_type = 'performed'
-       AND json_extract(data, '$.outcome') IS NOT NULL
+     WHERE signal_type = 'action'
+       AND ((event_type = 'performed' AND json_extract(data, '$.outcome') IS NOT NULL)
+         -- W3: a refusal is its gate verdict now; rows from before still carry outcome 'refused'.
+         OR (event_type = 'decided' AND json_extract(data, '$.verdict') = 'deny'))
      GROUP BY 1, 2
      ORDER BY calls DESC
   `);

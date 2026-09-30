@@ -60,8 +60,13 @@ export interface ToolLoopOptions {
    * once per question and record one dispatch, which was correct when a
    * question was one call; a five-round answer against a once-checked cap
    * spends five calls the budget never saw.
+   *
+   * W3: it may return the reservation's call id, which becomes that round's audit row id.
+   * W5: `overCap` on the forced final answer: reserve it past a spent cap (it
+   * is one call, and what was gathered is worth an answer), but still refuse it
+   * when the route's breaker is open.
    */
-  beforeCall?: (roundIndex: number) => Promise<void>;
+  beforeCall?: (roundIndex: number, options?: { overCap?: boolean }) => Promise<string | void>;
   onRound?: (round: ToolLoopRound) => void;
   /**
    * The caller's own acceptance test for the final content — for a caller that
@@ -228,11 +233,11 @@ export async function runToolLoop(options: ToolLoopOptions): Promise<ToolLoopRes
   const repairFormat = async (content: string, roundIndex: number): Promise<string> => {
     if (!options.validate || options.validate(content)) return content;
     try {
-      await options.beforeCall?.(roundIndex);
+      const callId = await options.beforeCall?.(roundIndex);
       // The rejected reply goes back as the assistant turn it was, so the model
       // reformats what it already wrote instead of researching the day again.
       messages.push({ role: 'assistant', content });
-      const { result, ms } = await call(roundIndex, 'repair');
+      const { result, ms } = await call(roundIndex, 'repair', callId);
       rounds.push({ index: roundIndex, ms, auditId: result.auditId, calls: [] });
       options.onRound?.(rounds[rounds.length - 1]);
       const repaired = stripLeakedToolMarkup(result.content);
@@ -254,7 +259,7 @@ export async function runToolLoop(options: ToolLoopOptions): Promise<ToolLoopRes
     return options.validate ? FINAL_ANSWER_INSTRUCTION_STRUCTURED : FINAL_ANSWER_INSTRUCTION;
   };
 
-  const call = async (roundIndex: number, mode: 'gather' | 'final' | 'repair') => {
+  const call = async (roundIndex: number, mode: 'gather' | 'final' | 'repair', callId?: string | void) => {
     const startedRound = Date.now();
     const forced = mode !== 'gather';
     const result = await runAuditedLlmCall({
@@ -268,6 +273,7 @@ export async function runToolLoop(options: ToolLoopOptions): Promise<ToolLoopRes
       timeoutMs: options.requestTimeoutMs,
       tools: forced ? undefined : options.tools,
       toolChoice: undefined,
+      ...(callId ? { callId } : {}),
     });
     return { result, ms: Date.now() - startedRound, index: roundIndex };
   };
@@ -288,7 +294,15 @@ export async function runToolLoop(options: ToolLoopOptions): Promise<ToolLoopRes
    */
   const finalAnswer = async (roundIndex: number, stopReason: ToolLoopStopReason): Promise<ToolLoopResult> => {
     try {
-      const { result, ms } = await call(roundIndex, 'final');
+      // W3/W5: the forced answer reserves like any round, so its row joins a
+      // spend: past a spent cap (`overCap`), since what was gathered is worth an
+      // answer. Refused anyway (the breaker is open, the kernel is down): no call.
+      const callId = await options.beforeCall?.(roundIndex, { overCap: true }).catch((error: unknown) => {
+        if (error instanceof BudgetExhaustedError) return null;
+        throw error;
+      });
+      if (callId === null) return { content: '', rounds, toolsUsed, stopReason };
+      const { result, ms } = await call(roundIndex, 'final', callId);
       rounds.push({ index: roundIndex, ms, auditId: result.auditId, calls: [] });
       options.onRound?.(rounds[rounds.length - 1]);
       const content = await repairFormat(stripLeakedToolMarkup(result.content), roundIndex + 1);
@@ -305,8 +319,9 @@ export async function runToolLoop(options: ToolLoopOptions): Promise<ToolLoopRes
   };
 
   for (let roundIndex = 1; roundIndex <= maxRounds; roundIndex++) {
+    let callId: string | void = undefined;
     try {
-      await options.beforeCall?.(roundIndex);
+      callId = await options.beforeCall?.(roundIndex);
     } catch (error) {
       if (!(error instanceof BudgetExhaustedError)) throw error;
       // Nothing gathered yet and no budget to gather with — there is no answer
@@ -315,7 +330,7 @@ export async function runToolLoop(options: ToolLoopOptions): Promise<ToolLoopRes
       return finalAnswer(roundIndex, 'budget');
     }
 
-    const { result, ms } = await call(roundIndex, 'gather');
+    const { result, ms } = await call(roundIndex, 'gather', callId);
 
     if (result.toolCalls.length === 0) {
       rounds.push({ index: roundIndex, ms, auditId: result.auditId, calls: [] });

@@ -1,3 +1,4 @@
+import { param } from '@sundial/kernel/calibrated.js';
 import type { KernelState, Rule, UncertaintyGap } from '@sundial/kernel/types.js';
 import { fragmentationPrior } from './hour-fragmented-forecast.js';
 import { projectTouchPrior } from './project-touch-forecast.js';
@@ -12,7 +13,6 @@ const MAX_GAPS = 5;
 
 /** Matches `day-shape-forecast.ts`, so the probability scored here is the one that forecaster would actually produce. */
 const HOUR_RATE_SMOOTHING = 6;
-const UNINFORMED_DAY_ENDING_RATE = 1 / 24;
 const PROB_EPS = 0.02;
 
 const clampProb = (p: number): number => Math.max(PROB_EPS, Math.min(1 - PROB_EPS, p));
@@ -96,14 +96,14 @@ export function excessLogLoss(n: number, hits: number, predicted: number): numbe
 }
 
 /** The `day-ending` forecaster's own smoothed prior, reproduced so the loss estimated here is the loss it would really take. */
-function hourlyPrior(hourlyDoneRate: KernelState['predictions']['hourlyDoneRate'], hour: number): number {
+function hourlyPrior(hourlyDoneRate: KernelState['predictions']['hourlyDoneRate'], hour: number, seed: number): number {
   let n = 0;
   let hits = 0;
   for (const cell of Object.values(hourlyDoneRate)) {
     n += cell.n;
     hits += cell.hits;
   }
-  const base = n === 0 ? UNINFORMED_DAY_ENDING_RATE : hits / n;
+  const base = n === 0 ? seed : hits / n;
   const cell = hourlyDoneRate[hour] ?? { n: 0, hits: 0 };
   return clampProb((cell.hits + base * HOUR_RATE_SMOOTHING) / (cell.n + HOUR_RATE_SMOOTHING));
 }
@@ -114,6 +114,8 @@ function hourLabel(hour: number): string {
 }
 
 function rankGaps(predictions: KernelState['predictions']): UncertaintyGap[] {
+  // The forecasters' own seeds (W5 loop D), so the loss estimated here is the loss they take.
+  const seed = (kind: string) => param({ predictions } as KernelState, `forecast.base:${kind}`).value;
   const hourlyDoneRate = predictions.hourlyDoneRate;
   const gaps: UncertaintyGap[] = [];
   for (const [key, cell] of Object.entries(hourlyDoneRate)) {
@@ -122,7 +124,7 @@ function rankGaps(predictions: KernelState['predictions']): UncertaintyGap[] {
     // maximally unknown and completely uninteresting.
     if (cell.n <= 0) continue;
     const hour = Number(key);
-    const predicted = hourlyPrior(hourlyDoneRate, hour);
+    const predicted = hourlyPrior(hourlyDoneRate, hour, seed('day-ending'));
 
     // A cell with PROVEN structure is scored on its conditioned bets: the
     // sample-weighted loss over the arms, each arm judged against the bet the
@@ -180,7 +182,7 @@ function rankGaps(predictions: KernelState['predictions']): UncertaintyGap[] {
   // sense of what it predicts badly.
   for (const [key, cell] of Object.entries(predictions.fragmentation.byPrevState)) {
     if (cell.n <= 0) continue;
-    const predicted = fragmentationPrior(predictions.fragmentation, key as 'prev-frag' | 'prev-calm');
+    const predicted = fragmentationPrior(predictions.fragmentation, key as 'prev-frag' | 'prev-calm', seed('hour-fragmented'));
     gaps.push({
       kind: 'hour-fragmented',
       forecaster: 'prev-hour-lag',
@@ -194,7 +196,7 @@ function rankGaps(predictions: KernelState['predictions']): UncertaintyGap[] {
   }
   for (const [project, cell] of Object.entries(predictions.projectTouch.byProject)) {
     if (cell.n <= 0) continue;
-    const predicted = projectTouchPrior(predictions.projectTouch, project);
+    const predicted = projectTouchPrior(predictions.projectTouch, project, seed('project-touched'));
     gaps.push({
       kind: 'project-touched',
       forecaster: 'project-rate',

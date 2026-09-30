@@ -1,16 +1,16 @@
-import type { AgentFleetEntry, Effect, KernelState, NightJob, NightShiftState, Rule } from '@sundial/kernel/types.js';
+import type { AgentFleetEntry, KernelState, NightJob, NightShiftState, Rule } from '@sundial/kernel/types.js';
 import { deriveId } from '@sundial/helpers/derive-id.js';
+import { levelOf } from '@sundial/kernel/autonomy.js';
 import { localDate } from '@sundial/helpers/local-day.js';
 import { ownerIsAway } from './workbench.js';
 
 // lane E (#12): the night shift. The rule decides WHEN a job starts, watches it
 // through the agent fleet, and asks the runner (plugins/sundial-proactive/
-// night-shift.js, over the Notify channel below) to start, collect or stop.
+// night-shift.js, the executor's `job` actor, W3) to start (`StartJob`) or to
+// collect or stop (`StopJob`).
 // It never approves anything: a job waiting on a permission stays waiting, and
 // the fleet's own `agent-permission` notice is what speaks.
 
-/** The Notify channel the runner listens on. */
-export const NIGHT_SHIFT_CHANNEL = 'night-shift';
 /** Jobs waiting for the night. A fourth is refused: that is a backlog, not a night. */
 export const MAX_QUEUED_NIGHT_JOBS = 3;
 export const MAX_RECENT_NIGHT_JOBS = 20;
@@ -29,10 +29,6 @@ const short = (id: string): string => id.replace(/[^A-Za-z0-9]/g, '').slice(-12)
 
 /** The folder a job's session runs in ends with this: the runner makes `<home>/night-shift/<short id>`. */
 export const jobFolderTail = (id: string): string => `/night-shift/${short(id)}`;
-
-function notify(payload: Record<string, unknown>): Effect {
-  return { type: 'Notify', channel: NIGHT_SHIFT_CHANNEL, payload };
-}
 
 function put(state: KernelState, ns: NightShiftState): KernelState {
   return { ...state, nightShift: ns };
@@ -67,7 +63,7 @@ function close(state: KernelState, ns: NightShiftState, job: NightJob, status: '
 /** Ask the runner to stop the open job, once. */
 function stop(state: KernelState, ns: NightShiftState, job: NightJob, reason: string, ts: string): ReturnType<Rule> {
   if (job.status === 'stopping') return { state, effects: [] };
-  return { state: put(state, { ...ns, open: { ...job, status: 'stopping', stopReason: reason, openedAt: ts } }), effects: [notify({ action: 'stop', jobId: job.id, reason })] };
+  return { state: put(state, { ...ns, open: { ...job, status: 'stopping', stopReason: reason, openedAt: ts } }), effects: [{ type: 'StopJob', jobId: job.id, outcome: 'stopped', reason }] };
 }
 
 /**
@@ -126,7 +122,7 @@ export const nightShift: Rule = (state, event) => {
     if (jobs && typeof job.costUsd === 'number' && job.costUsd >= jobs.maxUsdPerJob) return stop(state, { ...ns, open: job }, job, 'budget', event.ts);
     // The turn is over (or ended on an error): collect the result.
     if ((session.state === 'waiting' && job.seenWorking) || session.state === 'failed') {
-      return { state: put(state, { ...ns, open: { ...job, status: 'finishing', openedAt: event.ts } }), effects: [notify({ action: 'finish', jobId: job.id, failed: session.state === 'failed' })] };
+      return { state: put(state, { ...ns, open: { ...job, status: 'finishing', openedAt: event.ts } }), effects: [{ type: 'StopJob', jobId: job.id, outcome: session.state === 'failed' ? 'failed' : 'done' }] };
     }
     const status = OWNER_WAITS.includes(session.state) ? 'waiting' : 'running';
     return { state: put(state, { ...ns, open: { ...job, status } }), effects: [] };
@@ -146,7 +142,8 @@ export const nightShift: Rule = (state, event) => {
     return { state, effects: [] };
   }
 
-  if (!on(state) || !jobs || ns.queue.length === 0 || !ownerIsAway(state)) return { state, effects: [] };
+  // W5 step 10: the owner can turn the night shift's capability off; queued jobs then wait.
+  if (!on(state) || !jobs || ns.queue.length === 0 || !ownerIsAway(state) || levelOf(state, 'night-jobs') === 'off') return { state, effects: [] };
   const night = nightOf(event.ts, state.config.timezone);
   const tonight = ns.night === night ? ns : { ...ns, night, countTonight: 0, spentUsdTonight: 0 };
   if (tonight.countTonight >= jobs.maxJobsPerNight || tonight.spentUsdTonight >= jobs.maxUsdPerNight) return tonight === ns ? { state, effects: [] } : { state: put(state, tonight), effects: [] };
@@ -154,6 +151,6 @@ export const nightShift: Rule = (state, event) => {
   const starting: NightJob = { ...job, status: 'starting', openedAt: event.ts };
   return {
     state: put(state, { ...tonight, queue: rest, open: starting, countTonight: tonight.countTonight + 1 }),
-    effects: [notify({ action: 'start', job: { id: job.id, repo: job.repo, subject: job.subject, brief: job.brief }, folder: short(job.id), maxMinutes: jobs.maxMinutes })],
+    effects: [{ type: 'StartJob', job: { id: job.id, repo: job.repo, subject: job.subject, brief: job.brief }, folder: short(job.id), maxMinutes: jobs.maxMinutes }],
   };
 };

@@ -20,7 +20,7 @@
  */
 import { deriveId } from '@sundial/helpers/derive-id.js';
 import { localDate } from '@sundial/helpers/local-day.js';
-import { briefHeader, briefsOf, isStandupLike, meetingPrepKey, othersIn, prepLines, silenced, standupLines, type PrepMeeting } from '@sundial/kernel/briefs.js';
+import { briefHeader, briefKey, briefsOf, isStandupLike, meetingPrepKey, othersIn, prepLines, silenced, standupLines, weekReviewDue, type PrepMeeting } from '@sundial/kernel/briefs.js';
 import type { BriefDay, BriefState, Commitment, Effect, KernelState, Rule, SanitizedEvent, UpcomingEvent } from '@sundial/kernel/types.js';
 import { fadingWeight, fadingWords, SPEAK_BEFORE_MS } from './promise-track.js';
 import { samePerson } from './promise-terms.js';
@@ -180,7 +180,7 @@ function onTick(state: KernelState, event: SanitizedEvent): Result {
 
     // A standup: the day's draft, once a day, even when two standups share the morning.
     if (m.event && isStandupLike(s, m.event)) {
-      const dayKey = `standup-draft:${localDate(m.start, tz)}`;
+      const dayKey = briefKey({ kind: 'standup-draft', title: m.title, start: m.start }, tz);
       // A fold that holds no earlier day (just deployed) cannot say what yesterday was: stay quiet rather than say "no work".
       const heldBefore = Object.keys(s.briefs?.days ?? {}).some((d) => d < localDate(m.start, tz));
       if (s.briefs?.done[dayKey] || silenced(s, 'standup-draft') || !heldBefore) {
@@ -205,10 +205,30 @@ function onTick(state: KernelState, event: SanitizedEvent): Result {
   return result;
 }
 
+/** How often the week in review is composed again while it is due, so Friday afternoon's work reaches it. */
+export const WEEK_EVERY_MS = 60 * 60_000;
+
+/** W4 step 7: while the week is due, ask the executor to compose it, at most once an hour. */
+function askWeek(result: Result, event: SanitizedEvent): Result {
+  const briefs = briefsOf(result.state);
+  if (!weekReviewDue(event.ts, result.state.config.timezone)) return result;
+  if (briefs.weekAskedAt && Date.parse(event.ts) - Date.parse(briefs.weekAskedAt) < WEEK_EVERY_MS) return result;
+  return { state: { ...result.state, briefs: { ...briefs, weekAskedAt: event.ts } }, effects: [...result.effects, { type: 'ComposeWeekReview', at: event.ts }] };
+}
+
+function onWeekComposed(state: KernelState, event: SanitizedEvent): Result {
+  const p = event.payload as Record<string, unknown>;
+  const lines = Array.isArray(p.lines) ? p.lines.filter((l): l is string => typeof l === 'string').slice(0, 20) : [];
+  if (!str(p.from) || !str(p.to) || lines.length === 0) return { state, effects: [] };
+  return { state: { ...state, briefs: { ...briefsOf(state), week: { from: str(p.from), to: str(p.to), lines, at: str(p.at) || event.ts } } }, effects: [] };
+}
+
 export const briefClock: Rule = (state, event) => {
   switch (event.type) {
     case 'clock:tick':
-      return onTick(state, event);
+      return askWeek(onTick(state, event), event);
+    case 'brief:week-composed':
+      return onWeekComposed(state, event);
     case 'git:commit':
       return onCommit(state, event);
     case 'git:pr-status':

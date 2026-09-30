@@ -3,7 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getSundialRuntimeDir } from '@sundial/helpers/sundial-paths.js';
-import { TOOL_REGISTRY } from '@sundial/kernel/tools/index.js';
+import { TOOL_REGISTRY, toolEnv } from '@sundial/kernel/tools/index.js';
 
 function textResult(value: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] };
@@ -34,7 +34,7 @@ export function registerTools(server: McpServer): void {
     server.tool(tool.name, tool.description, tool.schema, async (args: unknown) => {
       const started = Date.now();
       try {
-        const result = textResult(await tool.handler(args as never));
+        const result = textResult(await tool.handler(args as never, toolEnv()));
         recordMcpCall(tool.name, 'ok', started);
         return result;
       } catch (error) {

@@ -45,7 +45,7 @@ export interface ChatCompletionResult {
  * day of evidence, refutation runs over a handful of already-held beliefs and
  * is the natural first candidate for a cheaper model.
  */
-export type LlmPurpose = 'intent' | 'companion' | 'reflect' | 'extract' | 'journal' | 'ask' | 'refute' | 'goal' | 'transcript' | JudgementPurpose;
+export type LlmPurpose = 'intent' | 'companion' | 'reflect' | 'extract' | 'journal' | 'ask' | 'refute' | 'goal' | 'transcript' | 'hand' | 'vision' | JudgementPurpose;
 
 /**
  * The purposes a `Judge` effect runs under (docs/jarvis/02). Jev's, not the
@@ -75,6 +75,8 @@ export interface AuditedLlmCallOptions {
    */
   attempt?: number;
   parentCallId?: string | null;
+  /** W3: the id `reserveLlmCall` put on `llm:dispatched`, used as this row's id so the two records join. Absent: a fresh id. */
+  callId?: string;
 }
 
 /**

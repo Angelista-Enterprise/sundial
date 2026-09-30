@@ -8,8 +8,8 @@ function ownerTimeZone(): string {
   return loadSundialConfig().timezone;
 }
 
-function today(): string {
-  return localDate(new Date().toISOString(), ownerTimeZone());
+function today(now: Date): string {
+  return localDate(now.toISOString(), ownerTimeZone());
 }
 
 /**
@@ -242,8 +242,8 @@ export const EVIDENCE_TOOLS: GnomonTool[] = [
       offset: z.number().int().min(0).optional().describe('Where in the file list to start. Use the `nextOffset` from a previous call to read on; do not re-run with a bigger limit.'),
     },
     readOnly: true,
-    handler: async ({ date, projectRoot, limit, offset }) => {
-      const summary = await getCodeActivityForDate((date as string | undefined) ?? today(), ownerTimeZone(), projectRoot as string | undefined);
+    handler: async ({ date, projectRoot, limit, offset }, env) => {
+      const summary = await getCodeActivityForDate((date as string | undefined) ?? today(env.now), ownerTimeZone(), projectRoot as string | undefined);
       const { files, commits, ...head } = summary;
       // Files carry the bulk and are already sorted most-edited first, so a page
       // of them is the day's most significant work rather than its alphabetical
@@ -294,8 +294,8 @@ export const EVIDENCE_TOOLS: GnomonTool[] = [
         .describe('Where in the day to start, 0 for the beginning. Pass the `nextOffset` from a previous call to read on; do not re-run the same day with a bigger limit, which returns rows you already have.'),
     },
     readOnly: true,
-    handler: async ({ date, signalType, limit, offset, from: fromTime, to: toTime, contains }) => {
-      const day = (date as string | undefined) ?? today();
+    handler: async ({ date, signalType, limit, offset, from: fromTime, to: toTime, contains }, env) => {
+      const day = (date as string | undefined) ?? today(env.now);
       const range = localDayRange(day, ownerTimeZone());
       // HH:MM as minutes past the day's start — an hour out only on the two
       // days a year the clock changes, which this narrowing can live with.

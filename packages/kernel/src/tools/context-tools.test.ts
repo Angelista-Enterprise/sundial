@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { CONTEXT_TOOLS } from './context-tools.js';
 import { DEFAULT_PAGE_ROWS } from './evidence-tools.js';
+import { toolEnv } from '../tool-env.js';
 
 const mocks = vi.hoisted(() => ({
   getMomentById: vi.fn(),
@@ -72,7 +73,7 @@ describe('gnomon_today_summary', () => {
   it('is a summary, not the table: no window titles, pages or screen text', async () => {
     mocks.getMomentsForDate.mockResolvedValue([moment('m1', 0, 30), moment('m2', 40, 25)]);
 
-    const out = JSON.stringify(await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never));
+    const out = JSON.stringify(await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never, toolEnv()));
 
     expect(out).not.toContain('a window title number');
     expect(out).not.toContain('example.com/some/long/path');
@@ -90,7 +91,7 @@ describe('gnomon_today_summary', () => {
     it('marks a session that heard speech with the count, and says how to read it', async () => {
       mocks.getMomentsForDate.mockResolvedValue([moment('m1', 0, 30, 'Chrome', 'we agreed to ship on Friday'), moment('m2', 40, 25)]);
 
-      const out = (await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never)) as Record<string, unknown>;
+      const out = (await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never, toolEnv())) as Record<string, unknown>;
       const sessions = out.sessions as { id: string; heardChars?: number }[];
 
       expect(sessions.find((s) => s.id === 'm1')?.heardChars).toBe(27);
@@ -102,7 +103,7 @@ describe('gnomon_today_summary', () => {
     it('leaves the mark OFF a session that heard nothing — absent, never zero', async () => {
       mocks.getMomentsForDate.mockResolvedValue([moment('m1', 0, 30, 'Chrome', 'said something'), moment('m2', 40, 25)]);
 
-      const sessions = ((await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never)) as Record<string, unknown>)
+      const sessions = ((await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never, toolEnv())) as Record<string, unknown>)
         .sessions as Record<string, unknown>[];
 
       // A `0` would read as "the microphone was on and the room was silent",
@@ -113,7 +114,7 @@ describe('gnomon_today_summary', () => {
     it('adds no note at all to a day that heard nothing, so its presence answers "was anything recorded"', async () => {
       mocks.getMomentsForDate.mockResolvedValue([moment('m1', 0, 30), moment('m2', 40, 25)]);
 
-      const out = (await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never)) as Record<string, unknown>;
+      const out = (await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never, toolEnv())) as Record<string, unknown>;
 
       expect(out).not.toHaveProperty('heardNote');
     });
@@ -127,7 +128,7 @@ describe('gnomon_today_summary', () => {
       moment('long-2', 40, 12),
     ]);
 
-    const out = (await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never)) as {
+    const out = (await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never, toolEnv())) as {
       sessions: { id: string; min: number }[];
       sessionsNote: string;
     };
@@ -142,19 +143,19 @@ describe('gnomon_today_summary', () => {
     mocks.getMomentsForDate.mockResolvedValue([moment('m1', 0, 30)]);
     mocks.getMomentById.mockResolvedValue(moment('m1', 0, 30));
 
-    const out = (await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never)) as { sessions: { id: string }[] };
+    const out = (await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never, toolEnv())) as { sessions: { id: string }[] };
     const id = out.sessions[0]!.id;
     expect(id).toBe('m1');
 
     // The drill-down still holds everything the summary dropped.
-    const detail = JSON.stringify(await tool('gnomon_moment_detail').handler({ momentId: id } as never));
+    const detail = JSON.stringify(await tool('gnomon_moment_detail').handler({ momentId: id } as never, toolEnv()));
     expect(detail).toContain('a window title number');
     // Nothing was spent on this one, so no cost is carried: `$0.00` on every
     // moment would train the eye to skip the line.
     expect(detail).not.toContain('cost');
 
     mocks.getMomentCost.mockResolvedValueOnce({ calls: 63, failed: 3, costUsd: 1.250144, purposes: ['ask', 'intent'] });
-    const priced = (await tool('gnomon_moment_detail').handler({ momentId: id } as never)) as { data: { cost?: { calls: number } } };
+    const priced = (await tool('gnomon_moment_detail').handler({ momentId: id } as never, toolEnv())) as { data: { cost?: { calls: number } } };
     expect(priced.data.cost?.calls).toBe(63);
   });
 
@@ -169,7 +170,7 @@ describe('gnomon_today_summary', () => {
     const flicks = Array.from({ length: 250 }, (_, i) => moment(`flick-${i}`, i, 1));
     mocks.getMomentsForDate.mockResolvedValue([...flicks, moment('afternoon', 300, 45)]);
 
-    const out = (await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never)) as { sessions: { id: string }[] };
+    const out = (await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never, toolEnv())) as { sessions: { id: string }[] };
 
     expect(out.sessions.map((s) => s.id)).toContain('afternoon');
   });
@@ -189,7 +190,7 @@ describe('gnomon_recent_activity', () => {
       { id: 's1', signalType: 'screen', eventType: 'ocr', sessionId: null, capturedAt: '2026-09-09T09:00:00.000Z', data: { screenText: 'y'.repeat(3000), topics: ['terminal'], lineCount: 116 } },
     ]);
 
-    const out = (await tool('gnomon_recent_activity').handler({} as never)) as { signals: { data: Record<string, unknown> }[] };
+    const out = (await tool('gnomon_recent_activity').handler({} as never, toolEnv())) as { signals: { data: Record<string, unknown> }[] };
     const data = out.signals[0]!.data;
 
     expect((data.screenText as string).length).toBeLessThan(250);
@@ -205,7 +206,7 @@ describe('gnomon_recent_activity', () => {
       { id: 's1', signalType: 'window', eventType: 'changed', sessionId: null, capturedAt: '2026-09-09T09:00:00.000Z', data: { processName: 'Code', windowTitle: 'index.ts' } },
     ]);
 
-    const out = (await tool('gnomon_recent_activity').handler({} as never)) as { signals: { data: Record<string, unknown> }[] };
+    const out = (await tool('gnomon_recent_activity').handler({} as never, toolEnv())) as { signals: { data: Record<string, unknown> }[] };
     expect(out.signals[0]!.data).toEqual({ processName: 'Code', windowTitle: 'index.ts' });
   });
 
@@ -217,7 +218,7 @@ describe('gnomon_recent_activity', () => {
   it('asks the query for owner-evidence types, so volume cannot crowd out activity', async () => {
     mocks.getRecentSignals.mockResolvedValue([]);
 
-    await tool('gnomon_recent_activity').handler({} as never);
+    await tool('gnomon_recent_activity').handler({} as never, toolEnv());
 
     const [limit, types] = mocks.getRecentSignals.mock.calls[0]!;
     // The default page, plus the offset of 0 this call implies.
@@ -248,7 +249,7 @@ describe('a summary bounds itself, so it never becomes a preview', () => {
     // 400 sessions, every one long enough to be worth reading.
     mocks.getMomentsForDate.mockResolvedValue(Array.from({ length: 400 }, (_, i) => moment(`m${i}`, i * 10, 8)));
 
-    const out = await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never);
+    const out = await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never, toolEnv());
 
     expect(JSON.stringify(out).length).toBeLessThan(12_000);
   });
@@ -257,7 +258,7 @@ describe('a summary bounds itself, so it never becomes a preview', () => {
     const shorts = Array.from({ length: 300 }, (_, i) => moment(`short-${i}`, i, 3));
     mocks.getMomentsForDate.mockResolvedValue([...shorts, moment('the-long-one', 400, 90)]);
 
-    const out = (await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never)) as {
+    const out = (await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never, toolEnv())) as {
       sessions: { id: string; start: string }[];
       sessionsNote: string;
       sessionCount: number;
@@ -282,11 +283,11 @@ describe('a summary bounds itself, so it never becomes a preview', () => {
     const shorts = Array.from({ length: 300 }, (_, i) => moment(`short-${i}`, i, 3));
     mocks.getMomentsForDate.mockResolvedValue([...shorts, moment('the-long-one', 400, 90)]);
 
-    const first = (await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never)) as {
+    const first = (await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never, toolEnv())) as {
       sessions: { id: string }[];
       nextSessionOffset: number;
     };
-    const second = (await tool('gnomon_today_summary').handler({ date: '2026-09-09', offset: first.nextSessionOffset } as never)) as {
+    const second = (await tool('gnomon_today_summary').handler({ date: '2026-09-09', offset: first.nextSessionOffset } as never, toolEnv())) as {
       sessions: { id: string }[];
       sessionOffset: number;
     };
@@ -303,7 +304,7 @@ describe('a summary bounds itself, so it never becomes a preview', () => {
   it('ends the walk rather than looping: a page past the end is empty and offers no next', async () => {
     mocks.getMomentsForDate.mockResolvedValue([moment('only-one', 0, 30)]);
 
-    const out = (await tool('gnomon_today_summary').handler({ date: '2026-09-09', offset: 999 } as never)) as {
+    const out = (await tool('gnomon_today_summary').handler({ date: '2026-09-09', offset: 999 } as never, toolEnv())) as {
       sessions: unknown[];
       sessionCount: number;
       nextSessionOffset?: number;
@@ -317,7 +318,7 @@ describe('a summary bounds itself, so it never becomes a preview', () => {
   it('says what it left out and where the rest is', async () => {
     mocks.getMomentsForDate.mockResolvedValue([moment('long', 0, 30), moment('flick', 40, 1)]);
 
-    const out = (await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never)) as { sessionsNote: string };
+    const out = (await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never, toolEnv())) as { sessionsNote: string };
 
     // Says what is PRESENT and that the ranking is intact — a field that led
     // with what was missing made the model call the whole result truncated.

@@ -24,12 +24,12 @@
 //
 // `scoredSearch` is deliberately NOT here. Retrieval needs a query; the tools
 // carry that half. Routines are not here either (almanac/concepts/memory-tiers):
-// at about 27% out-of-sample precision they are candidates a person weighs, not
+// at the precision `routine.next` measures they are candidates a person weighs, not
 // context a model asserts from. `gnomon_routines` states its precision; a prompt line cannot.
 //
 // Split in two so the composition is testable without a database:
 // `gatherAmbientInput` does the reads, `composeAmbientContext` is pure.
-import { buildSituation } from './situation.js';
+import { readSituation } from './read/situation.js';
 import {
   findEntitiesByName,
   getAllEntities,
@@ -38,12 +38,8 @@ import {
   getMomentsForDate,
 } from '@sundial/db/index.js';
 import { localDate } from '@sundial/helpers/local-day.js';
+import { openAsk, wakeupsOf } from '@sundial/helpers/loops.js';
 import type { KernelState } from './types.js';
-
-export const AMBIENT_CONTEXT_NAME = 'gnomon:memory';
-
-/** Just after the clock (`-50`): the date first, then who this is about, then dsh's own runtime context. */
-export const AMBIENT_CONTEXT_ORDER = -40;
 
 /** Owner facts shown at most — the newest per predicate, then the newest overall. */
 export const MAX_OWNER_FACTS = 15;
@@ -309,6 +305,8 @@ export async function gatherAmbientInput(options: GatherAmbientOptions): Promise
     .map((entry) => ({ kind: entry.kind, title: entry.title }));
 
   const openGoal = state?.mind.goals.find((goal) => goal.closedAt === null) ?? null;
+  // The same present the screen draws (`read/situation.ts`).
+  const sit = state ? await readSituation({ state, now: Date.parse(now) }) : null;
 
   return {
     now,
@@ -328,14 +326,10 @@ export async function gatherAmbientInput(options: GatherAmbientOptions): Promise
       activeDays: commitment.activeDays.length,
       lastTouchedAt: commitment.lastTouchedAt,
     })),
-    wakeups: (state?.wakeups.open ?? []).map((wakeup) => ({ at: wakeup.at, reason: wakeup.reason })),
-    ownerAsk: state?.ownerAsk.open ? { question: state.ownerAsk.open.question, askId: state.ownerAsk.open.askId } : null,
+    wakeups: wakeupsOf(state).map((wakeup) => ({ at: wakeup.at, reason: wakeup.reason })),
+    ownerAsk: openAsk(state) ? { question: openAsk(state)!.question, askId: openAsk(state)!.askId } : null,
     researchGoal: openGoal ? { question: openGoal.question } : null,
-    moment: (() => {
-      if (!state) return null;
-      const sit = buildSituation(state, {}, Date.parse(now));
-      return { phase: sit.phase, question: sit.question, next: sit.next && sit.next.startsInMin <= 90 ? `${sit.next.title} in ${sit.next.startsInMin} min` : null };
-    })(),
+    moment: sit ? { phase: sit.phase, question: sit.question, next: sit.next && sit.next.startsInMin <= 90 ? `${sit.next.title} in ${sit.next.startsInMin} min` : null } : null,
     recentKnowledge,
     assistant: state ? { acceptedCount: state.assistant.acceptedCount, rejectedCount: state.assistant.rejectedCount } : null,
   };

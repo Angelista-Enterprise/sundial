@@ -17,6 +17,7 @@ import { rowFor } from './commitment-track.js';
 import type { MeetingPromise } from './promise-extract.js';
 import { briefsOf, meetingPrepKey } from '@sundial/kernel/briefs.js';
 import { counterpartyIn, defaultDue, keyNouns, namesDeliverable, parseDue, parseStatedPromise, samePerson } from './promise-terms.js';
+import { openAsk } from '@sundial/helpers/loops.js';
 
 /** Open promises kept in state. Its own cap: twenty branch threads can no longer evict one (U1-F22). */
 export const MAX_PROMISES = 20;
@@ -552,7 +553,7 @@ function keptQuestion(state: KernelState, thread: Commitment, event: SanitizedEv
 function tickClock(state: KernelState, event: SanitizedEvent): Result {
   const now = Date.parse(event.ts);
   let result: Result = { state, effects: [] };
-  let asked = state.ownerAsk.open !== null || state.commitments.promiseAsk !== null;
+  let asked = openAsk(state) !== null || state.commitments.promiseAsk !== null;
   for (const thread of state.commitments.promises) {
     const terms = thread.promise;
     if (!terms?.due) continue;
@@ -626,7 +627,7 @@ function rememberAsk(state: KernelState, event: SanitizedEvent): Result {
   const pa = p.promiseAsk;
   const askId = str(p.askId);
   // `ownerAsk` folds later on this same event and keeps the ask only when none is open, so an ask it will drop is not remembered.
-  if (!pa || askId === '' || state.ownerAsk.open !== null) return { state, effects: [] };
+  if (!pa || askId === '' || openAsk(state) !== null) return { state, effects: [] };
   const ids = Array.isArray(pa.ids) ? pa.ids.filter((i): i is string => typeof i === 'string') : [];
   const attendees = Array.isArray(pa.attendees) ? pa.attendees.filter((a): a is string => typeof a === 'string') : [];
   const m = pa.meeting as { title?: unknown; start?: unknown } | null | undefined;
@@ -694,7 +695,7 @@ function answerAsk(state: KernelState, event: SanitizedEvent): Result {
 
 /** An expired question is forgotten with the ask, so the next one can be put. */
 const forgetExpired = (state: KernelState): Result =>
-  state.commitments.promiseAsk && state.ownerAsk.open?.askId !== state.commitments.promiseAsk.askId ? { state: { ...state, commitments: { ...state.commitments, promiseAsk: null } }, effects: [] } : { state, effects: [] };
+  state.commitments.promiseAsk && openAsk(state)?.askId !== state.commitments.promiseAsk.askId ? { state: { ...state, commitments: { ...state.commitments, promiseAsk: null } }, effects: [] } : { state, effects: [] };
 
 /** U1-F29: the owner closing a promise by hand, with a reason — kept, not kept, dropped — or moving it to a new date. */
 function closeByOwner(state: KernelState, event: SanitizedEvent): Result {

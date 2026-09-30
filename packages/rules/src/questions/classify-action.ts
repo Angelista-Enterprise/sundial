@@ -9,7 +9,7 @@
  * finding 10).
  */
 import type { JudgementResultPayload } from '@sundial/kernel/types.js';
-import { choice, clip, noul, score, type QuestionSet } from './index.js';
+import { choice, clip, noul, score, type QuestionSet, keyed } from './index.js';
 
 export interface ClassifyActionInput {
   tool: string;
@@ -27,7 +27,7 @@ const stringify = (value: unknown, max: number): string => {
 export const ACTION_LEVELS = ['read', 'internal_reversible', 'internal_irreversible', 'outward'] as const;
 export type ActionLevel = (typeof ACTION_LEVELS)[number];
 
-export const CLASSIFY_ACTION_QUESTIONS = {
+export const CLASSIFY_ACTION_QUESTIONS = keyed('classify-action', {
   level: choice('What does the call `tool` with `arguments` do, judged from the tool and the arguments alone?', {
     read: 'Only reads, lists, searches or reports; it changes nothing.',
     internal_reversible: 'Changes something on this machine that can be undone afterwards: a note, a record, a scheduled reminder, a file edit inside a workspace under version control.',
@@ -35,7 +35,7 @@ export const CLASSIFY_ACTION_QUESTIONS = {
     outward: 'Reaches outside this machine or to other people: sends, posts, pushes, publishes, buys, messages, changes a shared calendar or service.',
   }),
   stakes: score('If this call went wrong, how much would it cost the owner?', ['Nothing: harmless either way.', 'Low: easy to notice and put right.', 'Medium: real time or attention to repair, or someone else notices.', 'High: money, lost data, other people, or trust.']),
-};
+});
 
 export const classifyAction: QuestionSet<[ClassifyActionInput]> = {
   id: 'classify-action',
@@ -52,9 +52,9 @@ export interface VerifyActionInput {
   result: unknown;
 }
 
-export const VERIFY_ACTION_QUESTIONS = {
+export const VERIFY_ACTION_QUESTIONS = keyed('verify-action', {
   carried_out: noul('Does `result` show that `tool` did what `arguments` asked — completed, with no error, refusal, timeout or empty outcome?'),
-};
+});
 
 export const verifyAction: QuestionSet<[VerifyActionInput]> = {
   id: 'verify-action',

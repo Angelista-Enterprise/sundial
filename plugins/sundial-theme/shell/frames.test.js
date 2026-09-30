@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isOwnerMessage, liveFrames, parseLoose, recentTurns, replayFrames, streamFrames, textOf, titleFrom } from './frames.js';
+import { briefCause, isOwnerMessage, liveFrames, parseLoose, recentTurns, replayFrames, streamFrames, textOf, titleFrom } from './frames.js';
 
 // One `agent/assistant-stream` chunk publication, the shape dsh 0.1.5 emits.
 const chunk = (c) => ({ type: 'chunk', attemptId: 'attempt-1', revision: 1, index: 0, time: 0, chunk: c });
@@ -13,6 +13,19 @@ const called = (callId, name, args) => ({ type: 'tool/call', data: { callId, nam
 const returned = (callId, extra = {}) => ({
   type: 'tool/result',
   data: { message: { content: [{ type: 'tool-result', toolCallId: callId, content: [] }] }, ...extra },
+});
+
+describe('briefCause (W1 step 6)', () => {
+  it('a restart between the notice and the reply still carries the notice key', async () => {
+    const { createInitialState, hydrateSnapshot } = await import('@sundial/kernel/initial-state.js');
+    // The slice `conversationTrack` folds from the notice's `chat:shown` (tested there).
+    const folded = { ...createInitialState('d'), conversation: { sessions: { 'gnomon-companion': { lastAt: '2026-09-29T12:00:00.000Z', shown: { briefId: 'brief-1', facts: [] }, cause: { noticeKey: 'absent:break', askId: null }, turns: [] } }, said: [] } };
+    // A restart: the state comes back from its snapshot, not from any closure.
+    const restored = hydrateSnapshot('d', JSON.parse(JSON.stringify(folded)));
+    expect(briefCause(restored, 'gnomon-companion')).toEqual({ noticeKey: 'absent:break', askId: null });
+    expect(briefCause(restored, 'session-7f')).toEqual({ noticeKey: null, askId: null });
+    expect(briefCause(null, 'gnomon-companion')).toEqual({ noticeKey: null, askId: null });
+  });
 });
 
 describe('textOf', () => {
@@ -242,3 +255,21 @@ describe('recentTurns (L8)', () => {
     expect(recentTurns([], 30)).toEqual({ frames: [], earlier: 0 });
   });
 });
+
+// W2: a follow-up line, live and on replay.
+describe('a follow-up line', () => {
+  const line = said('Follow-up: Pushed: puzzlebox-studio is up to date (263 commits were waiting).', { kind: 'plugin', plugin: 'sundial-proactive', form: 'notice', summary: 'Follow-up: Pushed: puzzlebox-studio is up to date (263 commits were waiting).' })
+  it('draws as Gnomon\'s own line, closed at once, live', () => {
+    expect(liveFrames(line)).toEqual([{ type: 'say', text: 'Pushed: puzzlebox-studio is up to date (263 commits were waiting).', followup: null }, { type: 'done', reason: 'complete' }])
+    // With the log's time, the line says when it was said.
+    expect(liveFrames({ ...line, time: Date.parse('2026-03-04T13:02:00Z') })[0].followup).toBe('2026-03-04T13:02:00.000Z')
+  })
+  it('and the same line on replay, under the turn before it', () => {
+    const turn = [{ type: 'turn/start', data: { turn: 1 } }, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '263 commits not pushed.' }] } } }, { type: 'turn/end', data: { reason: { kind: 'completed' } } }]
+    expect(replayFrames([...turn, line]).map((f) => f.type)).toEqual(['turn', 'say', 'done', 'say'])
+    expect(replayFrames([line])[0].text).toBe('Pushed: puzzlebox-studio is up to date (263 commits were waiting).')
+  })
+  it('is not the owner\'s words, and a plain notice is not a line', () => {
+    expect(liveFrames(said('Gnomon noticed something', { kind: 'plugin', form: 'notice', summary: 'Gnomon noticed: x' }))).toEqual([])
+  })
+})

@@ -9,7 +9,7 @@
  * names, what each is also known as when a `knownAs` belief exists, and one
  * line of where names come from. No verdict of ours in it.
  */
-import { clip, noul, type QuestionSet } from './index.js';
+import { clip, noul, type QuestionSet, keyed } from './index.js';
 
 export interface AlignAliasInput {
   kind: 'project' | 'person';
@@ -24,9 +24,9 @@ export const ALIGN_CONTEXT: Record<AlignAliasInput['kind'], string> = {
   person: "Both names were seen in a software developer's calendar attendee lists, speech and notes. The same colleague can appear as a first name, a full name, a nickname or a spelling variant; a `person-<hash>` is an address the assistant could not read.",
 };
 
-export const ALIGN_ALIAS_QUESTIONS = {
+export const ALIGN_ALIAS_QUESTIONS = keyed('align-alias', {
   same: noul('Do `name_a` and `name_b` refer to the same `entity_kind`?', { true: 'One thing under two names.', false: 'Two different things, or not enough here to say.' }),
-};
+});
 
 export const alignAlias: QuestionSet<[AlignAliasInput]> = {
   id: 'align-alias',

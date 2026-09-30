@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyLlmError, classifyStoredLlmError, redactUrlCredentials, LLM_ERROR_CLASSES } from './llm-error-class.js';
+import { classifyLlmError, classifyStoredLlmError, redactSecrets, redactUrlCredentials, LLM_ERROR_CLASSES } from './llm-error-class.js';
 
 /** The shape `@sundial/llm`'s transport throws on a non-2xx. */
 function httpError(status: number): Error {
@@ -32,6 +32,18 @@ describe('classifyLlmError — at the call site', () => {
     for (const error of [null, undefined, 'a string', new Error('who knows')]) {
       expect(LLM_ERROR_CLASSES).toContain(classifyLlmError(error));
     }
+  });
+});
+
+describe('redactSecrets (W3: before provider error text reaches llm_audit or an event)', () => {
+  it('scrubs key-shaped words and bearer tokens, and still strips URL credentials', () => {
+    expect(redactSecrets('401 Incorrect API key provided: sk-proj-EXAMPLE-EXAMPLE. You can find your key at https://platform.example.com/keys?token=abc')).toBe(
+      '401 Incorrect API key provided: sk-[redacted]. You can find your key at https://platform.example.com/keys',
+    );
+    expect(redactSecrets('request failed: Authorization: Bearer eyJhbGciOi.J9-xyz_123 rejected')).toBe('request failed: Authorization: Bearer [redacted] rejected');
+    expect(redactSecrets('fetch failed')).toBe('fetch failed');
+    // A word that merely starts with the letters is not a key.
+    expect(redactSecrets('the task-skip flag and a sketch')).toBe('the task-skip flag and a sketch');
   });
 });
 

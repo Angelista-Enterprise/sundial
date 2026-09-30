@@ -38,8 +38,16 @@ export const DEFAULT_MODEL = 'qwen/qwen3.8-flash-next';
 /** The hosted endpoint the two defaults below are model ids FOR. */
 const DEFAULT_MODEL_HOST = 'api.tensorx.ai';
 
-// config.json is read once: a change to it waits for a restart, like every other setting.
-let llmFile: ReturnType<typeof loadSundialConfig>['llm'] | null = null;
+type LlmSection = ReturnType<typeof loadSundialConfig>['llm'];
+/**
+ * W3: where the `llm` section is read. The kernel runtime points it at
+ * `state.config.llm` (config in the log), so a per-purpose model change applies
+ * without a restart; with no source (a process with no kernel) the file is read.
+ */
+let llmSource: (() => LlmSection | undefined) | null = null;
+export function setLlmConfigSource(fn: (() => LlmSection | undefined) | null): void {
+  llmSource = fn;
+}
 
 /**
  * The endpoint and model for one purpose: `llm.use[purpose]`, else
@@ -47,9 +55,9 @@ let llmFile: ReturnType<typeof loadSundialConfig>['llm'] | null = null;
  * provider falls through to the `.env` model rather than stopping the call.
  */
 export function getLlmConfig(purpose?: LlmPurpose): LlmConfig | null {
-  llmFile ??= loadSundialConfig().llm;
-  const id = (purpose && llmFile.use[purpose]) || llmFile.use.default;
-  const provider = llmFile.providers.find((p) => p.id === id);
+  const llm = llmSource?.() ?? loadSundialConfig().llm;
+  const id = (purpose && llm.use[purpose]) || llm.use.default;
+  const provider = llm.providers.find((p) => p.id === id);
   if (provider) return { route: provider.id, baseUrl: provider.baseUrl, apiKey: process.env[providerKeyEnv(provider.id)] || null, model: provider.model };
   const baseUrl = process.env.SUNDIAL_LLM_BASE_URL;
   if (!baseUrl) return null;

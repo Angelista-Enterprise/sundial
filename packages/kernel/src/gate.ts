@@ -93,6 +93,8 @@ export interface GatePolicy {
    * three-way split at zero utility.
    */
   deferFloor: number;
+  /** Interruptions an owner question may take over the cap. Absent: `RESERVED_OVER_CAP` (W5: the rule sets 0 unless the kind has earned it). */
+  reservedOverCap?: number;
 }
 
 export type Channel = 'tonic' | 'phasic' | 'suppressed' | 'deferred';
@@ -129,7 +131,13 @@ export interface Decision {
   /** Which term settled it — read by the harness, and by anyone asking why Gnomon stayed quiet. */
   reason: 'admitted' | 'below-threshold' | 'habituated' | 'budget-spent' | 'too-costly-now' | 'owner-silent' | 'owner-quiet' | 'owner-away' | 'expired'
     // lane D — #6: an interruption held by the route (a call, a focus mode), or pushed out of a full defer ring.
-    | 'held-call' | 'held-focus' | 'displaced';
+    | 'held-call' | 'held-focus' | 'displaced'
+    // W2: the delivery plugin could not deliver it (`notice:dropped`), with its reason.
+    | `undelivered:${string}`
+    // W5: a suppressed candidate of a thin kind, said in the list anyway so the kind still earns labels.
+    | 'exploration'
+    // W5 step 10: worth interrupting, said in the list because its kind has not earned interrupting alone.
+    | 'autonomy-ask';
   /** The arithmetic, for the decision record. */
   terms: DecisionTerms;
 }
@@ -235,7 +243,7 @@ export function decide(policy: GatePolicy, notices: NoticeState, candidate: Noti
   const urgent = candidate.valueHalfLifeMs !== null && candidate.valueHalfLifeMs <= policy.urgentBelowMs;
   // Over the day's interruptions, an urgent candidate falls through to the tonic path below.
   // An owner question may take one slot over the cap: the best-rated kind should not lose to the day's other noticing.
-  const cap = policy.phasicDailyCap + (RESERVED_KINDS.has(candidate.kind) ? RESERVED_OVER_CAP : 0);
+  const cap = policy.phasicDailyCap + (RESERVED_KINDS.has(candidate.kind) ? (policy.reservedOverCap ?? RESERVED_OVER_CAP) : 0);
   const capped = notices.day === localDay && (notices.phasicToday ?? 0) >= cap;
   if (urgent && !capped) {
     // Cost applies to the interrupting channel only. A tonic notice is a row in a

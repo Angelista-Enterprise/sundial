@@ -132,6 +132,23 @@ describe('gitAheadTrack', () => {
     const { state } = fold(createInitialState('d'), gitAheadTrack, [status('~/a', 'main', 2, 0), status('~/a', 'feat', 1, 10)]);
     expect(state.git.unpushed['~/a']).toMatchObject({ branch: 'feat', ahead: 1, since: at(10) });
   });
+
+  it('W6 D2: an ahead n → 0 on the same branch is a push, derived once; a hook push first, or a branch switch, derives none', () => {
+    const pushes = (events: ReturnType<typeof status>[]) => {
+      let state = createInitialState('d');
+      const out: Record<string, unknown>[] = [];
+      for (const e of events) {
+        const r = gitAheadTrack(state, e);
+        state = r.state;
+        for (const fx of r.effects) if (fx.type === 'EmitEvent' && fx.event.type === 'git:push') out.push(fx.event.payload);
+      }
+      return out;
+    };
+    expect(pushes([status('~/puzzlebox-studio', 'main', 3, 0), status('~/puzzlebox-studio', 'main', 0, 5)])).toEqual([{ timestamp: at(5), cwd: '~/puzzlebox-studio', branch: 'main', remote: null, derived: true, commits: 3 }]);
+    const hook = ev('git:push', { cwd: '~/puzzlebox-studio', branch: 'main', remote: 'origin', command: 'git push' }, at(4));
+    expect(pushes([status('~/puzzlebox-studio', 'main', 3, 0), hook, status('~/puzzlebox-studio', 'main', 0, 5)])).toEqual([]);
+    expect(pushes([status('~/puzzlebox-studio', 'feat', 3, 0), status('~/puzzlebox-studio', 'main', 0, 5)])).toEqual([]);
+  });
 });
 
 describe('callSpanTrack', () => {

@@ -3,7 +3,8 @@ import { deriveId } from '@sundial/helpers/derive-id.js';
 // reducer cannot disagree about what counts as the same question.
 import { recentlyAnswered } from '@sundial/helpers/asked.js';
 import { isRedactedPlaceholder } from '@sundial/helpers/redact/redact-policy.js';
-import type { AnsweredOwnerAsk, Effect, HabituationEntry, KernelState, OpenOwnerAsk, OwnerAskRow, Rule } from '@sundial/kernel/types.js';
+import { askLoop, askOf, closeLoop, type AskLike } from '@sundial/helpers/loops.js';
+import type { AnsweredOwnerAsk, Effect, HabituationEntry, KernelState, OpenLoop, OpenOwnerAsk, OwnerAskRow, Rule, SanitizedEvent } from '@sundial/kernel/types.js';
 import { REDACTION_ALIAS } from './entity-name-validation.js';
 import { DEFAULT_GATE_POLICY, habituatedGain } from './notice-gate.js';
 
@@ -153,9 +154,10 @@ export interface AskVerdictRow {
 export function rebuildAskClassGain(rows: readonly AskVerdictRow[]): Record<string, HabituationEntry> {
   const gain: Record<string, HabituationEntry> = {};
   for (const row of [...rows].sort((a, b) => a.at.localeCompare(b.at))) {
-    if (row.verdict !== 'wrong' && row.verdict !== 'not-now') continue;
     const cls = askClass(row.askId);
-    gain[cls] = quietClass(gain[cls], row.at);
+    // W5 loop H: `useful` restores the class, as it does in `feedbackTrack`.
+    if (row.verdict === 'useful') delete gain[cls];
+    else if (row.verdict === 'wrong' || row.verdict === 'not-now') gain[cls] = quietClass(gain[cls], row.at);
   }
   return gain;
 }
@@ -191,7 +193,7 @@ function choicesFrom(value: unknown): string[] {
   return seen.size < 2 ? [] : [...seen];
 }
 
-function rowFor(ask: OpenOwnerAsk, close: { answer: string | null; answeredAt: string | null; outcome: string }): OwnerAskRow {
+function rowFor(ask: OpenOwnerAsk | AskLike, close: { answer: string | null; answeredAt: string | null; outcome: string }): OwnerAskRow {
   return {
     id: ask.askId,
     question: ask.question,
@@ -232,7 +234,17 @@ export function unanswerable(question: string): string | null {
   return null;
 }
 
-export const ownerAsk: Rule = (state, event) => {
+const asksOf = (state: KernelState): OpenLoop[] => state.loops.open.filter((l) => l.kind === 'owner-ask');
+
+/**
+ * W2 M3: the open question is an `owner-ask` loop in `state.loops` (was `state.ownerAsk.open`),
+ * folded by `loopTrack` through this: opened (and said, through the gate or the seat), answered
+ * by an `ask:owner-answered` naming it (or naming none), or gone after `OWNER_ASK_TTL_MS`. The
+ * counts, the answered ring and the `owner_asks` rows stay with `ownerAsk` below, which reads what
+ * this did on the same event. `listenToReply` and `askHarvest` read the ask before it closes: they
+ * sit above `loopTrack` in the manifest.
+ */
+export function foldOwnerAsk(state: KernelState, event: SanitizedEvent): { state: KernelState; effects: Effect[] } | null {
   if (event.type === 'ask:owner-opened') {
     const question = trim(event.payload.question);
     if (question === '') return { state, effects: [] };
@@ -241,10 +253,10 @@ export const ownerAsk: Rule = (state, event) => {
     if (unanswerable(question) !== null) return { state, effects: [] };
 
     // A second question while one is pending is DROPPED, not queued. The tool
-    // reads `state.ownerAsk.open` and refuses first, so reaching here means a
+    // reads the open ask and refuses first, so reaching here means a
     // race, and losing the newer question is the safer half of that race: the
     // owner is already looking at one.
-    if (state.ownerAsk.open) return { state, effects: [] };
+    if (asksOf(state).length > 0) return { state, effects: [] };
 
     // Already answered a moment ago — by a tap in the seat, most likely, while
     // the companion still believed it owed the owner the question. Asking it
@@ -259,10 +271,9 @@ export const ownerAsk: Rule = (state, event) => {
     // gated prose turn later would put the same question twice.
     const waiting = event.payload.mode === 'wait';
     const open: OpenOwnerAsk = { askId, question, reason: trim(event.payload.reason), choices: choicesFrom(event.payload.choices), ts: event.ts, ...(waiting ? { waiting } : {}) };
-    const next = { ...state, ownerAsk: { ...state.ownerAsk, open, askedCount: state.ownerAsk.askedCount + 1 } };
+    const next = { ...state, loops: { ...state.loops, open: [...state.loops.open, askLoop(open, event.id) as OpenLoop] } };
 
     if (waiting) return { state: next, effects: [{ type: 'Notify', channel: ASK_OPEN_CHANNEL, payload: { askId } }] };
-
     return {
       state: next,
       effects: [
@@ -298,21 +309,43 @@ export const ownerAsk: Rule = (state, event) => {
   }
 
   if (event.type === 'ask:owner-answered') {
-    const open = state.ownerAsk.open;
-    if (!open) return { state, effects: [] };
+    const loop = asksOf(state)[0];
+    if (!loop) return { state, effects: [] };
 
     // Matched, not assumed: an answer naming a different ask is a stale reply
     // to a question that already expired, and folding it would attribute the
     // owner's words to the wrong question.
     const askId = trim(event.payload.askId);
-    if (askId !== '' && askId !== open.askId) return { state, effects: [] };
+    if (askId !== '' && askId !== loop.subject) return { state, effects: [] };
 
     const answer = trim(event.payload.answer);
     if (answer === '') return { state, effects: [] };
+    const closed: OpenLoop = { ...loop, status: 'resolved', detail: { ...loop.detail, answer, closedBy: event.id } };
+    return { state: { ...state, loops: closeLoop(state.loops, closed) }, effects: [] };
+  }
 
+  if (event.type !== 'clock:tick') return null;
+  const loop = asksOf(state)[0];
+  if (!loop || Date.parse(event.ts) - Date.parse(loop.openedAt) < OWNER_ASK_TTL_MS) return null;
+  const gone: OpenLoop = { ...loop, status: 'unsaid', detail: { ...loop.detail, closedBy: event.id } };
+  return { state: { ...state, loops: closeLoop(state.loops, gone) }, effects: [] };
+}
+
+/** The counts, the answered ring and the `owner_asks` rows, off what `foldOwnerAsk` did on this same event. */
+export const ownerAsk: Rule = (state, event) => {
+  if (event.type === 'ask:owner-opened') {
+    if (!asksOf(state).some((l) => l.detail?.openedBy === event.id)) return { state, effects: [] };
+    return { state: { ...state, ownerAsk: { ...state.ownerAsk, askedCount: state.ownerAsk.askedCount + 1 } }, effects: [] };
+  }
+  if (event.type !== 'ask:owner-answered' && event.type !== 'clock:tick') return { state, effects: [] };
+  const loop = state.loops.recent.find((l) => l.kind === 'owner-ask' && l.detail?.closedBy === event.id);
+  if (!loop) return { state, effects: [] };
+  const open = askOf(loop);
+
+  if (event.type === 'ask:owner-answered') {
+    const answer = String(loop.detail?.answer ?? '');
     const remembered: AnsweredOwnerAsk = { askId: open.askId, question: open.question, answer, answeredAt: event.ts };
     const ownerAskState: KernelState['ownerAsk'] = {
-      open: null,
       askedCount: state.ownerAsk.askedCount,
       answeredCount: state.ownerAsk.answeredCount + 1,
       recent: [...(state.ownerAsk.recent ?? []), remembered].slice(-RECENT_MAX),
@@ -326,14 +359,8 @@ export const ownerAsk: Rule = (state, event) => {
     return { state: { ...state, ownerAsk: ownerAskState }, effects };
   }
 
-  if (event.type !== 'clock:tick') return { state, effects: [] };
-
-  const open = state.ownerAsk.open;
-  if (!open) return { state, effects: [] };
-  if (Date.parse(event.ts) - Date.parse(open.ts) < OWNER_ASK_TTL_MS) return { state, effects: [] };
-
   return {
-    state: { ...state, ownerAsk: { ...state.ownerAsk, open: null } },
+    state,
     // Recorded rather than silently dropped: a question the owner ignored says
     // something about the asking, and a table of only-answered questions would
     // report the asking as perfectly calibrated by construction.

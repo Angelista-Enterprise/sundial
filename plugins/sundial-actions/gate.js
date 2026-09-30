@@ -41,6 +41,7 @@
 // TIGHTEN the preset-derived decision, never loosen it (off < ask < auto). It
 // governs ONLY gnomon's own tools; it no longer touches dsh's built-ins.
 
+import { getSundialConfigPath } from '@sundial/helpers/config.js'
 import { classifyCommand } from './destructive.js'
 
 /**
@@ -215,6 +216,12 @@ export function parseMcpToolName(toolName) {
  * client's name for it and `get_vault_file` is the thing that ran. And
  * `gnomon_call` is a door, not a tool: the row names the deferred tool that
  * went through it (`inner`), or every deferred call reads as one tool.
+ *
+ * W6 D6: `callId` is dsh's id for the call. Without it, the model calling one
+ * tool several times in one step (seven `gnomon_entity_history` lookups) wrote
+ * rows nobody could tell apart — 214 of the record's 1,085 rows repeated
+ * another's payload within a second, which read as a double append. It is not
+ * one (one gate row per `run_shell` detail row); the id makes that checkable.
  */
 export function callRecord(exec, outcome, reason = null) {
   const toolName = exec.name
@@ -225,6 +232,7 @@ export function callRecord(exec, outcome, reason = null) {
     server: mcp?.server ?? null,
     action: inner ?? mcp?.tool ?? toolName,
     ...(inner === null ? {} : { inner }),
+    ...(typeof exec.callId === 'string' && exec.callId !== '' ? { callId: exec.callId } : {}),
     outcome,
     ...(reason === null ? {} : { reason }),
   }
@@ -240,10 +248,16 @@ export function callRecord(exec, outcome, reason = null) {
  * wrong verb: the owner who typed "run the tests" has already said yes to the
  * job, not to Gnomon deciding on its own that now is the time.
  */
-function underAutonomy(decision, autonomy, toolName, gnomon) {
+function underAutonomy(decision, autonomy, toolName, gnomon, preset, ownerTurn) {
   if (autonomy === 'act' || autonomy === undefined || decision.kind !== 'allow') return decision;
   const acts = gnomon === undefined ? toolName === 'bash' : gnomon.kind === 'outward' || gnomon.shell === true;
   if (!acts) return decision;
+  // W5 step 10: auto mode is Act, but actions have not earned acting alone (or the owner has not said yes).
+  // The earned level governs only what Gnomon starts unasked. A turn the owner opened, or a thread
+  // whose preset the owner chose (the Ask/Auto chip), has the owner's yes already: the preset
+  // decides, as it did before W5.
+  if (autonomy === 'earning' && (ownerTurn === true || PRESET_POLICY.outward[preset] !== undefined)) return decision;
+  if (autonomy === 'earning') return { kind: 'ask', reason: `Gnomon: ${toolName} stops for your nod until actions have earned acting alone — see Settings → What Gnomon may do alone.` };
   return { kind: 'ask', reason: `Gnomon: auto mode is "${autonomy}", so ${toolName} stops for your nod. Set auto mode to Act in Settings to let it run on its own.` };
 }
 
@@ -277,9 +291,9 @@ export function openedByOwner(events) {
  * theirs — stop for a nod. `ownerTurn === undefined` (no session, a direct
  * call) changes nothing.
  */
-function underTurn(decision, ownerTurn, toolName, args, gnomon) {
+function underTurn(decision, ownerTurn, toolName, facts, gnomon) {
   if (ownerTurn !== false || decision.kind === 'deny') return decision
-  if (toolName === 'gnomon_assert' && String(args?.saidBy ?? '').trim().toLowerCase() === 'owner') {
+  if (facts.saidByOwner) {
     return { kind: 'deny', reason: "Gnomon: saidBy 'owner' needs a turn the owner opened, and a notice opened this one. Record it with saidBy 'me', or ask them." }
   }
   if (gnomon?.ownerTurnOnly === true && decision.kind === 'allow') {
@@ -288,7 +302,30 @@ function underTurn(decision, ownerTurn, toolName, args, gnomon) {
   return decision
 }
 
-export function decideAction({ toolName, args, preset, approvalOverride, actions, resolveActionPolicy, integrations = [], isIntegrationRead, autonomy, ownerTurn }) {
+/**
+ * W3: what a verdict needs from a call's arguments and its server — never the
+ * arguments themselves. This is the part of the gate's inputs `action:decided`
+ * logs, so a verdict can be refolded from the log (`decideAction({ toolName,
+ * ...inputs })`) without the log holding what the model wrote.
+ */
+export function callFacts({ toolName, args, integrations = [], isIntegrationRead }) {
+  const mcp = parseMcpToolName(toolName)
+  const integration = mcp === null ? undefined : integrations.find((i) => i.name === mcp.server)
+  const shell = toolName === 'bash' || GNOMON_TOOLS[toolName]?.shell === true
+  return {
+    destructive: shell ? (destructiveDeny(args)?.reason ?? null) : null,
+    saidByOwner: toolName === 'gnomon_assert' && String(args?.saidBy ?? '').trim().toLowerCase() === 'owner',
+    integration: mcp === null ? null : integration === undefined ? 'unmounted' : typeof isIntegrationRead === 'function' && isIntegrationRead(integration, mcp.tool) ? 'read' : 'write',
+  }
+}
+
+/** W3: the `action:decided` payload: which call, the verdict, and the gate's inputs (never the arguments). */
+export function decisionRecord(exec, inputs, decision) {
+  const { outcome: _none, ...call } = callRecord(exec, null)
+  return { ...call, verdict: decision.kind, reason: decision.reason ?? null, inputs }
+}
+
+export function decideAction({ toolName, args, preset, approvalOverride, actions, resolveActionPolicy, integrations = [], isIntegrationRead, autonomy, ownerTurn, facts = callFacts({ toolName, args, integrations, isIntegrationRead }) }) {
   // --- the owner's own services, over MCP -----------------------------------
   // An integration tool is Gnomon's reach and takes Gnomon's verdict. A READ
   // (declared per integration) is allowed at every preset, the way any read is;
@@ -296,14 +333,12 @@ export function decideAction({ toolName, args, preset, approvalOverride, actions
   // under read-only, asked under workspace-write, allowed under full access. A
   // tool from a server Gnomon did not mount is not Gnomon's to govern.
   const decided = decide();
-  return underTurn(underAutonomy(decided, autonomy, toolName, GNOMON_TOOLS[toolName]), ownerTurn, toolName, args, GNOMON_TOOLS[toolName]);
+  return underTurn(underAutonomy(decided, autonomy, toolName, GNOMON_TOOLS[toolName], preset, ownerTurn), ownerTurn, toolName, facts, GNOMON_TOOLS[toolName]);
 
   function decide() {
   const mcp = parseMcpToolName(toolName)
   if (mcp !== null) {
-    const integration = integrations.find((i) => i.name === mcp.server)
-    if (integration === undefined) return { kind: 'allow' }
-    if (typeof isIntegrationRead === 'function' && isIntegrationRead(integration, mcp.tool)) return { kind: 'allow' }
+    if (facts.integration !== 'write') return { kind: 'allow' }
     const policy = presetPolicy('outward', preset, approvalOverride)
     if (policy === 'off') return { kind: 'deny', reason: `Gnomon: the '${preset ?? 'current'}' permission preset does not allow ${mcp.server} to ${mcp.tool} (it would change something outside this machine).` }
     if (policy === 'ask') return { kind: 'ask', reason: `Gnomon: ${mcp.server} → ${mcp.tool} runs behind your approval (the '${preset ?? 'current'}' preset asks before anything reaches your services).` }
@@ -317,19 +352,13 @@ export function decideAction({ toolName, args, preset, approvalOverride, actions
   // sandbox + approval (driven by the same preset) do. The one exception is
   // `bash`, to which gnomon adds its destructive-command refusal.
   if (gnomon === undefined) {
-    if (toolName === 'bash') {
-      const deny = destructiveDeny(args)
-      if (deny !== null) return deny
-    }
+    if (toolName === 'bash' && facts.destructive !== null) return { kind: 'deny', reason: facts.destructive }
     return { kind: 'allow' }
   }
 
   // --- gnomon's own tools ---------------------------------------------------
   // A shell tool refuses destructive commands first, regardless of preset.
-  if (gnomon.shell === true) {
-    const deny = destructiveDeny(args)
-    if (deny !== null) return deny
-  }
+  if (gnomon.shell === true && facts.destructive !== null) return { kind: 'deny', reason: facts.destructive }
 
   // The preset is primary; config.actions can only tighten.
   const fromPreset = presetPolicy(gnomon.kind, preset, approvalOverride)
@@ -339,7 +368,7 @@ export function decideAction({ toolName, args, preset, approvalOverride, actions
   if (policy === 'off') {
     const reason =
       override === 'off' && fromPreset !== 'off'
-        ? `Gnomon: '${gnomon.tool}' is turned off in config.actions (${gnomon.kind}.${gnomon.tool}). Enable it in ~/.sundial/config.json.`
+        ? `Gnomon: '${gnomon.tool}' is turned off in config.actions (${gnomon.kind}.${gnomon.tool}). Enable it in ${getSundialConfigPath()}.`
         : `Gnomon: the '${preset ?? 'current'}' permission preset does not allow '${gnomon.tool}' (it would change your world). Switch the permission preset to permit it.`
     return { kind: 'deny', reason }
   }

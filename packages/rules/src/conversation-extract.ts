@@ -6,22 +6,22 @@
 // retention policy for all of it was zero unless the owner typed a
 // `gnomon_assert` by hand (`architecture/rules/memory-and-knowledge-rules`).
 //
-// The invariant this keeps: the transcript never enters the signal log. dsh's
-// session store is read by the executor, the OWNER's turns (never the model's)
-// are redacted with the same policy every sensor gets, one `extract` call reads
-// them, and only the typed, sanitized candidates re-enter — through the same
-// `entity:fact-candidate` door a sensor uses, with `provenance: 'conversation'`.
+// W1 step 7: the owner's turns are the log's own `chat:owner` rows (the chat
+// recorder, sanitized at ingest), read by the executor for the effect's window,
+// so a replay reads the same rows. One `extract` call reads them, and the typed
+// candidates re-enter through the same `entity:fact-candidate` door a sensor
+// uses, with `provenance: 'conversation'`.
 //
-// This file holds everything that can be tested without a session store or a
-// model: which turns count, how the transcript is laid out for the model, what
-// the model is asked, and how an owner alias is folded onto the `owner` kind.
+// This file holds everything that can be tested without a database or a
+// model: how the transcript is laid out for the model, what the model is
+// asked, and how an owner alias is folded onto the `owner` kind.
 import type { EntityKind } from '@sundial/kernel/types.js';
 import { canonicalOwnerName } from './entity-name-validation.js';
 import type { ExtractedFactCandidate } from './nightly-fact-extract.js';
 import { MAX_EXTRACTED_FACTS_PER_PASS } from './nightly-fact-extract.js';
 import { parseStatedPromise } from './promise-terms.js';
 
-/** One owner-typed turn, as the executor hands it to the pass. Text is already redacted. */
+/** One owner-typed turn, as the executor hands it to the pass (a `chat:owner` row). Text is already sanitized. */
 export interface ConversationTurn {
   sessionId: string;
   /** ISO instant. */
@@ -29,69 +29,12 @@ export interface ConversationTurn {
   text: string;
 }
 
-/** The narrowest thing the executor needs from the dsh session store. */
-export interface ConversationSource {
-  /** Owner-typed turns at or after `sinceIso`, oldest first. Empty when there are none. */
-  readOwnerTurnsSince(sinceIso: string): Promise<ConversationTurn[]>;
-}
-
-/** Longest single turn kept; a pasted log is not a statement about the owner. */
-export const MAX_TURN_CHARS = 1_200;
 /** Whole-transcript cap per pass, so a chatty day is one bounded call. */
 export const MAX_TRANSCRIPT_CHARS = 24_000;
 /** Shorter than this and a turn is a "yes" or an "ok" — nothing to extract. */
 export const MIN_TURN_CHARS = 12;
 /** A model reading one sentence is not the owner typing a claim: cap what it may seed. */
 export const MAX_CONVERSATION_CONFIDENCE = 85;
-
-/**
- * The shape of a raw dsh session event this pass cares about, kept structural
- * so `@sundial/rules` does not depend on dsh's packages. `time` is epoch ms;
- * `source.kind` tells an owner turn from injected context (a notice, the Ask
- * layer's place caption) — the same test the web client uses to decide whose
- * words to draw as the owner's.
- */
-export interface RawSessionEvent {
-  type: string;
-  time: number;
-  data?: {
-    source?: { kind?: string };
-    content?: unknown;
-  };
-}
-
-function textOf(content: unknown): string {
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return '';
-  return content
-    .filter((block): block is { type: string; text: string } => typeof block === 'object' && block !== null && (block as { type?: unknown }).type === 'text' && typeof (block as { text?: unknown }).text === 'string')
-    .map((block) => block.text)
-    .join('');
-}
-
-function isOwnerTurn(event: RawSessionEvent): boolean {
-  if (event.type !== 'user/message') return false;
-  const kind = event.data?.source?.kind;
-  return kind === undefined || kind === 'user' || kind === 'human';
-}
-
-/**
- * The owner's turns from one session's raw log, at or after `sinceMs` and
- * before `untilMs`, in log order. Injected context blocks are dropped; so are
- * one-word turns and anything longer than `MAX_TURN_CHARS` (truncated, not
- * dropped — the first sentence of a long paste is usually the owner's own).
- */
-export function selectOwnerTurns(sessionId: string, events: readonly RawSessionEvent[], sinceMs: number, untilMs: number): ConversationTurn[] {
-  const turns: ConversationTurn[] = [];
-  for (const event of events) {
-    if (!isOwnerTurn(event)) continue;
-    if (!Number.isFinite(event.time) || event.time < sinceMs || event.time >= untilMs) continue;
-    const text = textOf(event.data?.content).trim();
-    if (text.length < MIN_TURN_CHARS) continue;
-    turns.push({ sessionId, at: new Date(event.time).toISOString(), text: text.length > MAX_TURN_CHARS ? `${text.slice(0, MAX_TURN_CHARS)}…` : text });
-  }
-  return turns;
-}
 
 /**
  * The transcript as the model sees it: one line per turn, tagged with the day

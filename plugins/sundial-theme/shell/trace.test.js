@@ -6,7 +6,7 @@ import { DOING, FAMILIES, journalDays, momentIdIn, openDoors, share } from './tr
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DELIVERY = readFileSync(join(HERE, '../../../packages/kernel/src/effect-delivery.ts'), 'utf8')
-const RUNTIME = readFileSync(join(HERE, '../../../packages/harness-runtime/src/runtime.ts'), 'utf8')
+const RUNTIME = readFileSync(join(HERE, '../../../packages/harness-runtime/src/effect-journal.ts'), 'utf8')
 
 /** The keys of `EFFECT_FAMILY`, read out of the kernel's own source. */
 const familyKeys = () => {

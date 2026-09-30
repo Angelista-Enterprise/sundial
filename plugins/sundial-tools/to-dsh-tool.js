@@ -27,6 +27,7 @@
 // Named exports only.
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { executeTool, toolDefinitions } from '@sundial/kernel/tools/registry.js';
+import { toolEnv } from '@sundial/kernel/tool-env.js';
 import { toParameterSchemaSpec } from './schema.js';
 import { renderResultText } from './render.js';
 
@@ -108,7 +109,7 @@ export function toDshTool(gnomonTool, deps = {}) {
       const handle = sessionId ? deps.handles?.lookup(sessionId, gnomonTool.name, args ?? {}, deps.today?.()) : null;
       if (handle) return toLosslessJson(handle);
 
-      const value = await executeTool([gnomonTool], gnomonTool.name, args ?? {});
+      const value = await executeTool([gnomonTool], gnomonTool.name, args ?? {}, toolEnv(deps.getState));
 
       // ask.ts's sanctioned "the assistant drew something" path, reproduced
       // at the same seam. A no-op until a surface passes the hook.

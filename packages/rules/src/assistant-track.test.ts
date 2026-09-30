@@ -1,42 +1,77 @@
 import { describe, it, expect } from 'vitest';
-import { createInitialState } from '@sundial/kernel/initial-state.js';
+import { createInitialState, hydrateSnapshot } from '@sundial/kernel/initial-state.js';
 import type { KernelState, SanitizedEvent } from '@sundial/kernel/types.js';
+import { proposalsOf } from '@sundial/helpers/loops.js';
 import { assistantTrack, assistantAcceptanceRate } from './assistant-track.js';
+import { loopTrack } from './loop-track.js';
 import { contradictionCheck } from './contradiction-check.js';
 
+// W2 M2: a proposal is a loop `loopTrack` folds; `assistantTrack` counts it after, on the same event.
+const fold = (state: KernelState, event: SanitizedEvent) => {
+  const a = loopTrack(state, event);
+  const b = assistantTrack(a.state, event);
+  return { state: b.state, effects: [...a.effects, ...b.effects] };
+};
 const ev = (type: string, payload: Record<string, unknown>, ts = '2026-08-14T10:00:00.000Z', id = 'e1'): SanitizedEvent => ({ id, type, ts, payload, sanitized: true });
 
-describe('assistantTrack', () => {
+describe('proposals, a loop kind (W2 M2), and their counts', () => {
+  it('an old snapshot hydrates its proposals into loops once: open ones open, answered ones closed', () => {
+    const recent = [{ id: 'prop-1', summary: 'Split the reducer', kind: 'refactor', outcome: 'accepted', at: '2026-08-14T09:00:00.000Z', resolvedAt: '2026-08-14T09:05:00.000Z' }, { id: 'prop-2', summary: 'Draft the BOX-484 reply', kind: 'answer', outcome: 'open', at: '2026-08-14T09:10:00.000Z', resolvedAt: null }];
+    const state = hydrateSnapshot('d1', { assistant: { recent, proposedCount: 2, acceptedCount: 1, rejectedCount: 0, claimedCount: 0, lastAt: null } } as unknown as Partial<KernelState>);
+    expect(proposalsOf(state)).toEqual(recent);
+    expect('recent' in state.assistant).toBe(false);
+    expect(state.loops.open.map((l) => l.subject)).toEqual(['prop-2']);
+    expect(fold(state, ev('assistant:response', { verdict: 'rejected', proposalId: 'prop-2' })).state.assistant.rejectedCount).toBe(1);
+  });
+
+  it('past its week a proposal answers only to its own id, and the oldest of 41 open goes quietly', () => {
+    let state = fold(createInitialState('d1'), ev('assistant:proposal', { proposalId: 'prop-9', summary: 'x' })).state;
+    state = fold(state, ev('clock:tick', {}, '2026-08-21T10:00:01.000Z', 't')).state;
+    expect(fold(state, ev('assistant:response', { verdict: 'accepted' }, '2026-08-21T10:01:00.000Z', 'e8')).state.assistant.acceptedCount).toBe(0);
+    expect(fold(state, ev('assistant:response', { verdict: 'accepted', proposalId: 'prop-9' }, '2026-08-21T10:01:00.000Z', 'e9')).state.assistant.acceptedCount).toBe(1);
+    for (let i = 0; i < 40; i += 1) state = fold(state, ev('assistant:proposal', { proposalId: `p${i}`, summary: 'y' }, '2026-08-22T10:00:00.000Z', `p${i}`)).state;
+    expect(state.loops.open.map((l) => l.subject)).toEqual(Array.from({ length: 40 }, (_, i) => `p${i}`));
+  });
+
   it('opens a proposal and counts it', () => {
-    const { state, effects } = assistantTrack(createInitialState('d1'), ev('assistant:proposal', { summary: 'Split the reducer', kind: 'refactor' }));
+    const { state, effects } = fold(createInitialState('d1'), ev('assistant:proposal', { summary: 'Split the reducer', kind: 'refactor' }));
 
     expect(effects).toEqual([]);
     expect(state.assistant.proposedCount).toBe(1);
-    expect(state.assistant.recent[0]).toMatchObject({ summary: 'Split the reducer', kind: 'refactor', outcome: 'open', resolvedAt: null });
+    expect(proposalsOf(state)[0]).toMatchObject({ summary: 'Split the reducer', kind: 'refactor', outcome: 'open', resolvedAt: null });
   });
 
   it('closes the most recent open proposal when the response names no id', () => {
-    let state = assistantTrack(createInitialState('d1'), ev('assistant:proposal', { summary: 'Split the reducer' })).state;
-    state = assistantTrack(state, ev('assistant:response', { verdict: 'accepted' }, '2026-08-14T10:05:00.000Z', 'e2')).state;
+    let state = fold(createInitialState('d1'), ev('assistant:proposal', { summary: 'Split the reducer' })).state;
+    state = fold(state, ev('assistant:response', { verdict: 'accepted' }, '2026-08-14T10:05:00.000Z', 'e2')).state;
 
     expect(state.assistant.acceptedCount).toBe(1);
-    expect(state.assistant.recent[0]!.outcome).toBe('accepted');
-    expect(state.assistant.recent[0]!.resolvedAt).toBe('2026-08-14T10:05:00.000Z');
+    expect(proposalsOf(state)[0]!.outcome).toBe('accepted');
+    expect(proposalsOf(state)[0]!.resolvedAt).toBe('2026-08-14T10:05:00.000Z');
+  });
+
+  it('W6 D3: the id minted at the proposal is the one its response names, so the two rows join in the log', () => {
+    let state = fold(createInitialState('d1'), ev('assistant:proposal', { proposalId: 'prop-484', summary: 'Draft the BOX-484 reply' })).state;
+    expect(proposalsOf(state)[0]!.id).toBe('prop-484');
+    state = fold(state, ev('assistant:response', { verdict: 'rejected', proposalId: 'prop-484' }, '2026-08-14T10:05:00.000Z', 'e2')).state;
+    expect(proposalsOf(state)[0]!.outcome).toBe('rejected');
+    // A proposal from before the fix keeps its derived id (replay unchanged).
+    expect(proposalsOf(fold(createInitialState('d1'), ev('assistant:proposal', { summary: 'x' })).state)[0]!.id).not.toBe('');
   });
 
   it('does not re-resolve an already-answered proposal', () => {
-    let state = assistantTrack(createInitialState('d1'), ev('assistant:proposal', { summary: 'x' })).state;
-    state = assistantTrack(state, ev('assistant:response', { verdict: 'accepted' }, '2026-08-14T10:05:00.000Z', 'e2')).state;
-    const again = assistantTrack(state, ev('assistant:response', { verdict: 'rejected', proposalId: state.assistant.recent[0]!.id }, '2026-08-14T10:06:00.000Z', 'e3'));
+    let state = fold(createInitialState('d1'), ev('assistant:proposal', { summary: 'x' })).state;
+    state = fold(state, ev('assistant:response', { verdict: 'accepted' }, '2026-08-14T10:05:00.000Z', 'e2')).state;
+    const again = fold(state, ev('assistant:response', { verdict: 'rejected', proposalId: proposalsOf(state)[0]!.id }, '2026-08-14T10:06:00.000Z', 'e3'));
 
     expect(again.state.assistant.rejectedCount).toBe(0);
     expect(again.state.assistant.acceptedCount).toBe(1);
   });
 
   it('ignores a verdict that is neither accepted nor rejected', () => {
-    const state = assistantTrack(createInitialState('d1'), ev('assistant:proposal', { summary: 'x' })).state;
-    const { state: next } = assistantTrack(state, ev('assistant:response', { verdict: 'maybe' }, '2026-08-14T10:05:00.000Z', 'e2'));
-    expect(next.assistant.recent[0]!.outcome).toBe('open');
+    const state = fold(createInitialState('d1'), ev('assistant:proposal', { summary: 'x' })).state;
+    const { state: next } = fold(state, ev('assistant:response', { verdict: 'maybe' }, '2026-08-14T10:05:00.000Z', 'e2'));
+    expect(proposalsOf(next)[0]!.outcome).toBe('open');
   });
 
   it('routes a claim through the ordinary candidate path with assistant provenance', () => {
@@ -90,12 +125,12 @@ describe('assistantTrack', () => {
 
 describe('assistantAcceptanceRate', () => {
   it('refuses to report a rate from too few resolutions', () => {
-    const state: KernelState = { ...createInitialState('d1'), assistant: { recent: [], proposedCount: 3, acceptedCount: 2, rejectedCount: 1, claimedCount: 0, lastAt: null } };
+    const state: KernelState = { ...createInitialState('d1'), assistant: { proposedCount: 3, acceptedCount: 2, rejectedCount: 1, claimedCount: 0, lastAt: null } };
     expect(assistantAcceptanceRate(state)).toBeNull();
   });
 
   it('reports once enough have resolved', () => {
-    const state: KernelState = { ...createInitialState('d1'), assistant: { recent: [], proposedCount: 12, acceptedCount: 9, rejectedCount: 3, claimedCount: 0, lastAt: null } };
+    const state: KernelState = { ...createInitialState('d1'), assistant: { proposedCount: 12, acceptedCount: 9, rejectedCount: 3, claimedCount: 0, lastAt: null } };
     expect(assistantAcceptanceRate(state)).toBe(0.75);
   });
 });

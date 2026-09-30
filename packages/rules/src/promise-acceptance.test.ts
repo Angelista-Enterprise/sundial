@@ -47,7 +47,10 @@ const TUE_1to1 = { eventId: 'e1', title: 'Draft review', startDate: '2026-09-29T
 const THU_1to1 = { eventId: 'e2', title: 'Mira 1:1', startDate: '2026-10-01T12:00:00.000Z', endDate: '2026-10-01T12:30:00.000Z', attendees: ['pat', 'Mira Bakker'], isAllDay: false, isRecurring: true, calendar: 'Work' };
 
 function scenario(withMail: boolean) {
+  // W5 step 10: the prep has earned interrupting alone (30 of 30 judged worth hearing), and the owner said yes.
   const state = createInitialState('acc');
+  state.calibrated.params['notice.precision:meeting-prep'] = { n: 30, hits: 30, sum: 30, updatedAt: null };
+  state.autonomy.granted['notice:meeting-prep'] = '2026-09-01T00:00:00.000Z';
   state.config.timezone = 'Europe/Amsterdam';
   state.config.ownerAliases = ['pat'];
   const tick = (ts: string) => ev('clock:tick', ts, {});
@@ -93,5 +96,54 @@ describe('UC1 acceptance: kept by the mail, or fading an hour before the next me
     expect(candidates.filter((c) => c.kind === 'promise-fading')).toEqual([]);
     expect(state.commitments.promises).toEqual([]);
     expect(state.commitments.recentClosed.find((c) => c.source === 'meeting')).toMatchObject({ closedBecause: 'kept', promise: { evidence: [{ kind: 'mail', strong: true }] } });
+  });
+});
+
+/**
+ * W6 P2: hearing → promises, end to end. On the live record 13,941 utterances made no promise: with
+ * hearing awake, the absence test (the owner's microphone only, since S11) read a call the owner
+ * mostly listened to as a room they were not in, and that test gated the promise pass too.
+ */
+describe('W6 P2: a meeting with speech produces its promise pass, and an answered question its transcript', () => {
+  const LISTENED = { ...TUE_1to1, attendees: ['pat', 'Mira Bakker', 'Noah'] };
+  function heard(mic: number) {
+    const state = createInitialState('p2');
+    state.config.ownerAliases = ['pat'];
+    state.config.autoHearMeetings = true;
+    const events: SanitizedEvent[] = [
+      ev('calendar:upcoming', '2026-09-29T07:50:00.000Z', { events: [LISTENED] }),
+      ev('calendar:active', '2026-09-29T08:01:00.000Z', { event: LISTENED }),
+      ev('clock:tick', '2026-09-29T08:02:00.000Z', {}),
+      ...Array.from({ length: 40 }, (_, i) => ev('audio:transcript', `2026-09-29T08:${String(3 + (i % 25)).padStart(2, '0')}:10.000Z`, { spokenText: 'Mira Bakker: the BOX-484 build is green, I will send the notes', channel: 'system' })),
+      ...Array.from({ length: mic }, (_, i) => ev('audio:transcript', `2026-09-29T08:${String(3 + (i % 25)).padStart(2, '0')}:40.000Z`, { spokenText: "Okay, I'll send you the draft.", channel: 'mic' })),
+      ev('clock:tick', '2026-09-29T08:31:00.000Z', {}),
+      ev('clock:tick', '2026-09-29T08:33:00.000Z', {}),
+    ];
+    const passes: string[] = [];
+    const out = play(state, events, (effect) => {
+      passes.push(effect.meetingKey);
+      return ev('meeting:promises', '2026-09-29T08:31:30.000Z', { meetingKey: effect.meetingKey, title: effect.title, start: effect.start, end: effect.end, attendees: effect.attendees, promises: [{ who: 'owner', kind: 'promise', to: 'Mira Bakker', what: 'the draft', due: null, quote: "I'll send you the draft" }] });
+    });
+    return { ...out, passes };
+  }
+
+  it('the owner said little (5 mic lines in 30 minutes, the far side 40): one pass, the promise opens, no question', () => {
+    const { state, passes } = heard(5);
+    expect(passes).toHaveLength(1);
+    expect(state.commitments.promises.map((c) => c.source)).toEqual(['meeting']);
+    expect(state.loops.open.filter((l) => l.kind === 'owner-ask')).toEqual([]);
+  });
+
+  it('the owner took part (40 mic lines): the pass, the question with what it found, and on an answer the transcript is attached', () => {
+    const { state, passes } = heard(40);
+    expect(passes).toHaveLength(1);
+    const ask = state.loops.open.find((l) => l.kind === 'owner-ask');
+    expect(ask?.about).toContain('I heard you promise');
+    // The owner answers; the judge reads it as wanting the transcript on the record.
+    const answered = reduce(state, ev('ask:owner-answered', '2026-09-29T08:40:00.000Z', { askId: ask!.subject, answer: 'Track it, and keep the notes' }), RULE_MANIFEST);
+    const judge = answered.effects.map((e) => e.effect).find((e): e is Extract<Effect, { type: 'Judge' }> => e.type === 'Judge' && e.purpose === 'listen');
+    expect(judge).toBeDefined();
+    const result = reduce(answered.state, ev('judgement:result', '2026-09-29T08:40:05.000Z', { questionSetId: judge!.questionSetId, momentId: null, metadata: judge!.metadata, answers: { wants_transcript_attached: { type: 'noul', noul: 0.9 } } }), RULE_MANIFEST);
+    expect(result.effects.map((e) => e.effect).filter((e) => e.type === 'AttachTranscript')).toHaveLength(1);
   });
 });

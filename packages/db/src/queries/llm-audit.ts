@@ -2,7 +2,7 @@ import { eq, desc, gte, inArray } from 'drizzle-orm';
 import { getDb } from '../db-client.js';
 import { llmAudit, moments } from '../schemas/db-schema.js';
 import { localDate } from '@sundial/helpers/local-day.js';
-import { classifyStoredLlmError, redactUrlCredentials, type LlmErrorClass } from '@sundial/helpers/llm-error-class.js';
+import { classifyStoredLlmError, redactSecrets, type LlmErrorClass } from '@sundial/helpers/llm-error-class.js';
 
 export interface RecordLlmAuditInput {
   id: string;
@@ -71,7 +71,7 @@ export async function updateLlmAudit(id: string, patch: UpdateLlmAuditInput): Pr
       // The one write path to the column, so the guard belongs here rather than
       // in each caller: an error message routinely names the endpoint it was
       // talking to, and an endpoint can carry a key.
-      error: patch.error ? redactUrlCredentials(patch.error) : null,
+      error: patch.error ? redactSecrets(patch.error) : null,
       errorClass: patch.errorClass ?? null,
       billedPromptTokens: patch.billedPromptTokens ?? null,
       cacheReadTokens: patch.cacheReadTokens ?? null,
@@ -136,13 +136,6 @@ export async function getRecentLlmAudit(limit = 20, offset = 0): Promise<LlmAudi
     .orderBy(desc(llmAudit.requestedAt))
     .limit(limit)
     .offset(offset);
-}
-
-/** Single call's full row, prompt/response bodies included — fetched only on row-expand, never as part of the list above. */
-export async function getLlmAuditById(id: string): Promise<StoredLlmAudit | null> {
-  const db = getDb();
-  const [row] = await db.select().from(llmAudit).where(eq(llmAudit.id, id));
-  return row ?? null;
 }
 
 export interface LlmAuditOverviewSummary {
@@ -443,7 +436,7 @@ export async function getLlmAuditOverview(sinceIso?: string): Promise<LlmAuditOv
       billedOnFailureUsd += estimateCostUsd(row.model, billed, 0);
       failedMs += row.latencyMs ?? 0;
       if (lastFailureAt === null || row.requestedAt > lastFailureAt) lastFailureAt = row.requestedAt;
-      if (row.error && redactUrlCredentials(row.error) !== row.error) unredactedErrorCount += 1;
+      if (row.error && redactSecrets(row.error) !== row.error) unredactedErrorCount += 1;
     }
     // A retry is a question asked twice. Its whole cost is duplicate spend,
     // whether or not this try is the one that finally answered.

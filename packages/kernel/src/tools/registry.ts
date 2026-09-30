@@ -1,5 +1,13 @@
 import { z } from 'zod';
 import type { ToolDefinition } from '@sundial/llm/types.js';
+import type { KernelState } from '../types.js';
+import { toolEnv } from '../tool-env.js';
+
+/** What a call answers in: the instant, and the kernel state (live in the harness, the snapshot over MCP). */
+export interface ToolEnv {
+  now: Date;
+  state: () => Promise<KernelState | null>;
+}
 
 /**
  * One tool, defined once, consumed by both the MCP server and `/ask`'s tool loop.
@@ -41,7 +49,7 @@ export interface GnomonTool<S extends z.ZodRawShape = z.ZodRawShape> {
    * assistant may speak, propose and claim.
    */
   readOnly: boolean;
-  handler: (args: z.infer<z.ZodObject<S>>) => Promise<unknown>;
+  handler: (args: z.infer<z.ZodObject<S>>, env: ToolEnv) => Promise<unknown>;
 }
 
 /** Thrown when the model names a tool that does not exist. The loop turns it into a tool result listing what does. */
@@ -85,7 +93,7 @@ export function toolDefinitions(tools: GnomonTool[]): ToolDefinition[] {
  * formatting belongs in one place. A registry that swallowed errors into a
  * result object would give the loop two failure channels to reconcile.
  */
-export async function executeTool(tools: GnomonTool[], name: string, args: unknown): Promise<unknown> {
+export async function executeTool(tools: GnomonTool[], name: string, args: unknown, env: ToolEnv = toolEnv()): Promise<unknown> {
   const tool = tools.find((candidate) => candidate.name === name);
   if (!tool) throw new UnknownToolError(name);
 
@@ -95,5 +103,5 @@ export async function executeTool(tools: GnomonTool[], name: string, args: unkno
     throw new ToolArgumentError(name, detail);
   }
 
-  return tool.handler(parsed.data as z.infer<z.ZodObject<typeof tool.schema>>);
+  return tool.handler(parsed.data as z.infer<z.ZodObject<typeof tool.schema>>, env);
 }

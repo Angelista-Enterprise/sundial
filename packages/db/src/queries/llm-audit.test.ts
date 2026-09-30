@@ -7,7 +7,6 @@ import {
   recordLlmAudit,
   updateLlmAudit,
   getRecentLlmAudit,
-  getLlmAuditById,
   getLlmAuditOverview,
   getLlmAuditDaily,
   getLlmAuditByModel,
@@ -95,7 +94,7 @@ describe('recordLlmAudit / updateLlmAudit', () => {
   });
 });
 
-describe('getRecentLlmAudit / getLlmAuditById', () => {
+describe('getRecentLlmAudit', () => {
   beforeEach(async () => {
     await setupTestDb();
   });
@@ -130,20 +129,6 @@ describe('getRecentLlmAudit / getLlmAuditById', () => {
 
     expect(firstPage.map((r) => r.id)).toEqual(['a3', 'a2']);
     expect(secondPage.map((r) => r.id)).toEqual(['a1']);
-  });
-
-  it('getLlmAuditById returns the full row, bodies included', async () => {
-    await recordLlmAudit({ id: 'a1', momentId: 'm1', purpose: 'intent', model: 'test-model', prompt: 'the full prompt', requestedAt: '2026-01-01T00:00:00.000Z' });
-    await updateLlmAudit('a1', { respondedAt: '2026-01-01T00:00:01.000Z', latencyMs: 500, success: true, responseContent: 'the full response' });
-
-    const row = await getLlmAuditById('a1');
-
-    expect(row?.prompt).toBe('the full prompt');
-    expect(row?.responseContent).toBe('the full response');
-  });
-
-  it('getLlmAuditById returns null for an unknown id', async () => {
-    expect(await getLlmAuditById('nonexistent')).toBeNull();
   });
 });
 

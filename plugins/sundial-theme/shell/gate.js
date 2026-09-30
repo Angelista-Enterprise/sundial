@@ -261,41 +261,6 @@ export const octaves = (scale) => {
   return out
 }
 
-/** A key a test or a smoke run wrote, not a notice the owner was actually given. */
-export const isTestKey = (key) => /test|experiment/i.test(key) || key.startsWith('j0.')
-
-/**
- * How often a notice was worth hearing, by kind, with its n.
- *
- * `verdicts` are `{ artifactId, verdict, at }` for notices, oldest first. Test
- * and smoke keys are left out, and only the LATEST verdict on each notice
- * counts, so a notice tapped twice is one judgement. Measured 2026-09-28: 44
- * verdicts in thirty days read as 50% useful; without tests, latest-only, they
- * are 37%, and one family (0 of 15) is most of the gap. A single figure hides
- * that, so the kinds travel with it. `kindOf(key)` names a key's kind.
- */
-export function noticePrecision(verdicts, kindOf) {
-  const latest = new Map()
-  let excluded = 0
-  for (const v of Array.isArray(verdicts) ? verdicts : []) {
-    if (typeof v?.artifactId !== 'string') continue
-    if (isTestKey(v.artifactId)) excluded += 1
-    else latest.set(v.artifactId, v.verdict)
-  }
-  const kinds = new Map()
-  let useful = 0
-  for (const [key, verdict] of latest) {
-    const kind = kindOf(key) ?? key.split(/[:|]/)[0]
-    const row = kinds.get(kind) ?? { kind, n: 0, useful: 0, wrong: 0, notNow: 0 }
-    row.n += 1
-    if (verdict === 'useful') (row.useful += 1), (useful += 1)
-    else if (verdict === 'wrong') row.wrong += 1
-    else if (verdict === 'not-now') row.notNow += 1
-    kinds.set(kind, row)
-  }
-  return { n: latest.size, useful, excluded, byKind: [...kinds.values()].sort((a, b) => b.n - a.n || a.kind.localeCompare(b.kind)) }
-}
-
 /** What the whole record says about the bar, as counts the card states on its face. */
 export function gateCensus(rows, bars) {
   const list = Array.isArray(rows) ? rows : []

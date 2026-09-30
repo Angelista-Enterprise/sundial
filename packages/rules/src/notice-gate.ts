@@ -1,3 +1,4 @@
+import { deliveryActs } from '@sundial/helpers/delivery-acts.js';
 import { deriveId } from '@sundial/helpers/derive-id.js';
 import { localDate } from '@sundial/helpers/local-day.js';
 import { classifyActivity } from '@sundial/helpers/window-classification.js';
@@ -6,11 +7,13 @@ import { isZeroActivity } from './idle-track.js';
 import { routeFor } from './notice-route.js';
 import { isQuieted, noticeTitle } from '@sundial/kernel/notice-groups.js';
 import { NOT_A_CALL_APPS } from '@sundial/kernel/watch.js';
-import type { DeferredNotice, Effect, KernelState, NoticeCandidate, PhasicNotice, Rule } from '@sundial/kernel/types.js';
+import type { DeferredNotice, DeliveredNotice, Effect, KernelState, NoticeCandidate, PhasicNotice, Rule } from '@sundial/kernel/types.js';
 
 export { DEFAULT_GATE_POLICY, MAX_HABITUATION_KEYS, applyDelivery, decide, habituatedGain, policyForBias, simulateGate } from '@sundial/kernel/gate.js';
 export type { Channel, Decision, DecisionTerms, GatePolicy, GateSimulation, NoticeState } from '@sundial/kernel/gate.js';
 import { applyDelivery, decide, policyForBias, type Decision, type GatePolicy, type NoticeState } from '@sundial/kernel/gate.js';
+import { param, TRUST_N } from '@sundial/kernel/calibrated.js';
+import { capabilityOf, levelOf } from '@sundial/kernel/autonomy.js';
 
 /**
  * A call or a meeting now: an app holding the microphone, or the open moment's
@@ -127,10 +130,48 @@ const QUIET_FLOOR = 0.4;
 
 const MAX_RECENT_PHASIC = 20;
 
+/**
+ * W4 step 8 / W5 loop A: a candidate weighed with its kind's MEASURED precision. The producer's
+ * own `precision` is the prior (`param`'s override), pooled with the owner's verdicts on that
+ * kind, so a kind nobody has judged weighs as its producer says and a judged one as it was judged.
+ */
+export function weighed(state: KernelState, candidate: NoticeCandidate): NoticeCandidate {
+  return { ...candidate, precision: param(state, `notice.precision:${candidate.kind}`, candidate.precision).value };
+}
+/**
+ * W5 step 10: a kind that has not earned interrupting alone asks first. What would have
+ * interrupted (or waited for a cheaper moment to) is said in the list now instead, where nothing
+ * takes the owner's attention: the same candidates, not more, and not charged to the list's
+ * daily budget, which stays the ambient notices' (`applyDecision` habituates it as an interruption).
+ */
+function decideFor(state: KernelState, ...args: Parameters<typeof decide>): Decision {
+  const decision = decide(args[0], args[1], weighed(state, args[2]), args[3], args[4], args[5]);
+  const asks = (decision.channel === 'phasic' || decision.channel === 'deferred') && levelOf(state, capabilityOf(args[2].kind)) !== 'act';
+  return asks ? { ...decision, channel: 'tonic', reason: 'autonomy-ask', utility: decision.weight } : decision;
+}
+
+/**
+ * The policy with its measured terms. An owner question keeps its interruption over the cap
+ * only while its kind is measured (n ≥ TRUST_N) at or above notices overall (appendix #6: it
+ * was granted as "the best-rated kind" at 6 useful / 17 wrong). The cost weight moves off its
+ * 0.8 once both cost bands have TRUST_N questions: an interruption at full cost is worth what
+ * the owner's answer rate there is, against their rate at a low cost.
+ */
+export function calibratedPolicy(state: KernelState, policy: GatePolicy): GatePolicy {
+  const ask = param(state, 'notice.precision:owner-question');
+  const earned = ask.n >= TRUST_N && ask.value >= param(state, 'notice.precision').value;
+  const high = param(state, 'gate.answered:high');
+  const low = param(state, 'gate.answered:low');
+  const measured = high.n >= TRUST_N && low.n >= TRUST_N && low.value > 0;
+  const interruptionCostWeight = measured ? Math.max(0, Math.min(2 * policy.interruptionCostWeight, policy.phasicThreshold * (1 - high.value / low.value))) : policy.interruptionCostWeight;
+  return { ...policy, reservedOverCap: earned ? 1 : 0, interruptionCostWeight };
+}
+
 /** The gate's slice of `state.notices`, with today's interruptions counted from the phasic queue. */
 function gateStateOf(state: KernelState, localDay: string): NoticeState {
   const { habituation, day, spentToday, recentPhasic } = state.notices;
-  const phasicToday = recentPhasic.filter((p) => localDate(p.at, state.config.timezone) === localDay).length;
+  // A notice the plugin could not deliver (`notice:dropped`) did not spend the owner's attention, so it does not spend the cap.
+  const phasicToday = recentPhasic.filter((p) => !p.undelivered && localDate(p.at, state.config.timezone) === localDay).length;
   return { habituation, day: localDay, spentToday: day === localDay ? spentToday : 0, phasicToday };
 }
 
@@ -241,27 +282,32 @@ function applyDecision(
     return { state: { ...state, notices: { ...state.notices, deferred: grown.slice(-MAX_DEFERRED) } }, effects: [record, ...displaced] };
   }
 
-  const next = applyDelivery(gateState, candidate, ts, localDay, decision.channel, policy);
+  const next = applyDelivery(gateState, candidate, ts, localDay, decision.reason === 'autonomy-ask' ? 'phasic' : decision.channel, policy);
   const event = { ts };
   const notDeferred = deferred.filter((d) => d.candidate.key !== candidate.key);
+  // W5: what this event delivered, for `calibrate` (after this rule) to watch what the owner does next.
+  const explored = decision.reason === 'exploration' ? { exploration: true as const } : {};
+  const item: DeliveredNotice = { key: candidate.key, kind: candidate.kind, channel: decision.channel, cost: decision.terms.cost, evidence: candidate.evidence.slice(0, 2), sessionId: candidate.sessionId ?? null, askId: askIdOf(candidate).askId ?? null, ...explored };
+  const lastDelivered = { at: ts, items: [...(state.notices.lastDelivered?.at === ts ? state.notices.lastDelivered.items : []), item] };
 
   if (decision.channel === 'phasic') {
-    const phasic: PhasicNotice = { kind: candidate.kind, observation: candidate.observation, evidence: candidate.evidence, weight: Math.round(decision.weight * 1000) / 1000, at: event.ts };
+    const phasic: PhasicNotice = { kind: candidate.kind, observation: candidate.observation, evidence: candidate.evidence, weight: Math.round(decision.weight * 1000) / 1000, at: event.ts, noticeKey: candidate.key };
     return {
-      state: { ...state, notices: { ...state.notices, ...next, recentPhasic: [...state.notices.recentPhasic, phasic].slice(-MAX_RECENT_PHASIC), deferred: notDeferred } },
+      state: { ...state, notices: { ...state.notices, ...next, recentPhasic: [...state.notices.recentPhasic, phasic].slice(-MAX_RECENT_PHASIC), deferred: notDeferred, lastDelivered } },
       effects: [
         // `noticeKey` rides on the payload (2026-08-15) so the delivery channel —
         // the harness's companion agent — can name the gate entry when the owner
         // answers `not-now`. Additive: no consumer matched on the payload shape.
         // `route` (lane D, #6): where the delivery plugin sends it — `mac` or `phone`. It never decides.
-        { type: 'Notify', channel: 'phasic-notice', payload: { kind: candidate.kind, observation: candidate.observation, evidence: candidate.evidence, weight: phasic.weight, noticeKey: candidate.key, ...askIdOf(candidate), route, title: noticeTitle(candidate.kind) } }, // lane H (H4): the push's title
+        // W2: `acts` is the whole delivery decision, made here; `sessionId` is the chat it is addressed to (null: the conversation).
+        { type: 'Notify', channel: 'phasic-notice', payload: { kind: candidate.kind, observation: candidate.observation, evidence: candidate.evidence, weight: phasic.weight, noticeKey: candidate.key, ...askIdOf(candidate), route, title: noticeTitle(candidate.kind), sessionId: candidate.sessionId ?? null, acts: deliveryActs('phasic', route, isPlain(candidate), candidate.sessionId, state.config.notifications) } }, // lane H (H4): the push's title
         record,
       ],
     };
   }
 
   return {
-    state: { ...state, notices: { ...state.notices, ...next, deferred: notDeferred } },
+    state: { ...state, notices: { ...state.notices, ...next, deferred: notDeferred, lastDelivered } },
     effects: [
       // The tonic admission's own delivery event (2026-08-15). The ScheduleLLM
       // below produces the polished knowledge entry MINUTES later (LLM latency,
@@ -271,7 +317,7 @@ function applyDecision(
       {
         type: 'Notify',
         channel: 'tonic-notice',
-        payload: { kind: candidate.kind, observation: candidate.observation, evidence: candidate.evidence, weight: Math.round(decision.weight * 1000) / 1000, noticeKey: candidate.key, ...askIdOf(candidate) },
+        payload: { kind: candidate.kind, observation: candidate.observation, evidence: candidate.evidence, weight: Math.round(decision.weight * 1000) / 1000, noticeKey: candidate.key, ...askIdOf(candidate), ...explored, sessionId: candidate.sessionId ?? null, acts: deliveryActs('tonic', route, isPlain(candidate), candidate.sessionId, state.config.notifications) },
       },
       // A plain rule's note is its own sentence: no model call writes it up.
       ...(isPlain(candidate)
@@ -323,7 +369,7 @@ export const noticeGate: Rule = (state, event) => {
   // moves both thresholds together, so the dial nudges the same bar the policy
   // already uses rather than introducing a second one.
   const settings = state.settings;
-  const policy = policyForBias(settings?.noticeBias ?? 0);
+  const policy = calibratedPolicy(state, policyForBias(settings?.noticeBias ?? 0));
 
   // The owner answered a question that is still waiting its turn in the ring
   // (asked mid-call, deferred, answered in the web seat before the gate got
@@ -337,6 +383,20 @@ export const noticeGate: Rule = (state, event) => {
     });
     if (remaining.length === state.notices.deferred.length) return { state, effects: [] };
     return { state: { ...state, notices: { ...state.notices, deferred: remaining } }, effects: [] };
+  }
+
+  // W2: a notice the delivery plugin could not deliver. Its interruption stops
+  // counting toward the daily cap, and Unsaid gets a row saying why.
+  if (event.type === 'notice:dropped') {
+    const key = typeof event.payload.noticeKey === 'string' ? event.payload.noticeKey : '';
+    if (key === '') return { state, effects: [] };
+    const reason = typeof event.payload.reason === 'string' && event.payload.reason !== '' ? event.payload.reason : 'error';
+    const ring = state.notices.recentPhasic;
+    const at = ring.map((p) => p.noticeKey === key && !p.undelivered).lastIndexOf(true);
+    const recentPhasic = at < 0 ? ring : ring.map((p, i) => (i === at ? { ...p, undelivered: reason } : p));
+    const dropped = { key, kind: typeof event.payload.kind === 'string' ? event.payload.kind : '' } as NoticeCandidate;
+    const record = decisionEffect(dropped, { channel: 'suppressed', reason: `undelivered:${reason}`, weight: 0, utility: 0, terms: { surprise: 0, precision: 0, habituation: 0, concern: 0, cost: 0 } }, event.ts, event.id, policy);
+    return { state: at < 0 ? state : { ...state, notices: { ...state.notices, recentPhasic } }, effects: [record] };
   }
 
   // Away and back (UC2 finding 3, the long-absence half). Idle or asleep
@@ -374,7 +434,7 @@ export const noticeGate: Rule = (state, event) => {
       const halfLife = entry.candidate.valueHalfLifeMs;
       const expired = halfLife !== null && nowMs - Date.parse(entry.since) > halfLife;
       if (!expired) live.push({ ...entry, reconsidered: entry.reconsidered + 1 });
-      else retired.push(decisionEffect(entry.candidate, { ...decide(policy, gateState, entry.candidate, event.ts, localDay, cost), channel: 'suppressed', reason: 'expired' }, event.ts, event.id, policy));
+      else retired.push(decisionEffect(entry.candidate, { ...decideFor(state, policy, gateState, entry.candidate, event.ts, localDay, cost), channel: 'suppressed', reason: 'expired' }, event.ts, event.id, policy));
     }
     if (live.length === 0) return { state: { ...state, notices: { ...state.notices, deferred: [] } }, effects: retired };
 
@@ -385,7 +445,7 @@ export const noticeGate: Rule = (state, event) => {
       const entry = live[i]!;
       // lane D — #6: still in the call or the focus. It waits, without a row per tick.
       if (routeFor(state.route, entry.candidate.kind) === 'hold') continue;
-      const decision = decide(policy, gateState, entry.candidate, event.ts, localDay, cost);
+      const decision = decideFor(state, policy, gateState, entry.candidate, event.ts, localDay, cost);
       if (decision.channel === 'phasic' || decision.channel === 'tonic') {
         const remaining = live.filter((_, index) => index !== i);
         const applied = applyDecision(state, entry.candidate, decision, event.ts, localDay, policy, remaining, event.id);
@@ -405,7 +465,8 @@ export const noticeGate: Rule = (state, event) => {
   // Silent by the owner's own setting. Recorded as a decision like any other
   // suppression, so the Unsaid surface can say WHY it never heard of this.
   const offered = event.payload as unknown as NoticeCandidate;
-  const quietGroup = isQuieted(settings?.quiet, offered?.kind);
+  // W5 step 10: a capability the owner turned off says nothing, recorded as their own quiet.
+  const quietGroup = isQuieted(settings?.quiet, offered?.kind) || (typeof offered?.kind === 'string' && levelOf(state, capabilityOf(offered.kind)) === 'off');
   if (settings?.autonomy === 'off' || quietGroup) {
     const quiet = offered;
     if (typeof quiet?.key !== 'string') return { state, effects: [] };
@@ -430,7 +491,7 @@ export const noticeGate: Rule = (state, event) => {
   const gateState = gateStateOf(state, localDay);
   // The rule reads state and reduces it to a number; `decide` never sees the state.
   // That split is what keeps five-policies-one-replay affordable.
-  const decision = decide(policy, gateState, candidate, event.ts, localDay, interruptionCostOf(state, event.ts));
+  const decision = decideFor(state, policy, gateState, candidate, event.ts, localDay, interruptionCostOf(state, event.ts));
 
   // An hour or more away: something worth a row in the list waits for the
   // owner rather than landing now, where only an empty room would read it.
@@ -442,8 +503,19 @@ export const noticeGate: Rule = (state, event) => {
     return { state: { ...state, notices: { ...state.notices, away: { ...away, held } } }, effects: [record] };
   }
 
+  // W5: exploration. One in ten suppressed candidates of a kind judged fewer than 30 times is said
+  // in the list anyway, marked as such: a kind the gate keeps quiet would otherwise never be judged.
+  if (decision.channel === 'suppressed' && (decision.reason === 'below-threshold' || decision.reason === 'budget-spent') && param(state, `notice.precision:${candidate.kind}`).n < EXPLORE_BELOW_N) {
+    const count = (state.notices.explore?.[candidate.kind] ?? 0) + 1;
+    const next = { ...state, notices: { ...state.notices, explore: { ...state.notices.explore, [candidate.kind]: count % EXPLORE_EVERY } } };
+    return applyDecision(next, candidate, count < EXPLORE_EVERY ? decision : { ...decision, channel: 'tonic', reason: 'exploration' }, event.ts, localDay, policy, next.notices.deferred, event.id);
+  }
   return applyDecision(state, candidate, decision, event.ts, localDay, policy, state.notices.deferred, event.id);
 };
+
+/** Exploration: every tenth suppressed candidate of a kind with fewer than 30 verdicts. */
+const EXPLORE_EVERY = 10;
+const EXPLORE_BELOW_N = 30;
 
 /** Away this long before a tonic notice waits for the return instead of landing. */
 export const AWAY_HOLD_AFTER_MS = 60 * 60_000;
@@ -462,7 +534,7 @@ function welcomeBack(state: KernelState, ts: string, eventId: string, policy: Ga
   const localDay = localDate(ts, state.config.timezone);
   const cost = interruptionCostOf(state, ts);
   for (const entry of held) {
-    const decision = decide(policy, gateStateOf(next, localDay), entry.candidate, ts, localDay, cost);
+    const decision = decideFor(state, policy, gateStateOf(next, localDay), entry.candidate, ts, localDay, cost);
     const applied = applyDecision(next, entry.candidate, decision, ts, localDay, policy, next.notices.deferred, eventId);
     next = applied.state;
     effects.push(...applied.effects);

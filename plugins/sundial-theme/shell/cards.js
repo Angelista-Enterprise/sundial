@@ -21,6 +21,8 @@
 // home of; no fact is owned twice (a test holds it), and every other card links
 // to the owner instead of copying it. Kanban owns none on purpose.
 
+import { ENTITY_KINDS } from '@sundial/helpers/vocab.js'
+
 export const CARDS = [
   // ── The day ──────────────────────────────────────────────────────────────
   { id: 'today', owns: ['the day in one sentence', 'the live strip', 'what usually comes next', 'the moment of the day', 'what is next', 'where I left off'], title: 'Today', question: 'What is happening right now — and what does this moment ask?', shows: 'one-sentence brief of the day; the live strip (app, project, moment length, focus, branch, place); the moment of the day and its question answered — in the morning yesterday and where each project was left off, after a switch or a break the project\'s open work, before a meeting who is in it, in the evening a door to the day; what is next; and how many things wait for the owner, linked to Left for you' },
@@ -39,7 +41,7 @@ export const CARDS = [
   { id: 'settings', title: 'Settings', question: 'How is Gnomon tuned?', shows: 'autonomy, notice bias with a test bench, auto-advance, motion, paper, blur, permissions, services' },
 
   // ── Browse ───────────────────────────────────────────────────────────────
-  { id: 'explore', owns: ['search', 'entities', 'what was said', 'people', 'merge suggestions', 'saved lenses'], title: 'Explore', question: 'Who and what does Gnomon know — and what was said?', keywords: 'said heard speech transcript spoken meeting standup words', shows: 'search over the record and conversations; every entity Gnomon holds beliefs about, by kind; Said — what was heard near the machine, a day at a time, all day or inside one of the day\'s meetings, narrowed to words; people with the meetings shared, "same as" merge suggestions, unnamed attendees and what is not a person; and the saved lenses', filters: { query: 'words to search for — the card opens with those results', kind: ['person', 'project', 'tool', 'topic', 'goal', 'task'], date: 'a day, YYYY-MM-DD — Said opens on what was heard that day', meeting: 'a meeting title on that day, e.g. Standup — Said shows only what was heard inside it' } },
+  { id: 'explore', owns: ['search', 'entities', 'what was said', 'people', 'merge suggestions', 'saved lenses'], title: 'Explore', question: 'Who and what does Gnomon know — and what was said?', keywords: 'said heard speech transcript spoken meeting standup words', shows: 'search over the record and conversations; every entity Gnomon holds beliefs about, by kind; Said — what was heard near the machine, a day at a time, all day or inside one of the day\'s meetings, narrowed to words; people with the meetings shared, "same as" merge suggestions, unnamed attendees and what is not a person; and the saved lenses', filters: { query: 'words to search for — the card opens with those results', kind: ENTITY_KINDS.filter((k) => k !== 'owner'), date: 'a day, YYYY-MM-DD — Said opens on what was heard that day', meeting: 'a meeting title on that day, e.g. Standup — Said shows only what was heard inside it' } },
   { id: 'entity:', title: 'Entity', question: 'What does Gnomon know about this name?', shows: 'current and superseded facts, aliases, and the moments the name appeared in (meeting, said, screen)', key: 'the name' },
   { id: 'moment:', title: 'Moment', question: 'What happened in this stretch?', shows: 'how Gnomon read the moment, its narrative, focus, evidence (titles, screen, heard) and what it cost', key: 'the moment id' },
 

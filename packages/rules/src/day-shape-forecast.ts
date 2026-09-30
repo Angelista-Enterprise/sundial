@@ -1,4 +1,5 @@
 import { deriveId } from '@sundial/helpers/derive-id.js';
+import { param } from '@sundial/kernel/calibrated.js';
 import { localDate as localDay, localHour } from '@sundial/helpers/local-day.js';
 import { conditionerById, type DayView } from '@sundial/kernel/conditioners.js';
 import type { Effect, KernelState, OpenPrediction, ResolvedPrediction, Rule } from '@sundial/kernel/types.js';
@@ -58,20 +59,20 @@ function prevDayOf(date: string): string {
  * (see `forward-model.ts`). This reads accumulated OBSERVATIONS instead, which
  * is a different quantity even though both count hits.
  */
-function observedDayEndingRate(hourlyDoneRate: KernelState['predictions']['hourlyDoneRate']): number {
+function observedDayEndingRate(hourlyDoneRate: KernelState['predictions']['hourlyDoneRate'], seed: number): number {
   let n = 0;
   let hits = 0;
   for (const cell of Object.values(hourlyDoneRate)) {
     n += cell.n;
     hits += cell.hits;
   }
-  return n === 0 ? UNINFORMED_DAY_ENDING_RATE : hits / n;
+  return n === 0 ? seed : hits / n;
 }
 
 /** Smoothed P(this hour turns out to be the day's last active one) — the conditioning feature measured to carry skill (+46.1%). */
-function hourlyDoneRatePrior(hourlyDoneRate: KernelState['predictions']['hourlyDoneRate'], hour: number): number {
+function hourlyDoneRatePrior(hourlyDoneRate: KernelState['predictions']['hourlyDoneRate'], hour: number, seed = UNINFORMED_DAY_ENDING_RATE): number {
   const cell = hourlyDoneRate[hour] ?? { n: 0, hits: 0 };
-  const base = observedDayEndingRate(hourlyDoneRate);
+  const base = observedDayEndingRate(hourlyDoneRate, seed);
   return clampProb((cell.hits + base * HOUR_RATE_SMOOTHING) / (cell.n + HOUR_RATE_SMOOTHING));
 }
 
@@ -253,7 +254,7 @@ function resolveOpenDayEnding(state: KernelState, ts: string): { state: KernelSt
 function conditionedPrior(state: KernelState, hour: number, arm: 'when' | 'otherwise'): number {
   const cell = state.predictions.conditioned[hour];
   const counts = cell.arms[arm];
-  const base = hourlyDoneRatePrior(state.predictions.hourlyDoneRate, hour);
+  const base = hourlyDoneRatePrior(state.predictions.hourlyDoneRate, hour, param(state, 'forecast.base:day-ending').value);
   return clampProb((counts.hits + base * HOUR_RATE_SMOOTHING) / (counts.n + HOUR_RATE_SMOOTHING));
 }
 
@@ -271,7 +272,8 @@ function openDayEndingFor(state: KernelState, ts: string, id: string, hour: numb
   // to the flat prior and carries no condition, so resolution touches no arm.
   const value = conditioner !== null ? conditioner.evaluate(dayViewFor(state, ts)) : null;
 
-  const priorProb = value === null ? hourlyDoneRatePrior(state.predictions.hourlyDoneRate, hour) : conditionedPrior(state, hour, value ? 'when' : 'otherwise');
+  // W5 loop D: an empty table seeds from `forecast.base:day-ending` (prior 1/24), not the constant.
+  const priorProb = value === null ? hourlyDoneRatePrior(state.predictions.hourlyDoneRate, hour, param(state, 'forecast.base:day-ending').value) : conditionedPrior(state, hour, value ? 'when' : 'otherwise');
   const pred: OpenPrediction = {
     id,
     createdAt: ts,

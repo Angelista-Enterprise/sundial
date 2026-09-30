@@ -104,6 +104,15 @@ describe('hydrateSnapshot', () => {
     expect(hydrated.memory).toEqual(fresh.memory);
   });
 
+  it('hydrates a snapshot from before W1/W2 with empty conversation and loops', () => {
+    const old = { ...createInitialState('device-1') } as Record<string, unknown>;
+    delete old.conversation;
+    delete old.loops;
+    const hydrated = hydrateSnapshot('device-1', old);
+    expect(hydrated.conversation).toEqual({ sessions: {}, said: [] });
+    expect(hydrated.loops).toEqual({ open: [], recent: [], saidToday: {}, day: null });
+  });
+
   it('preserves fields the snapshot does have, not just defaults', () => {
     const fresh = createInitialState('device-1');
     const persisted = { ...fresh, window: { active: { processName: 'Code', windowTitle: 'foo.ts', windowId: 'x:1', documentPath: null }, previous: null, attribution: { projectId: null, source: null, confidence: null } } };
@@ -129,13 +138,21 @@ describe('hydrateSnapshot', () => {
     expect(hydrated.memory.recentEntityIds).toEqual(fresh.memory.recentEntityIds);
   });
 
+  it('W6 P4 / P17: a snapshot with the retired slices hydrates without them, keeping the debounces', () => {
+    const fresh = createInitialState('device-1');
+    const persisted = { ...fresh, recentHistory: [{ ts: '2026-01-01T00:00:00.000Z' }], ask: { recent: [], askedCount: 3 }, pending: { llmCalls: { a: { scheduledAt: 'x' } }, timers: {}, debounces: { 'search:x': '2026-01-01T00:00:00.000Z' } } };
+    const hydrated = hydrateSnapshot('device-1', persisted as never);
+    expect('recentHistory' in hydrated || 'ask' in hydrated).toBe(false);
+    expect(hydrated.pending).toEqual({ debounces: { 'search:x': '2026-01-01T00:00:00.000Z' } });
+  });
+
   it('does not merge array elements — a persisted array wins wholesale over the default', () => {
     const fresh = createInitialState('device-1');
-    const persisted = { ...fresh, recentHistory: [{ ts: '2026-01-01T00:00:00.000Z', summary: 'test' }] };
+    const persisted = { ...fresh, baselines: { ...fresh.baselines, hourlyDurationsByKind: { work: [1, 2] } } };
 
     const hydrated = hydrateSnapshot('device-1', persisted);
 
-    expect(hydrated.recentHistory).toEqual([{ ts: '2026-01-01T00:00:00.000Z', summary: 'test' }]);
+    expect(hydrated.baselines.hourlyDurationsByKind).toEqual({ work: [1, 2] });
   });
 
   it('backfills a missing MomentRollup extra on a carried-over open moment (regression: appendCapped crash)', () => {
@@ -260,5 +277,18 @@ describe('hydrateSnapshot keys an old ingestAnomaly ring (Q9)', () => {
     expect(hydrated.ingestAnomaly.seen).toEqual([textKey('Pull requests · puzzlebox-studio'), textKey('already a key')]);
     expect(hydrated.ingestAnomaly.marked).toEqual({ [textKey('this session was leisure')]: { p: 0.9, ts: '2026-09-22T10:00:00.000Z' } });
     expect(hydrateSnapshot('d1', hydrated).ingestAnomaly).toEqual(hydrated.ingestAnomaly);
+  });
+});
+
+describe('the default board (W4 step 16)', () => {
+  it('a fresh record has the stages and anchor cards; a saved board is never merged with them', async () => {
+    const { createInitialState, hydrateSnapshot } = await import('./initial-state.js');
+    const fresh = createInitialState('d');
+    expect(Object.keys(fresh.board.sections)).toEqual(['today', 'work', 'kanban']);
+    expect(Object.keys(fresh.board.cards)).toEqual(['today', 'kanban']);
+    const saved = { ...fresh, board: { ...fresh.board, cards: { chat: { ...fresh.board.cards.today, id: 'chat', kind: 'chat' } }, sections: {} } };
+    const back = hydrateSnapshot('d', JSON.parse(JSON.stringify(saved)));
+    expect(Object.keys(back.board.cards)).toEqual(['chat']);
+    expect(back.board.sections).toEqual({});
   });
 });

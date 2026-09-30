@@ -20,8 +20,8 @@ function ownerTimeZone(): string {
   return loadSundialConfig().timezone;
 }
 
-function today(): string {
-  return localDate(new Date().toISOString(), ownerTimeZone());
+function today(now: Date): string {
+  return localDate(now.toISOString(), ownerTimeZone());
 }
 
 /** `2h 05m`, the way every other surface says a duration. */
@@ -67,7 +67,7 @@ export const FIGURE_TOOLS: GnomonTool[] = [
       predicate: z.string().optional().describe('Which predicate to trace for fact-chain, e.g. worksOn'),
     },
     readOnly: true,
-    handler: async (args) => composeFigure(args as unknown as ComposeFigureArgs),
+    handler: async (args, env) => composeFigure(args as unknown as ComposeFigureArgs, env.now),
   },
 ];
 
@@ -85,12 +85,12 @@ interface ComposeFigureArgs {
  * the model reads it as a tool result and writes prose without a figure, which
  * is a better outcome than an error that costs a round.
  */
-export async function composeFigure(args: ComposeFigureArgs): Promise<Figure | { unavailable: string }> {
+export async function composeFigure(args: ComposeFigureArgs, now: Date): Promise<Figure | { unavailable: string }> {
   switch (args.kind) {
     case 'dial-slice':
-      return dialSlice(args.date ?? today());
+      return dialSlice(args.date ?? today(now), now);
     case 'trend-slice':
-      return trendSlice(args.days ?? 7);
+      return trendSlice(args.days ?? 7, now);
     case 'graph-neighborhood':
       return graphNeighborhood(args.name);
     case 'fact-chain':
@@ -102,12 +102,12 @@ export async function composeFigure(args: ComposeFigureArgs): Promise<Figure | {
   }
 }
 
-async function dialSlice(date: string): Promise<Figure | { unavailable: string }> {
+async function dialSlice(date: string, now: Date): Promise<Figure | { unavailable: string }> {
   const context = await buildDailyContext(date, { timeZone: ownerTimeZone() });
   const observedMin = context.coverage.trackedMin;
   if (observedMin === 0) return { unavailable: `Nothing was observed on ${date}, so there is no shape to draw.` };
 
-  const isToday = date === today();
+  const isToday = date === today(now);
   const curve = context.energyCurve.map((point) => ({ hour: point.hour, score: point.score }));
   const fromHour = curve.length > 0 ? Math.min(...curve.map((p) => p.hour)) : 6;
 
@@ -125,13 +125,13 @@ async function dialSlice(date: string): Promise<Figure | { unavailable: string }
     curve,
     meetings: context.meetings.map((m) => ({ startHour: hourOf(m.start), endHour: hourOf(m.end) })),
     deepBlocks: context.deepWorkBlocks.map((b) => ({ startHour: hourOf(b.start), endHour: hourOf(b.end) })),
-    nowHour: isToday ? hourOf(new Date().toISOString()) : null,
+    nowHour: isToday ? hourOf(now.toISOString()) : null,
   };
 }
 
-async function trendSlice(days: number): Promise<Figure | { unavailable: string }> {
+async function trendSlice(days: number, now: Date): Promise<Figure | { unavailable: string }> {
   const timeZone = ownerTimeZone();
-  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const since = new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString();
   const moments = await getMomentsSince(since);
 
   const byDay = new Map<string, number>();
@@ -145,7 +145,7 @@ async function trendSlice(days: number): Promise<Figure | { unavailable: string 
   // the single most misleading thing this figure could do.
   const rows: { date: string; minutes: number; observed: boolean }[] = [];
   for (let back = days - 1; back >= 0; back -= 1) {
-    const day = localDate(new Date(Date.now() - back * 24 * 60 * 60 * 1000).toISOString(), timeZone);
+    const day = localDate(new Date(now.getTime() - back * 24 * 60 * 60 * 1000).toISOString(), timeZone);
     const ms = byDay.get(day);
     rows.push({ date: day, minutes: ms ? Math.round(ms / 60000) : 0, observed: ms !== undefined });
   }

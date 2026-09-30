@@ -12,7 +12,7 @@
  * added there; the lint keeps the state short.
  */
 import type { JudgeQuestion } from '@sundial/kernel/types.js';
-import { clip, noul, score, type QuestionSet } from './index.js';
+import { clip, noul, score, type QuestionSet, keyed } from './index.js';
 
 export const ROUTE_TOOLS: Record<string, string> = {
   gnomon_current_context: 'What the owner is doing right now: open moment, app, project.',
@@ -34,16 +34,16 @@ export const ROUTE_TOOLS: Record<string, string> = {
   gnomon_compose_figure: 'Draw a chart or figure from data already retrieved.',
 };
 
-export const ROUTE_TOOL_QUESTIONS: Record<string, JudgeQuestion> = Object.fromEntries(
+export const ROUTE_TOOL_QUESTIONS: Record<string, JudgeQuestion> = keyed('route-ask', Object.fromEntries(
   Object.entries(ROUTE_TOOLS).map(([name, what]) => [name, noul(`To answer the owner's question in \`question\`, would the assistant need this data source: ${what}`)]),
-);
+));
 
-export const ROUTE_ASK_QUESTIONS: Record<string, JudgeQuestion> = {
+export const ROUTE_ASK_QUESTIONS: Record<string, JudgeQuestion> = keyed('route-ask', {
   ...ROUTE_TOOL_QUESTIONS,
   needs_live_data: noul('Does answering `question` require knowing what the owner is doing right now, as opposed to history?'),
   about_the_assistant: noul("Is `question` about the assistant itself — its tools, its abilities, its cost — rather than about the owner's life and work?"),
   difficulty: score('How hard is `question` to answer well?', ['Trivial: one lookup, one sentence.', 'Simple: one data source, a short summary.', 'Involved: several sources combined and compared.', 'Hard: judgement over the whole history, or an ambiguous question.']),
-};
+});
 
 export interface RouteAskInput {
   question: string;

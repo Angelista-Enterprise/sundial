@@ -14,7 +14,7 @@
  * reads as a thing someone wrote.
  */
 import type { QuestionSet } from './index.js';
-import { noul, score } from './index.js';
+import { noul, score, keyed } from './index.js';
 import { momentFanout, momentFanoutState, type MomentFanoutInput } from './moment-fanout.js';
 
 export interface JudgeLineInput {
@@ -23,7 +23,7 @@ export interface JudgeLineInput {
   narrative: string | null;
 }
 
-export const JUDGE_LINE_QUESTIONS = {
+export const JUDGE_LINE_QUESTIONS = keyed('judge-line', {
   hedges: noul('Does `assistant_wrote` hedge with words like likely, probably, appears, seems, or otherwise avoid committing to a reading?'),
   grounded: noul('Is every project, person, tool and activity named in `assistant_wrote` present in `evidence`, with nothing invented?'),
   app_only: noul('Does `assistant_wrote.line` merely name the application or window instead of the work being done?'),
@@ -34,7 +34,7 @@ export const JUDGE_LINE_QUESTIONS = {
     'Good: names the work plainly.',
     'Excellent: names the work, the project and the point of it, in a few words.',
   ]),
-};
+});
 
 export const judgeLine: QuestionSet<[JudgeLineInput]> = {
   id: 'judge-line',

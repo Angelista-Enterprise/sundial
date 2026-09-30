@@ -18,15 +18,21 @@ describe('retentionPrune', () => {
     const state = createInitialState('d1');
     const event: SanitizedEvent = { id: 'e1', type: 'day:boundary', ts: '2026-07-17T00:00:00.000Z', payload: {}, sanitized: true };
     const { effects } = retentionPrune(state, event);
-    expect(effects).toHaveLength(5);
+    expect(effects).toHaveLength(7);
     expect(effects[1]).toEqual({ type: 'DeleteRows', olderThan: '2026-07-03T00:00:00.000Z', signalTypes: ['screen'] });
+  });
+
+  it('prunes the chat log on the prompt-body horizon (W1)', () => {
+    const event: SanitizedEvent = { id: 'e1', type: 'day:boundary', ts: '2026-07-17T00:00:00.000Z', payload: {}, sanitized: true };
+    expect(retentionPrune(createInitialState('d1'), event).effects).toContainEqual({ type: 'DeleteRows', olderThan: '2026-06-17T00:00:00.000Z', signalTypes: ['chat'] });
+    expect(retentionPrune(createInitialState('d1'), event).effects).toContainEqual({ type: 'DeleteRows', olderThan: '2026-06-17T00:00:00.000Z', signalTypes: ['judgement'], eventTypes: ['consulted'] });
   });
 
   it('skips the screen sweep when it would not be shorter than the general prune', () => {
     const base = createInitialState('d1');
     const state = { ...base, config: { ...base.config, retentionDays: 10, screenTextRetentionDays: 14 } };
     const event: SanitizedEvent = { id: 'e1', type: 'day:boundary', ts: '2026-07-17T00:00:00.000Z', payload: {}, sanitized: true };
-    expect(retentionPrune(state, event).effects.filter((e) => e.type === 'DeleteRows' && !e.apps && !e.trim)).toHaveLength(1);
+    expect(retentionPrune(state, event).effects.filter((e) => e.type === 'DeleteRows' && !e.apps && !e.trim && !e.signalTypes?.includes('chat') && !e.signalTypes?.includes('judgement'))).toHaveLength(1);
   });
 
   it('sweeps transcripts on audio.retentionDays, leaving the headphone rows', () => {

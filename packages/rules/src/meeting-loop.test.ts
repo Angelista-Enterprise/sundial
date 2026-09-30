@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createInitialState } from '@sundial/kernel/initial-state.js';
-import type { KernelState, SanitizedEvent } from '@sundial/kernel/types.js';
+import { askLoop } from '@sundial/helpers/loops.js';
+import type { KernelState, OpenLoop, SanitizedEvent } from '@sundial/kernel/types.js';
 import { meetingFollowup, FOLLOWUP_MIN_AFTER_MS, FOLLOWUP_MAX_AFTER_MS } from './meeting-followup.js';
 import { goalCheckin, openGoals } from './goal-checkin.js';
 
@@ -49,7 +50,7 @@ describe('meetingFollowup', () => {
     expect(meetingFollowup(tooSoon, tick(0)).effects).toEqual([]);
 
     const busy = withMeeting(createInitialState('d'), ['Bob']);
-    busy.ownerAsk.open = { askId: 'x', question: 'q', reason: '', choices: [], ts: at(-1000) };
+    busy.loops.open.push(askLoop({ askId: 'x', question: 'q', reason: '', choices: [], ts: at(-1000) }) as OpenLoop);
     expect(meetingFollowup(busy, tick(0)).effects).toEqual([]);
   });
 
@@ -81,7 +82,8 @@ describe('meetingFollowup', () => {
     for (let i = 0; i < 200; i += 1) state = meetingFollowup(state, { id: `s${++seq}`, type: 'audio:transcript', ts: at(-40 * 60_000 + i), payload: { spokenText: 'the far side', channel: 'system' }, sanitized: true }).state;
     state = meetingFollowup(state, { id: `m${++seq}`, type: 'audio:transcript', ts: at(-30 * 60_000), payload: { spokenText: 'ja', channel: 'mic' }, sanitized: true }).state;
     expect(Object.values(state.meetings.seen)[0]!.heard).toBe(1);
-    expect(meetingFollowup(state, tick(0)).effects).toEqual([]);
+    // No question for a room the owner was not in; the promise pass still reads what the far side said (W6 P2).
+    expect(meetingFollowup(state, tick(0)).effects.map((e) => e.type)).toEqual(['RunMeetingPromises']);
   });
 
   it('forgets meetings older than two days', () => {
@@ -123,7 +125,7 @@ describe('goalCheckin', () => {
   it('stays quiet with no goals or with a question already open', () => {
     expect(goalCheckin(createInitialState('d'), boundary('2026-09-06T22:00:00.000Z')).effects).toEqual([]);
     const busy = withGoals(createInitialState('d'));
-    busy.ownerAsk.open = { askId: 'x', question: 'q', reason: '', choices: [], ts: '2026-09-06T21:00:00.000Z' };
+    busy.loops.open.push(askLoop({ askId: 'x', question: 'q', reason: '', choices: [], ts: '2026-09-06T21:00:00.000Z' }) as OpenLoop);
     expect(goalCheckin(busy, boundary('2026-09-06T22:00:00.000Z')).effects).toEqual([]);
   });
 });

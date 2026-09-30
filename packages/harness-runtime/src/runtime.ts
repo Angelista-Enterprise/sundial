@@ -23,92 +23,63 @@
  * The daemon's module-level `let state / lastSignalId / eventChain` become
  * instance fields so the runtime is a disposable service, not process state.
  */
-import { momentEmbedText, momentModelTag } from '@sundial/helpers/moment-embed-text.js';
 import { getSundialHome } from '@sundial/helpers/config.js';
 import { localDate } from '@sundial/helpers/local-day.js'; // lane Q
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { createEventId, sanitizeAtIngestWithAudit, type Event } from '@sundial/helpers/index.js';
-import { captionsFor, performAttachTranscript, transcriptFor } from './attach-transcript.js';
+import { captionsFor, transcriptFor } from './attach-transcript.js';
 import { loadSundialConfig, canonicalProjectName, type ResolvedSundialConfig } from '@sundial/helpers/sundial-config.js';
 import { applyPrivacyConfig } from '@sundial/helpers/privacy-config.js';
 import {
-  decayKnowledgeScores,
-  decayMomentScores,
-  deleteRowsOlderThan,
-  deleteSignalsOlderThan,
   getAllProjects,
   getKnowledgeEntriesSince,
   getAllMoments,
   getMomentsByIds,
   getMomentsSince,
   getSignalsInRange,
-  updateGateDecisionFeatures,
   loadAliasNames,
   getCurrentFactsOfKind, // lane Q
   getAllSignalsInRange, // lane Q
-  trimAuditBodies, // lane Q
   insertEmbedding,
-  replaceEmbedding,
-  insertEntityFact,
-  insertGateDecision,
   insertKnowledgeEntry,
-  retractKnowledgeEntry,
   getFactsForRefutation,
   getFactsForBeliefAudit,
   getWorldForHygiene,
   getCurrentFactIdsLastMarkedWrong,
   getMomentCountsByProjectAndProcess,
   getAllEntities,
-  insertPrediction,
   listResolvedPredictions,
-  upsertCommitment,
-  upsertAskThread,
-  upsertOwnerAsk,
-  updateOwnerAsk,
   getAskVerdicts,
   getOldestUnharvestedOwnerAsk,
-  insertMoment,
   insertSignal,
-  signalExists,
   getEffectJournalEntry,
   effectCompletedElsewhere,
   restartShiftedEffect,
-  type EffectJournalStatus,
   markEffectStarted,
   markEffectCompleted,
   markEffectFailed,
-  markEffectEmitted,
   markEffectIndeterminate,
-  mergeMomentData,
-  reembedStaleEmbeddings,
-  reinforceEntityFact,
-  decayCurrentFactConfidence,
-  supersedeEntityFact,
-  retractEntityFact,
-  upsertEntity,
-  upsertOrganization,
-  upsertProject,
   mergeProjectRows,
-  mergeEntityRows,
-  resolveEntityAlias,
 } from '@sundial/db/index.js';
 import { NO_DIAGNOSIS, withPersona } from '@sundial/kernel/persona.js';
-import { auditIdOf, BudgetExhaustedError, isLlmConfigured, LlmHttpError, runAuditedJudgement, runAuditedLlmCall, runToolLoop, systemOneBackend } from '@sundial/llm/index.js';
+import { auditIdOf, BudgetExhaustedError, getLlmConfig, isLlmConfigured, LlmHttpError, runAuditedJudgement, runAuditedLlmCall, runToolLoop, systemOneBackend } from '@sundial/llm/index.js';
+import { DEFAULT_PROVIDER } from '@sundial/helpers/llm-providers.js';
 // lane H
-import { setLlmOutcomeListener, type LlmOutcome } from '@sundial/llm/index.js';
-import { classifyLlmError } from '@sundial/helpers/llm-error-class.js';
+import { setLlmAuditListener, setLlmConfigSource, setLlmOutcomeListener, type LlmAuditOutcome, type LlmOutcome } from '@sundial/llm/index.js';
+import { classifyLlmError, redactSecrets } from '@sundial/helpers/llm-error-class.js';
 import { localDate as localDateOf } from '@sundial/helpers/local-day.js';
 import { backupDaily } from './backup.js';
 import { assembleJournalMarkdown } from '@sundial/kernel/daily-journal-prompt.js';
 import { expandHomePath } from './sensor-runtime.js';
-import { benchPacking, PACK_SIZE, rejudgeMoments, type PackBench, type RejudgeProgress } from './rejudge.js';
+import { benchPacking, PACK_SIZE, rejudgeMoments } from './rejudge.js';
 import { goalLabel, openGoals } from '@sundial/rules/goal-checkin.js';
 import { hygieneContext, planHygiene } from '@sundial/rules/world-hygiene.js';
 import { questionId } from '@sundial/rules/questions/index.js';
 import { QUESTION_SETS } from '@sundial/rules/questions/registry.js';
-import { THRESHOLD_MIN_N } from '@sundial/rules/judgement-track.js';
+import { migrateQuestionIds, THRESHOLD_MIN_N } from '@sundial/rules/judgement-track.js';
 import { DRIFT_TYPES, foldDriftRows } from '@sundial/rules/drift-track.js';
 import { adoptHeardThreads } from '@sundial/rules/promise-track.js'; // lane Q
 import { oneValueRepair } from '@sundial/rules/contradiction-check.js'; // lane Q
@@ -119,7 +90,6 @@ import { repeatsRecent } from '@sundial/kernel/reflection-novelty.js';
 import { computeEmbedding } from '@sundial/memory/index.js';
 import { parseCompanionInsight } from '@sundial/rules/apply-llm-result.js';
 import { MAX_EXTRACTED_FACTS_PER_PASS, parseExtractedFactCandidates } from '@sundial/rules/nightly-fact-extract.js';
-import { deriveId } from '@sundial/helpers/derive-id.js';
 import { meetingPromiseMessages, parseMeetingPromises } from '@sundial/rules/promise-extract.js';
 import { ASK_HARVEST_DRAINED, ASK_HARVEST_DUE } from '@sundial/rules/ask-harvest.js';
 import { auditFact } from '@sundial/rules/questions/audit-fact.js';
@@ -132,16 +102,15 @@ import {
   canonicalizeConversationCandidate,
   conversationExtractionInstructions,
   formatTranscript,
-  type ConversationSource,
-  promisesInTurns,
+  MIN_TURN_CHARS,
+  type ConversationTurn,
 } from '@sundial/rules/conversation-extract.js';
-import { redactWithPolicy } from '@sundial/helpers/redact/redact-policy.js';
 import {
   buildDailyContext,
   buildJournalMessages,
   buildProjectStatusContext,
   buildProjectStatusMessages,
-  executeGnomonTool,
+  executeGnomonTool, toolEnv,
   gnomonToolDefinitions,
   createInitialState,
   hydrateSnapshot,
@@ -150,7 +119,6 @@ import {
   parseJournalResult,
   persistDailyJournal,
   effectDeliveryGuarantee,
-  type DeliveryGuarantee,
   persistProjectStatus,
   reduce,
   replayTail,
@@ -177,16 +145,32 @@ import {
   type JudgeQuestion,
   type JudgementPurpose,
   type JudgementResultPayload,
+  type LlmPurpose,
+  type RejudgeOptions,
+  type RejudgeState,
+  type RunRejudgeEffect,
+  type StartJobEffect,
+  type StartSubagentEffect,
+  type StopJobEffect,
+  type StopSubagentEffect,
   type TrialSplit,
   conditionerById,
   informationGain,
   splitAccepted,
 } from '@sundial/kernel/index.js';
 import { BACKFILL_MANIFEST, RULE_MANIFEST } from '@sundial/rules/index.js';
+import { rebuildCalibratedFromLog } from './calibrate-backfill.js';
+import { heldUntil, RouteSlots } from './route-hold.js';
+import { describeEffect, journalShifted, replayDecision, tablesTouched } from './effect-journal.js';
+import { EFFECT_HANDLERS, type Handler } from './effects/index.js';
+export { describeEffect, journalShifted, replayDecision, tablesTouched } from './effect-journal.js';
+import { configDiff, kernelConfigOf } from '@sundial/kernel/config-log.js';
 import { resolveAliases, type ResolvedAlias } from './resolve-aliases.js';
 import { isUnchangedObservation, stateSignature } from '@sundial/kernel/state-signature.js';
 
 const RETRY_MAX_ATTEMPTS = 3;
+/** The purposes Jev answers (`JudgementPurpose`), for `routeOf`. */
+const JUDGE_PURPOSES = new Set<LlmPurpose>(['perceive', 'classify', 'rank', 'judge', 'audit', 'forecast', 'listen'] satisfies JudgementPurpose[]);
 /** J4.1: a choice's lab operating point; the judge escalates an allow to an ask only above it. */
 const ACTION_ESCALATE_DEFAULT_THRESHOLD = 0.7;
 /** J4.2: below this `carried_out` the action is reported as unverified. */
@@ -268,6 +252,9 @@ const REFLECTION_TIMEOUT_MS = 120_000;
 const QUIET_SIGNAL_TYPES = new Set(['clock']);
 
 /** Same L2 note as the daemon: `ts` defaults to real ingest time; replay orders by ULID id, never by `ts`. */
+import { meetingAttendeeEvidence, parseRefutationVerdicts, spokenEvidence } from './evidence-lines.js';
+export { meetingAttendeeEvidence, parseRefutationVerdicts, spokenEvidence };
+
 export function toDaemonEvent(type: string, payload: Record<string, unknown>, ts: string = new Date().toISOString()): Event {
   return { id: createEventId(), type, ts, payload };
 }
@@ -293,209 +280,6 @@ function resolveProjectIdByName(name: string, projectsById: Map<string, string>,
     if (canonicalProjectName(projectName, aliases) === target) return id;
   }
   return null;
-}
-
-/**
- * Longest run of speech carried on ONE evidence line. `momentRollup` caps a
- * moment's own excerpt at 600, and 60 moments of that is 36k characters of
- * transcript in a prompt whose other 60 lines are short — the speech would
- * drown the window-title evidence rather than join it. 240 matches the screen
- * excerpt's cap and keeps the whole pass in the same order of magnitude it had.
- */
-const SPOKEN_EVIDENCE_CHARS = 240;
-
-/**
- * The `said: "…"` clause on one evidence line — the tail of what was heard
- * while that moment was open.
- *
- * Why this exists at all: ambient hearing reached `moments` and stopped there.
- * Nothing read `spokenExcerpt`, so the single richest source of owner facts —
- * the owner's own words, and their colleagues' — fed neither the knowledge
- * graph nor retrieval, exactly the crossing the retired enhancement page
- * conversation-memory described as missing (now almanac/concepts/memory-tiers). Speech enters here rather than through a new rule
- * because this pass ALREADY reads the day's rollups and already funnels its
- * output through the ordinary `entity:fact-candidate` gate.
- *
- * It is quoted, and labelled `said`, on purpose. A window title is a thing the
- * machine observed; a transcript line is a thing whisper GUESSED, and this
- * corpus is bilingual Dutch/English where proper nouns come back mangled. The
- * prompt leans on that label to hold speech-only claims below the confidence
- * where a fact becomes expensive to unseat.
- */
-export function spokenEvidence(raw: unknown): string {
-  if (typeof raw !== 'string') return '';
-  const said = raw.trim();
-  if (said === '' || said === '[private]') return '';
-  const tail = said.length > SPOKEN_EVIDENCE_CHARS ? said.slice(said.length - SPOKEN_EVIDENCE_CHARS) : said;
-  return ` — said: "${tail.replace(/"/g, "'")}"`;
-}
-
-/** The `with: …` clause naming who was in a meeting, for one evidence line. Ported verbatim (see the daemon's long rationale comment). */
-export function meetingAttendeeEvidence(raw: unknown, ownerAliases: string[]): string {
-  if (!Array.isArray(raw) || raw.length === 0) return '';
-  const owners = new Set(ownerAliases.map((a) => a.trim().toLowerCase()));
-  const names = [
-    ...new Set(
-      raw
-        .filter((a): a is string => typeof a === 'string')
-        .map((a) => a.trim())
-        .filter((a) => a.length > 0 && !owners.has(a.toLowerCase())),
-    ),
-  ];
-  return names.length === 0 ? '' : ` — with: ${names.join(', ')}`;
-}
-
-/** One refutation the model claims to have made, as it comes back over the wire. */
-interface RefutationVerdict {
-  factId: string;
-  refuted: boolean;
-  correctedObject?: string;
-  reason?: string;
-}
-
-/** Parses the skeptic's reply, discarding anything it cannot vouch for. Ported verbatim. */
-export function parseRefutationVerdicts(content: string, knownFactIds: Set<string>): RefutationVerdict[] {
-  const start = content.indexOf('[');
-  const end = content.lastIndexOf(']');
-  if (start === -1 || end <= start) return [];
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(content.slice(start, end + 1));
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(parsed)) return [];
-
-  const seen = new Set<string>();
-  const out: RefutationVerdict[] = [];
-  for (const row of parsed) {
-    if (typeof row !== 'object' || row === null) continue;
-    const r = row as Record<string, unknown>;
-    const factId = typeof r.factId === 'string' ? r.factId : '';
-    if (!knownFactIds.has(factId) || seen.has(factId)) continue;
-    if (r.refuted !== true) continue;
-    seen.add(factId);
-    out.push({
-      factId,
-      refuted: true,
-      correctedObject: typeof r.correctedObject === 'string' && r.correctedObject.trim() !== '' ? r.correctedObject.trim() : undefined,
-      reason: typeof r.reason === 'string' ? r.reason : undefined,
-    });
-  }
-  return out;
-}
-
-/** A short, human-readable one-liner per effect (journal detail column). Ported verbatim. */
-export function describeEffect(effect: Effect): string {
-  switch (effect.type) {
-    case 'WriteDB':
-      return effect.table === 'moments'
-        ? `WriteDB moment ${effect.row.id}`
-        : effect.table === 'knowledge_entries'
-          ? `WriteDB knowledge_entry ${effect.row.id}`
-          : effect.table === 'ask_threads'
-            ? `WriteDB ask_thread ${effect.row.id}`
-            : effect.table === 'owner_asks'
-              ? `WriteDB owner_ask ${effect.row.id}`
-            : effect.table === 'commitments'
-              ? `WriteDB commitment ${effect.row.id}`
-              : effect.table === 'organizations'
-                ? `WriteDB organization ${effect.row.id}`
-                : `WriteDB project ${effect.row.id}`;
-    case 'EmitEvent':
-      return `EmitEvent ${effect.event.type}`;
-    case 'ScheduleLLM':
-      return `ScheduleLLM purpose=${effect.purpose}`;
-    case 'Judge':
-      return `Judge ${effect.questionSetId} purpose=${effect.purpose}${effect.momentId ? ` moment=${effect.momentId}` : ''}`;
-    case 'AttachTranscript':
-      return `AttachTranscript ${effect.askId} "${effect.title}"`;
-    case 'RunMeetingPromises':
-      return `RunMeetingPromises "${effect.title}"`;
-    case 'RecordGateFeatures':
-      return `RecordGateFeatures ${effect.noticeKey}`;
-    case 'UpdateMomentData':
-      return `UpdateMomentData ${effect.momentId}`;
-    case 'UpdateOwnerAsk':
-      return `UpdateOwnerAsk ${effect.askId} (${effect.patch.proposals?.length ?? 0} proposals)`;
-    case 'UpsertEntityFact':
-      return `UpsertEntityFact ${effect.entityId}.${effect.predicate}`;
-    case 'SupersedeFact':
-      return `SupersedeFact ${effect.factId}`;
-    case 'RetractFact':
-      return `RetractFact ${effect.factId} (${effect.reason})`;
-    case 'RetractKnowledgeEntry':
-      return `RetractKnowledgeEntry ${effect.entryId} (${effect.reason})`;
-    case 'Embed':
-      return `Embed ${effect.refType} ${effect.refId}`;
-    case 'RunReflection':
-      return 'RunReflection';
-    case 'RunGoalTrial':
-      return `RunGoalTrial ${effect.forecaster}:${effect.cell} on ${effect.variable}`;
-    case 'RunFactExtraction':
-      return 'RunFactExtraction';
-    case 'ResolveAliases':
-      return 'ResolveAliases';
-    case 'RunRefutation':
-      return `RunRefutation sample=${effect.sampleSize}`;
-    case 'RunBeliefAudit':
-      return 'RunBeliefAudit';
-    case 'RunAliasAlignment':
-      return 'RunAliasAlignment';
-    case 'RunAskHarvestBackfill':
-      return 'RunAskHarvestBackfill';
-    case 'DecayScores':
-      return `DecayScores factor=${effect.factor}`;
-    case 'ReinforceFact':
-      return `ReinforceFact ${effect.factId} +${effect.delta}${effect.side === 'beta' ? ' against' : ''}`;
-    case 'DecayFactConfidence':
-      return `DecayFactConfidence factor=${effect.factor}`;
-    case 'Notify':
-      return `Notify ${effect.channel}`;
-    case 'DeleteRows':
-      return `DeleteRows olderThan=${effect.olderThan}${effect.signalTypes ? ` types=${effect.signalTypes.join(',')}` : ''}${effect.trim ? ` trim=${effect.trim}` : ''}`;
-    case 'RecordPrediction':
-      return `RecordPrediction ${effect.kind}/${effect.forecaster} p=${effect.priorProb.toFixed(2)} outcome=${effect.outcome}`;
-    case 'RecordGateDecision':
-      return `RecordGateDecision ${effect.noticeKey} ${effect.channel} (${effect.reason})`;
-    case 'MergeProject':
-      return `MergeProject ${effect.from} -> ${effect.into}`;
-    case 'MergeEntity':
-      return `MergeEntity ${effect.from} -> ${effect.into}`;
-    case 'RunGoalPlan':
-      return `RunGoalPlan ${effect.goalId}`;
-    case 'RunWorldHygiene':
-      return 'RunWorldHygiene';
-    default:
-      return (effect as Effect).type;
-  }
-}
-
-/** A journal row written for another rule's effect at the same (event, index): hardening S6. */
-export function journalShifted(entry: { ruleName: string | null } | null, ruleName: string): boolean {
-  return entry !== null && entry.ruleName !== null && entry.ruleName !== ruleName;
-}
-
-/**
- * Journal-vs-guarantee replay policy. Ported verbatim (see the daemon's two-phase journal rationale).
- * The journal names an effect by its position in the fold's output, so new rules shift it for a
- * replayed tail: deploy only through a clean restart (docs/deploy.md). `journalShifted` catches the
- * shift when the row names another rule.
- */
-export function replayDecision(status: EffectJournalStatus | null, guarantee: DeliveryGuarantee): 'run' | 'skip' | 'abandon' {
-  if (status === null) return 'run';
-  if (status === 'completed') return 'skip';
-  if (status === 'indeterminate') return 'skip';
-  // `started` and `failed` (K0.5) are the same question and get the same
-  // answer. Both mean the effect ran and its outcome is unknown — a throw says
-  // nothing about how far it got, and neither does a process dying mid-effect.
-  // So an at-least-once effect is retried (which is what already happened
-  // before the failure was recorded at all) and an at-most-once one is
-  // abandoned, because repeating something that leaves the machine is worse
-  // than skipping it. Written as one branch rather than two, deliberately:
-  // treating a recorded failure as MORE certain than a crash would be a claim
-  // the record cannot support.
-  return guarantee === 'at-most-once' ? 'abandon' : 'run';
 }
 
 /**
@@ -531,63 +315,6 @@ export function loadOrGenerateDeviceId(): string {
 }
 
 /**
- * The table(s) one effect writes — the entire granularity model of the live
- * channel.
- *
- * A table name IS the event name. It already exists, it cannot drift from the
- * schema, and a new effect that writes a new table adds one line here and
- * nothing anywhere else. The daemon's old four-variant push union
- * (`moment-closed` / `insight-created` / `state-changed` / `signal`) could not
- * say WHICH reading moved, so every open surface had to re-read everything.
- *
- * An effect that writes through another path (`EmitEvent` re-enters the
- * pipeline, `Run*` dispatch detached and announce from where they insert)
- * returns nothing, and over-announcing a table is harmless: a card re-reads,
- * sees the same reading, and does not redraw.
- */
-export function tablesTouched(effect: Effect): readonly string[] {
-  switch (effect.type) {
-    case 'WriteDB':
-      return [effect.table];
-    case 'UpdateMomentData':
-      return ['moments', 'memory_embeddings'];
-    case 'UpdateOwnerAsk':
-      return ['owner_asks'];
-    case 'MergeProject':
-      return ['projects', 'moments', 'commitments'];
-    case 'MergeEntity':
-      return ['entities', 'entity_facts', 'memory_embeddings'];
-    case 'RunGoalPlan':
-      return [];
-    case 'UpsertEntityFact':
-      return ['entities', 'entity_facts'];
-    case 'SupersedeFact':
-    case 'RetractFact':
-    case 'ReinforceFact':
-    case 'DecayFactConfidence':
-      return ['entity_facts'];
-    case 'AttachTranscript':
-      return ['knowledge_entries', 'memory_embeddings'];
-    case 'RecordGateFeatures':
-      return ['gate_decisions'];
-    case 'RetractKnowledgeEntry':
-      return ['knowledge_entries'];
-    case 'Embed':
-      return ['memory_embeddings'];
-    case 'DecayScores':
-      return ['moments', 'knowledge_entries'];
-    case 'DeleteRows':
-      return ['signals', 'moments', 'memory_embeddings', 'llm_audit'];
-    case 'RecordGateDecision':
-      return ['gate_decisions'];
-    case 'RecordPrediction':
-      return ['predictions'];
-    default:
-      return [];
-  }
-}
-
-/**
  * The pseudo-table for the folded `KernelState` itself — what a surface reads
  * when it asks the kernel rather than the database (the strip, the job, the
  * open question). It is not a real table, which is why it is spelled without
@@ -615,20 +342,18 @@ export interface KernelRuntimeOptions {
   config?: ResolvedSundialConfig;
   /** The Jev call a `Judge` performs. Injectable so a test can prove a replay never reaches it; defaults to `runAuditedJudgement`. */
   judge?: typeof runAuditedJudgement;
-  /**
-   * Where `RunConversationExtraction` reads the owner's chat turns. The
-   * harness's `gnomon-kernel` plugin wraps dsh's `sessionQuery`; unset means the
-   * pass is a no-op (a runtime with no session store has nothing to read).
-   */
-  conversationSource?: ConversationSource;
 }
 
-export interface RejudgeStatus extends RejudgeProgress {
-  running: boolean;
-  startedAt: string | null;
-  finishedAt: string | null;
-  error: string | null;
-  bench: PackBench | null;
+/** W3: which actor an action effect goes to. */
+export type ActorKind = 'job' | 'subagent';
+/**
+ * W3: a plugin's doer. `start` resolves once the spawn has happened (a
+ * subagent's may carry `done`, its completion); `stop` resolves when stopped.
+ * Called off the lane; `lane.reserve` is the budget gate, attributed to the effect.
+ */
+export interface Actor {
+  start(effect: StartJobEffect | StartSubagentEffect, lane: { reserve(purpose: LlmPurpose): Promise<string | null> }): Promise<unknown>;
+  stop(effect: StopJobEffect | StopSubagentEffect): Promise<unknown>;
 }
 
 export interface BootResult {
@@ -681,30 +406,34 @@ export class KernelRuntime {
   private lastSignalId: string | null = null;
   /** Serialized event lane — strictly one `ingestAndApply` at a time, in arrival order. Ported verbatim. */
   private eventChain: Promise<unknown> = Promise.resolve();
-  private effectiveDailyCaps = resolveDailyCaps();
   private readonly judge: typeof runAuditedJudgement;
   private stopped = false;
   /** Detached `setTimeout`s (LLM dispatch, retries). Cleared on shutdown so a disposed plugin never fires into closed state — the daemon relied on process exit for this. */
   private pendingTimers = new Set<NodeJS.Timeout>();
   private readonly deviceId: string;
-  private readonly onNotify?: (payload: { channel: string; payload: unknown }) => void;
+  readonly onNotify?: (payload: { channel: string; payload: unknown }) => void;
   private readonly onChange?: (tables: readonly string[]) => void;
   /** Tables written since the last flush; drained by `flushChange` one tick later. */
   private readonly changedTables = new Set<string>();
   private changeFlushScheduled = false;
   private readonly injectedConfig?: ResolvedSundialConfig;
 
-  private readonly conversationSource: ConversationSource | undefined;
+  /** W3: the doers of the action effects, by kind (`registerActor`). Service wiring, like `onNotify`; never fold state. */
+  private readonly actors = new Map<ActorKind, Actor>();
+  private readonly slots = new RouteSlots(); // background model calls in flight per route, given back on settle
 
   constructor(options: KernelRuntimeOptions) {
     this.deviceId = options.deviceId;
     this.onNotify = options.onNotify;
     this.onChange = options.onChange;
     this.injectedConfig = options.config;
-    this.conversationSource = options.conversationSource;
     this.judge = options.judge ?? runAuditedJudgement;
     // lane H (H3): an auth refusal is a fact the fold counts; network trouble never is.
     setLlmOutcomeListener((outcome) => this.noteLlmOutcome(outcome));
+    // W5: every failed call is `llm:failed`, whoever made it (the one audit writer reports it).
+    setLlmAuditListener((outcome) => this.noteLlmAudit(outcome));
+    // W3: `llm.use` from the config in the log, so a per-purpose model change applies at once.
+    setLlmConfigSource(() => this.state?.config.llm);
   }
 
   // lane H (H3)
@@ -721,8 +450,34 @@ export class KernelRuntime {
     else if (outcome.ok && this.state.sensorHealth?.llmAuth?.[outcome.provider]) void this.retryIngestEvent(toDaemonEvent('llm:auth-ok', { provider: outcome.provider }));
   }
 
+  /**
+   * W5: a failed call, from the one audit writer, becomes `llm:failed {callId,
+   * purpose, route, errorClass, attempt}` (no error text: the class is the
+   * fact). Fire-and-forget through the lane, as above.
+   */
+  private noteLlmAudit(outcome: LlmAuditOutcome): void {
+    if (!this.state || this.stopped) return;
+    const { callId, purpose, route, errorClass, attempt, retryAfterMs } = outcome;
+    this.slots.release(callId);
+    if (!outcome.ok) void this.retryIngestEvent(toDaemonEvent('llm:failed', { callId, purpose, route, errorClass, attempt, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) }));
+    // The first success after a failure or a 429 closes the route's streak (and its breaker, and resets its backoff); the rest are not logged.
+    else if ((this.state.reliability?.llm?.[route]?.streak ?? 0) > 0 || (this.state.reliability?.llm?.[route]?.rateLimited ?? 0) > 0) void this.retryIngestEvent(toDaemonEvent('llm:recovered', { route, callId }));
+  }
+
+  /** W5: the route a purpose's call goes to: Jev for a judgement Jev answers, else the configured one. */
+  private routeOf(purpose: LlmPurpose): string {
+    if (JUDGE_PURPOSES.has(purpose) && systemOneBackend() === 'jev') return 'jev';
+    return getLlmConfig(purpose)?.route ?? DEFAULT_PROVIDER;
+  }
+
+  /** W5: a call the breaker refused waits once for the probe time, not in a loop: a second refusal drops it, as a spent budget does. */
+  private deferPastBreaker(route: string, again: () => Promise<void>): void {
+    const until = heldUntil(this.state, route, 'openUntil');
+    if (until !== null) this.defer(() => void again(), until - Date.now());
+  }
+
   /** lane H (H6): `VACUUM INTO` the day's copy in a child process; a failure is a log line, never a failed effect. */
-  private async runDailyBackup(): Promise<void> {
+  async runDailyBackup(): Promise<void> {
     if (this.stopped) return;
     try {
       const result = await backupDaily({ date: localDateOf(new Date().toISOString(), this.state?.config.timezone ?? 'UTC') });
@@ -732,17 +487,62 @@ export class KernelRuntime {
     }
   }
 
-  /** Purposes whose exhausted budget was already recorded today (`purpose:day`), so a busy day logs it once. */
-  private readonly budgetNoted = new Set<string>();
+  /** The daily cap one purpose runs under, from the config in the log (W3): a cap change applies without a restart. */
+  private capOf(purpose: LlmPurpose): number {
+    return resolveDailyCaps(this.state?.config.budgets)[purpose];
+  }
 
-  /** lane H (H3): a budget that ran out, once per purpose per local day, for Settings. Never said. */
-  private noteBudgetExhausted(purpose: string): void {
-    if (!this.state) return;
+  /**
+   * Whether `purpose` has a call left today. On the lane only: a spent budget
+   * folds `llm:budget-exhausted` once per purpose per local day (lane H3, for
+   * Settings; never said), deduped by the state that fold writes, since the
+   * lane runs nothing else between this check and the fold.
+   */
+  private async hasBudget(purpose: LlmPurpose): Promise<boolean> {
+    if (!this.state) return false;
+    const spent = this.state.budgets.byPurpose[purpose]?.callsToday ?? 0;
+    if (spent < this.capOf(purpose)) return true;
+    console.warn(`[sundial-kernel] LLM budget exhausted for purpose=${purpose} (${spent}/${this.capOf(purpose)})`);
     const day = localDateOf(new Date().toISOString(), this.state.config.timezone);
-    const key = `${purpose}:${day}`;
-    if (this.budgetNoted.has(key) || this.state.sensorHealth?.budgetExhausted?.[purpose] === day) return;
-    this.budgetNoted.add(key);
-    void this.retryIngestEvent(toDaemonEvent('llm:budget-exhausted', { purpose }));
+    if (this.state.sensorHealth?.budgetExhausted?.[purpose] !== day) await this.ingestAndApply(toDaemonEvent('llm:budget-exhausted', { purpose }));
+    return false;
+  }
+
+  /**
+   * W3: the one budget gate. Checks the cap and folds `llm:dispatched
+   * {purpose, callId, caller}` in one step of the serialized lane, so two
+   * callers at cap − 1 cannot both pass. Returns the call id, which the caller
+   * uses as its first `llm_audit` row's id so the spend and the row join; null
+   * when the budget is spent (or the kernel is down). `overCap`: one call past a
+   * spent cap (the tool loop's forced answer), still recorded. `inLane`: the caller is
+   * an effect already on the lane (awaiting the lane from there would wait on
+   * itself); everyone else is queued onto it. A background call (not the chat)
+   * takes a route slot, off the lane after a 429's cooldown and a free slot (`RouteSlots`).
+   */
+  async reserveLlmCall(purpose: LlmPurpose, options: { caller: string; callId?: string; inLane?: boolean; overCap?: boolean; route?: string; sessionId?: string }): Promise<string | null> {
+    const [route, callId, slot] = [options.route ?? this.routeOf(purpose), options.callId ?? createEventId(), purpose !== 'ask'];
+    if (slot) await (options.inLane ? this.slots.take(route, callId) : this.slots.hold(route, callId, () => this.state, () => this.stopped));
+    const reserve = async (): Promise<string | null> => {
+      // W5: an open breaker refuses its route before the budget is asked; the first call after `openUntil` is the probe.
+      if (heldUntil(this.state, route, 'openUntil') !== null) return null;
+      if (!options.overCap && !(await this.hasBudget(purpose))) return null;
+      const probe = this.state?.reliability?.llm?.[route]?.openedAt ? { probe: true } : {};
+      // `sessionId`: the chat thread the call serves, so a thread delete takes its ledger rows too (W1 step 8).
+      const session = options.sessionId ? { sessionId: options.sessionId } : {};
+      await this.ingestAndApply(toDaemonEvent('llm:dispatched', { purpose, callId, caller: options.caller, route, ...probe, ...session }));
+      return callId;
+    };
+    let out: string | null = null;
+    try {
+      if (options.inLane) out = await reserve();
+      else await this.serialized(async () => void (out = await reserve()));
+    } catch (error) {
+      if (options.inLane) throw error;
+      console.warn(`[sundial-kernel] could not reserve a ${purpose} call: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      if (slot && !out) this.slots.release(callId); // refused: the slot was never a call
+    }
+    return out;
   }
 
   // -------------------------------------------------------------------------
@@ -757,8 +557,12 @@ export class KernelRuntime {
   async boot(): Promise<BootResult> {
     const gnomonConfig = this.injectedConfig ?? loadSundialConfig();
     applyPrivacyConfig(gnomonConfig.privacy);
-    this.effectiveDailyCaps = resolveDailyCaps(gnomonConfig.budgets);
 
+    // W3: the file is the seed, the log the history. A warm boot keeps the
+    // snapshot's config and replays the tail on it — the config that was in
+    // force then, changed only by the `config:changed` events the tail holds —
+    // and reconciles with the file after. A cold boot seeds from the file.
+    const fileConfig = kernelConfigOf(gnomonConfig);
     const snapshot = await loadLatestSnapshot();
     if (snapshot) {
       this.state = hydrateSnapshot(this.deviceId, snapshot.state);
@@ -769,49 +573,20 @@ export class KernelRuntime {
       const oversize = snapshotSizeWarning(this.state); // lane Q
       if (oversize) console.warn(oversize);
     } else {
-      this.state = createInitialState(this.deviceId);
+      const initial = createInitialState(this.deviceId);
+      this.state = { ...initial, config: { ...fileConfig, pendingRestart: [] } };
       this.lastSignalId = null;
     }
-    // `state.config` reflects config.json on disk *right now*, never a stale
-    // snapshot — same deliberate exemption as the daemon.
-    this.state = {
-      ...this.state,
-      config: {
-        retentionDays: gnomonConfig.retentionDays,
-        screenTextRetentionDays: gnomonConfig.ocr.retentionDays,
-        transcriptRetentionDays: gnomonConfig.audio.retentionDays,
-        autoHearMeetings: gnomonConfig.audio.autoMeetings,
-        decayFactor: gnomonConfig.decayFactor,
-        projectRules: gnomonConfig.projectRules,
-        sharedPlaces: gnomonConfig.sharedPlaces,
-        projectAliases: gnomonConfig.projectAliases,
-        orgByPath: gnomonConfig.orgByPath,
-        locationLabels: gnomonConfig.locationLabels,
-        ownerAliases: gnomonConfig.ownerAliases,
-        timezone: gnomonConfig.timezone,
-        refutationEnabled: gnomonConfig.refutationEnabled,
-        leisureRules: gnomonConfig.leisureRules,
-        experiments: gnomonConfig.experiments,
-
-        vault: gnomonConfig.vault,
-        // lane E (#12)
-        jobs: gnomonConfig.jobs,
-      },
-    };
 
     // Who the hashed people are, read back from the DURABLE facts rather than
-    // carried in the snapshot.
-    //
-    // `memory.aliasNames` is a fast lookup a pure rule can use, mirrored by
+    // carried in the snapshot. `memory.aliasNames` is a fast lookup a pure rule can use, mirrored by
     // `contradictionCheck` at the moment it promotes a `knownAs` belief. That
     // makes it fold-derived, and fold-derived state only survives if every fold
     // that built it is either inside the snapshot or still in the replayed tail.
     // A name the owner gave last week is in neither: the snapshot that held it
     // has been superseded and the signal has long left the tail. So the mirror
     // came back EMPTY while the facts themselves sat in `entity_facts`, valid
-    // and untouched.
-    //
-    // The consequence was not subtle. On 2026-09-09 this machine's snapshot had
+    // and untouched. The consequence was not subtle. On 2026-09-09 this machine's snapshot had
     // `aliasNames: {}` against 18 live `knownAs` facts, so `peopleAsk` — which
     // skips an alias the mirror already names — asked the owner to identify
     // seven people it had already been told about, one of them recorded as
@@ -819,8 +594,7 @@ export class KernelRuntime {
     // (the daily cap, the class mute, the answerable phrasing) treats a symptom
     // of this line being absent.
     //
-    // Beside the config overlay on purpose, and for the same reason: both are
-    // truths that live outside the fold, and both must reflect what is true NOW
+    // A truth that lives outside the fold, so it must reflect what is true NOW
     // rather than what a snapshot happened to capture.
     this.state = { ...this.state, memory: { ...this.state.memory, aliasNames: await loadAliasNames() } };
     const knownAliases = Object.keys(this.state.memory.aliasNames).length;
@@ -834,6 +608,8 @@ export class KernelRuntime {
     // the very machine whose owner had already pressed the button. Rebuilt from
     // the LOG rather than from a table because the log IS where a verdict lives.
     this.state = { ...this.state, ownerAsk: { ...this.state.ownerAsk, classGain: rebuildAskClassGain(await getAskVerdicts()) } };
+    // W6 D4: question records and rings keyed by wording hash move to their template ids, once.
+    this.state = { ...this.state, judgement: migrateQuestionIds(this.state.judgement) };
     const quietedClasses = Object.keys(this.state.ownerAsk.classGain);
     if (quietedClasses.length > 0) console.log(`[sundial-kernel] rehydrated the owner's verdict on ${quietedClasses.length} question kind(s): ${quietedClasses.join(', ')}`);
 
@@ -841,6 +617,7 @@ export class KernelRuntime {
     // lane C: a snapshot from before `driftTrack` holds no weeks, and a trend needs seven of them.
     // No days, not no slice: `createInitialState` gives `drift` a default now (F1).
     const needsDrift = Object.keys(this.state.drift?.days ?? {}).length === 0;
+    const needsCalibrated = Object.keys(this.state.calibrated?.params ?? {}).length === 0; // W5: from the record's history, once
     const tail = await replayTail(this.lastSignalId);
     if (tail.length > 0) {
       console.log(`[sundial-kernel] replaying ${tail.length} signal(s) since last snapshot...`);
@@ -848,13 +625,24 @@ export class KernelRuntime {
         await this.applyEvent(event);
       }
     }
+    // W3: what changed in config.json while nothing was running, as one logged
+    // event; it also clears the restart list, since this boot applied it all.
+    const diff = configDiff(this.state.config, fileConfig);
+    if (diff.length > 0 || (this.state.config.pendingRestart ?? []).length > 0) {
+      await this.ingestAndApply(toDaemonEvent('config:changed', { source: 'boot', diff, restart: [] }));
+      if (diff.length > 0) console.log(`[sundial-kernel] config.json changed while stopped: ${diff.map((d) => d.path).join(', ')}`);
+    }
     // Ticket threads are rebuilt from the log on every boot (~4 s over 125k rows,
     // measured 2026-09-28): a snapshot from before `ticketTrack`, or from an older
     // version of it, would otherwise keep a stale index for up to 30 days.
     await this.rebuildTickets();
     if (needsDrift) await this.rebuildDriftFromLog();
+    if (needsCalibrated) this.state = { ...this.state, calibrated: await rebuildCalibratedFromLog(this.state) };
     await this.adoptHeardThreads(); // lane Q
     await this.oneProjectPerTask(); // lane Q
+    // W6 D9: this process is up. The last heartbeat before it and when the Mac booted say how long
+    // Sundial was down while the Mac was on; `sensorHealth` says so once past an hour.
+    await this.ingestAndApply(toDaemonEvent('sundial:up', { lastSeenAt: this.state.sensorHealth?.lastTickAt ?? null, macBootAt: new Date(Date.now() - os.uptime() * 1000).toISOString() }));
 
     console.log(`[sundial-kernel] kernel booted (device ${this.deviceId})`);
     return { snapshotOffset, tailLength: tail.length };
@@ -1008,7 +796,7 @@ export class KernelRuntime {
     }, 0);
   }
 
-  private defer(fn: () => void, delayMs: number): void {
+  defer(fn: () => void, delayMs: number): void {
     if (this.stopped) return;
     const timer = setTimeout(() => {
       this.pendingTimers.delete(timer);
@@ -1035,7 +823,7 @@ export class KernelRuntime {
   // Ingest pipeline (sanitize → dedupe → log → fold → effects)
   // -------------------------------------------------------------------------
 
-  private async ingestAndApply(event: Event): Promise<void> {
+  async ingestAndApply(event: Event): Promise<void> {
     const { event: sanitized, redactions } = sanitizeAtIngestWithAudit(event);
 
     // Drop a STATE observation byte-identical to the last one recorded (see
@@ -1154,200 +942,15 @@ export class KernelRuntime {
 
   /** Every branch that actually writes. Split out of `executeEffects` so the journal's catch wraps the work and not the bookkeeping. */
   private async performEffect(eventId: string, effectIndex: number, effect: Effect): Promise<void> {
-      if (effect.type === 'WriteDB' && effect.table === 'moments') {
-        await insertMoment({ ...effect.row, data: { ...effect.row.data } });
-      } else if (effect.type === 'WriteDB' && effect.table === 'projects') {
-        await upsertProject(effect.row);
-      } else if (effect.type === 'WriteDB' && effect.table === 'organizations') {
-        await upsertOrganization(effect.row);
-      } else if (effect.type === 'MergeProject') {
-        const moved = await mergeProjectRows(effect.from, effect.into);
-        console.log(`[sundial-kernel] merged project ${effect.from} into ${effect.into} (${moved.moments} moments, ${moved.commitments} commitments)`);
-      } else if (effect.type === 'WriteDB' && effect.table === 'knowledge_entries') {
-        await insertKnowledgeEntry(effect.row);
-      } else if (effect.type === 'WriteDB' && effect.table === 'commitments') {
-        await upsertCommitment(effect.row);
-      } else if (effect.type === 'WriteDB' && effect.table === 'ask_threads') {
-        await upsertAskThread(effect.row);
-      } else if (effect.type === 'WriteDB' && effect.table === 'owner_asks') {
-        await upsertOwnerAsk(effect.row);
-      } else if (effect.type === 'EmitEvent') {
-        // K0.5 — the call-tree's edge, written before the child runs so it
-        // survives the child throwing. This is the id the executor INTENDED to
-        // ingest: an emit the ingest gate dedupes as an unchanged observation
-        // still records it, and the join simply finds no rows, which is the
-        // truth about that hop.
-        await markEffectEmitted(eventId, effectIndex, effect.event.id);
-        // A crash after the child reached the log but before this effect was
-        // marked completed makes boot replay run it again. The child's row is
-        // already in the tail, and replay folds it in its own turn; logging it
-        // a second time would be a primary-key conflict that stops the boot.
-        if (!(await signalExists(effect.event.id))) await this.ingestAndApply(effect.event);
-      } else if (effect.type === 'ScheduleLLM') {
-        await this.dispatchScheduleLLM(effect);
-      } else if (effect.type === 'Judge') {
-        await this.dispatchJudge(effect);
-      } else if (effect.type === 'RecordGateFeatures') {
-        const found = await updateGateDecisionFeatures(effect.decisionId, effect.features as unknown as Record<string, unknown>);
-        if (!found) console.log(`[sundial-kernel] gate features for ${effect.noticeKey}: no decision row ${effect.decisionId} to sit beside`);
-      } else if (effect.type === 'AttachTranscript') {
-        await performAttachTranscript(effect, { getSignalsInRange, getMomentsSince, insertKnowledgeEntry, computeEmbedding, insertEmbedding, ownerAliases: this.state?.config.ownerAliases ?? [], log: console.log });
-      } else if (effect.type === 'UpdateMomentData') {
-        await mergeMomentData(effect.momentId, effect.patch);
-        // The narrative lands minutes after the moment closed and was embedded
-        // without it; it is the densest line a moment has, so the moment is
-        // embedded again from its row, replacing the vector it had.
-        if (typeof (effect.patch as { narrative?: unknown }).narrative === 'string') {
-          const [row] = await getMomentsByIds([effect.momentId]);
-          if (row) {
-            const { vector, model } = await computeEmbedding(momentEmbedText(row.processName, row.data));
-            await replaceEmbedding({ id: `embed:${effect.momentId}`, refType: 'moment', refId: effect.momentId, model: momentModelTag(model), vector, createdAt: new Date().toISOString() });
-          }
-        }
-      } else if (effect.type === 'UpdateOwnerAsk') {
-        await updateOwnerAsk(effect.askId, effect.patch);
-      } else if (effect.type === 'Notify') {
-        // The daemon could only console.log this. The harness forwards it to
-        // the delivery hook (→ Cordis `gnomon/notice` event; Phase 5's
-        // proactive plugin subscribes) AND keeps the log line.
-        console.log(`[sundial-kernel] notify(${effect.channel}):`, effect.payload);
-        this.onNotify?.({ channel: effect.channel, payload: effect.payload });
-      } else if (effect.type === 'DeleteRows' && effect.trim === 'audit-bodies') {
-        // lane Q (Q10)
-        const trimmed = await trimAuditBodies(effect.olderThan);
-        console.log(`[sundial-kernel] retention prune: cleared the text of ${trimmed.llmBodiesCleared} llm_audit rows and deleted ${trimmed.effectsDeleted} completed applied_effects rows older than ${effect.olderThan}`);
-      } else if (effect.type === 'DeleteRows' && Array.isArray(effect.signalTypes)) {
-        const deleted = await deleteSignalsOlderThan(effect.olderThan, effect.signalTypes, { apps: effect.apps, eventTypes: effect.eventTypes });
-        console.log(`[sundial-kernel] retention prune (${[...effect.signalTypes, ...(effect.eventTypes ?? [])].join(',')}${effect.apps ? ', sensitive apps' : ''}): deleted ${deleted} signals older than ${effect.olderThan}`);
-      } else if (effect.type === 'DeleteRows') {
-        const result = await deleteRowsOlderThan(effect.olderThan);
-        console.log(
-          `[sundial-kernel] retention prune: deleted ${result.signalsDeleted} signals, ${result.momentsDeleted} moments, ${result.embeddingsDeleted} orphaned embeddings, ${result.llmAuditDeleted} llm_audit rows older than ${effect.olderThan}`,
-        );
-        // lane H (H6): the daily copy rides the daily prune, off the lane.
-        this.defer(() => void this.runDailyBackup(), 0);
-        const backfill = await reembedStaleEmbeddings();
-        if (backfill.reembedded > 0 || backfill.orphaned > 0) {
-          console.log(
-            `[sundial-kernel] embedding backfill: re-embedded ${backfill.reembedded} stale-scheme rows to ${backfill.currentModel}, dropped ${backfill.orphaned} orphans, ${backfill.remaining} remaining`,
-          );
-        }
-      } else if (effect.type === 'MergeEntity') {
-        const moved = await mergeEntityRows(effect.from, effect.into, effect.alias);
-        if (moved) console.log(`[sundial-kernel] merged entity ${effect.from} into ${effect.into} (${moved.facts} facts, ${moved.embeddings} embeddings; alias ${effect.alias})`);
-      } else if (effect.type === 'UpsertEntityFact') {
-        // J2.4: an alias the owner already resolved lands on the survivor, so the
-        // next attendee row for a merged hash does not recreate the hash entity.
-        const survivor = effect.entityKind === 'person' ? await resolveEntityAlias(effect.canonicalName) : null;
-        const entityId = survivor ?? effect.entityId;
-        if (!survivor) await upsertEntity({ id: effect.entityId, kind: effect.entityKind, canonicalName: effect.canonicalName, createdAt: effect.ts });
-        await insertEntityFact({
-          id: effect.factId,
-          entityId,
-          predicate: effect.predicate,
-          object: effect.object,
-          confidence: effect.confidence,
-          validFrom: effect.ts,
-          sourceEventId: effect.sourceEventId,
-          createdAt: effect.ts,
-          provenance: effect.provenance,
-        });
-      } else if (effect.type === 'SupersedeFact') {
-        await supersedeEntityFact(effect.factId, effect.supersededByFactId, effect.ts);
-      } else if (effect.type === 'RetractFact') {
-        await retractEntityFact(effect.factId, effect.ts);
-      } else if (effect.type === 'RetractKnowledgeEntry') {
-        await retractKnowledgeEntry(effect.entryId, effect.ts);
-      } else if (effect.type === 'Embed') {
-        const { vector, model } = await computeEmbedding(effect.text);
-        // A moment's vector says which version of its text went in (see `momentEmbedText`).
-        await insertEmbedding({ id: effect.id, refType: effect.refType, refId: effect.refId, model: effect.refType === 'moment' ? momentModelTag(model) : model, vector, createdAt: new Date().toISOString() });
-      } else if (effect.type === 'RunGoalTrial') {
-        this.dispatchRunGoalTrial(effect);
-      } else if (effect.type === 'RunReflection') {
-        await this.dispatchRunReflection(effect);
-      } else if (effect.type === 'RunFactExtraction') {
-        await this.dispatchRunFactExtraction(effect);
-      } else if (effect.type === 'ResolveAliases') {
-        await this.dispatchResolveAliases(effect);
-      } else if (effect.type === 'RunConversationExtraction') {
-        await this.dispatchRunConversationExtraction(effect);
-      } else if (effect.type === 'RunMeetingPromises') {
-        await this.dispatchRunMeetingPromises(effect);
-      } else if (effect.type === 'RunRefutation') {
-        await this.dispatchRunRefutation(effect);
-      } else if (effect.type === 'RunBeliefAudit') {
-        await this.dispatchRunBeliefAudit(effect);
-      } else if (effect.type === 'RunAliasAlignment') {
-        if (this.state && systemOneBackend() !== 'off') this.defer(() => void this.performAliasAlignment(effect), 0);
-      } else if (effect.type === 'RunAskHarvestBackfill') {
-        await this.dispatchRunAskHarvestBackfill();
-      } else if (effect.type === 'RunJournal') {
-        await this.dispatchRunJournal(effect);
-      } else if (effect.type === 'RunGoalPlan') {
-        await this.dispatchRunGoalPlan(effect);
-      } else if (effect.type === 'RunWorldHygiene') {
-        // W2 — deferred like the belief audit, so a nightly read never holds
-        // up the fold that asked for it.
-        this.defer(() => void this.performWorldHygiene(effect), 0);
-      } else if (effect.type === 'DecayScores') {
-        await Promise.all([decayMomentScores(effect.factor), decayKnowledgeScores(effect.factor)]);
-      } else if (effect.type === 'ReinforceFact') {
-        await reinforceEntityFact(effect.factId, effect.delta, effect.side);
-      } else if (effect.type === 'DecayFactConfidence') {
-        await decayCurrentFactConfidence(effect.factor);
-      } else if (effect.type === 'RecordGateDecision') {
-        // The gate's verdict + arithmetic (almanac/architecture/rules/noticing-and-expectations),
-        // written HERE (the executor) and never by the rule; the derived id +
-        // onConflictDoNothing make boot replay offer the identical row.
-        await insertGateDecision({
-          id: effect.id,
-          noticeKey: effect.noticeKey,
-          kind: effect.kind,
-          channel: effect.channel,
-          reason: effect.reason,
-          weight: effect.weight,
-          utility: effect.utility,
-          surprise: effect.surprise,
-          precision: effect.precision,
-          habituation: effect.habituation,
-          concern: effect.concern,
-          interruptionCost: effect.interruptionCost,
-          // K0.2 — the bars the rule actually used, carried straight through.
-          // Not re-derived here: the executor has no business knowing what
-          // `noticeBias` does, and a second derivation is a second policy.
-          tonicBar: effect.tonicBar,
-          phasicBar: effect.phasicBar,
-          decidedAt: effect.decidedAt,
-        });
-      } else if (effect.type === 'RecordPrediction') {
-        await insertPrediction({
-          id: effect.id,
-          kind: effect.kind,
-          forecaster: effect.forecaster,
-          createdAt: effect.createdAt,
-          resolvedAt: effect.resolvedAt,
-          priorProb: effect.priorProb,
-          features: effect.features,
-          outcome: effect.outcome,
-          surprise: effect.surprise,
-          // K0.3 — the fair opponent, carried from the rule that knew it.
-          baseProb: effect.baseProb,
-        });
-      } else {
-        // Exhaustive: a new Effect variant with no branch here is a compile
-        // error, never a silent no-op the journal then stamps `completed`.
-        const unhandled: never = effect;
-        throw new Error(`performEffect: no branch for effect ${(unhandled as Effect).type}`);
-      }
+    await (EFFECT_HANDLERS[effect.type] as unknown as Handler)(this, effect, { eventId, effectIndex });
   }
 
   // -------------------------------------------------------------------------
   // Budget-checked LLM dispatchers + detached performers (ported verbatim,
-  // module `state`/`effectiveDailyCaps` reads becoming instance reads)
+  // module `state` reads becoming instance reads; W3: caps from `state.config`)
   // -------------------------------------------------------------------------
 
-  private async performScheduledLlmCall(effect: ScheduleLLMEffect, attempt = Math.max(0, (effect.attempt ?? 1) - 1), parentCallId: string | null = effect.parentCallId ?? null): Promise<void> {
+  private async performScheduledLlmCall(effect: ScheduleLLMEffect, attempt = Math.max(0, (effect.attempt ?? 1) - 1), parentCallId: string | null = effect.parentCallId ?? null, callId?: string): Promise<void> {
     let result: Awaited<ReturnType<typeof runAuditedLlmCall>>;
     try {
       result = await runAuditedLlmCall({
@@ -1357,6 +960,7 @@ export class KernelRuntime {
         // `attempt` here counts from 0; the ledger column counts tries from 1.
         attempt: attempt + 1,
         parentCallId,
+        callId,
       });
     } catch (error) {
       const permanent = error instanceof LlmHttpError && error.status < 500 && error.status !== 429;
@@ -1376,20 +980,14 @@ export class KernelRuntime {
     await this.retryIngestEvent(toDaemonEvent('llm:result', { purpose: effect.purpose, momentId: effect.momentId, text: result.content, auditId: result.auditId, metadata: effect.metadata }));
   }
 
-  private async dispatchScheduleLLM(effect: ScheduleLLMEffect): Promise<void> {
+  async dispatchScheduleLLM(effect: ScheduleLLMEffect, deferred = false): Promise<void> {
     if (!this.state) return;
     if (!isLlmConfigured()) return;
 
-    const budget = this.state.budgets.byPurpose[effect.purpose];
-    if (budget.callsToday >= this.effectiveDailyCaps[effect.purpose]) {
-      console.warn(`[sundial-kernel] LLM budget exhausted for purpose=${effect.purpose} (${budget.callsToday}/${this.effectiveDailyCaps[effect.purpose]})`);
-      this.noteBudgetExhausted(effect.purpose); // lane H (H3)
-      return;
-    }
-
-    await this.ingestAndApply(toDaemonEvent('llm:dispatched', { purpose: effect.purpose }));
-
-    this.defer(() => void this.performScheduledLlmCall(effect), effect.delayMs);
+    if (!deferred && this.slots.busy(this.routeOf(effect.purpose), this.state)) return this.defer(() => void this.dispatchScheduleLLM(effect, true), 0);
+    const callId = await this.reserveLlmCall(effect.purpose, { caller: 'ScheduleLLM', inLane: !deferred });
+    if (!callId) return deferred ? undefined : this.deferPastBreaker(this.routeOf(effect.purpose), () => this.dispatchScheduleLLM(effect, true));
+    this.defer(() => void this.performScheduledLlmCall(effect, undefined, undefined, callId), effect.delayMs);
   }
 
   /**
@@ -1400,23 +998,20 @@ export class KernelRuntime {
    * Backend `off` (`SUNDIAL_SYSTEMONE_BACKEND`) drops every judgement here,
    * before the budget is spent; rules then fall back to their pre-Jev paths.
    */
-  async dispatchJudge(effect: JudgeEffect): Promise<void> {
+  async dispatchJudge(effect: JudgeEffect, deferred = false): Promise<void> {
     if (!this.state) return;
     if (systemOneBackend() === 'off') {
       await this.markDegraded('off', true);
       return;
     }
 
-    const budget = this.state.budgets.byPurpose[effect.purpose];
-    const cap = this.effectiveDailyCaps[effect.purpose];
-    if (budget.callsToday >= cap) {
-      console.warn(`[sundial-kernel] judgement budget exhausted for purpose=${effect.purpose} (${budget.callsToday}/${cap})`);
-      this.noteBudgetExhausted(effect.purpose); // lane H (H3)
-      return;
-    }
-
-    await this.ingestAndApply(toDaemonEvent('llm:dispatched', { purpose: effect.purpose }));
-    this.defer(() => void this.performJudgement(effect), effect.delayMs);
+    // W5: while Jev's breaker is open, a judgement starts on the text-model fallback.
+    const jevOpen = this.routeOf(effect.purpose) === 'jev' && heldUntil(this.state, 'jev', 'openUntil') !== null;
+    const route = jevOpen ? (getLlmConfig(effect.purpose)?.route ?? DEFAULT_PROVIDER) : this.routeOf(effect.purpose);
+    if (!deferred && this.slots.busy(route, this.state)) return this.defer(() => void this.dispatchJudge(effect, true), 0);
+    const callId = await this.reserveLlmCall(effect.purpose, { caller: 'Judge', inLane: !deferred, route });
+    if (!callId) return deferred ? undefined : this.deferPastBreaker(route, () => this.dispatchJudge(effect, true));
+    this.defer(() => void this.performJudgement(effect, jevOpen ? RETRY_MAX_ATTEMPTS : 0, null, callId), effect.delayMs);
   }
 
   /**
@@ -1433,8 +1028,6 @@ export class KernelRuntime {
     if (inLane) await this.ingestAndApply(event);
     else await this.retryIngestEvent(event);
   }
-
-  private rejudgeState: RejudgeStatus = { running: false, startedAt: null, finishedAt: null, total: 0, done: 0, calls: 0, failedCalls: 0, error: null, bench: null };
 
   /**
    * J5.4 — every question the registry can ask, by id, so a surface can name
@@ -1466,7 +1059,7 @@ export class KernelRuntime {
    */
   async classifyAction(tool: string, args: unknown): Promise<{ level: ActionLevel; p: number; stakes: number | null; escalate: boolean } | null> {
     const built = classifyAction.build({ tool, args });
-    const judged = await this.judgeNow({ purpose: 'classify', questionSetId: classifyAction.id, momentId: null, state: built.state, questions: built.questions });
+    const judged = await this.judgeNow({ purpose: 'classify', questionSetId: classifyAction.id, momentId: null, state: built.state, questions: built.questions, caller: 'classifyAction' });
     if (!judged) return null;
     const read = actionLevelOf(judged.answers);
     if (!read) return null;
@@ -1481,72 +1074,168 @@ export class KernelRuntime {
    */
   async verifyAction(tool: string, args: unknown, result: unknown): Promise<{ carriedOut: number; failed: boolean } | null> {
     const built = verifyAction.build({ tool, args, result });
-    const judged = await this.judgeNow({ purpose: 'judge', questionSetId: verifyAction.id, momentId: null, state: built.state, questions: built.questions });
+    const judged = await this.judgeNow({ purpose: 'judge', questionSetId: verifyAction.id, momentId: null, state: built.state, questions: built.questions, caller: 'verifyAction' });
     if (!judged) return null;
     const carriedOut = carriedOutOf(judged.answers);
     if (carriedOut === null) return null;
     return { carriedOut, failed: carriedOut < this.thresholdFor(questionId(VERIFY_ACTION_QUESTIONS.carried_out), ACTION_VERIFY_DEFAULT_THRESHOLD) };
   }
 
-  rejudgeStatus(): RejudgeStatus {
-    return this.rejudgeState;
+  /**
+   * W3: who does an action effect. A plugin registers the doer for its kind
+   * (`job`: the night shift's runner; `subagent`: the work loop); the returned
+   * function unregisters it. Absent, the effect folds a failure outcome.
+   */
+  registerActor(kind: ActorKind, actor: Actor): () => void {
+    this.actors.set(kind, actor);
+    return () => {
+      if (this.actors.get(kind) === actor) this.actors.delete(kind);
+    };
   }
 
   /**
-   * J2.6 — the rejudge job, off the lane. Every stored moment without
-   * `data.judgement` (or all of them with `all`) goes through `moment-fanout`
-   * packed five to a call, sixteen in flight, each answer ingested as a
-   * `judgement:result` the fold applies like a live close. `bench: n` judges
-   * n moments singly AND packed and reports the agreement instead — the bench
-   * the packing must pass before the job is trusted. Returns at once; poll
-   * `rejudgeStatus()`. `pack` defaults to 1 for the job: the bench of
-   * 2026-09-22 (40 moments) kept the `subject` pick 38/40 and the nouls within
-   * 0.09 when packed five, but moved a score level on 13/40 of `depth` and
-   * `worth`, and unpacked at sixteen in flight already fits the five-minute bound.
+   * W3: the action effects. Dispatched off the lane, like the model calls: a
+   * spawned dsh child makes its first model call through the chat guard, whose
+   * reservation queues on the lane, so a spawn awaited ON the lane could wait on
+   * itself. The actor's answer is folded as an outcome event through
+   * `retryIngestEvent`, and a job's completion likewise. No actor, or a refusal,
+   * folds a failure outcome instead of throwing, so a boot replay (which runs
+   * before any plugin registers) never stops on one. The journal row is written
+   * at dispatch, so a crash before the spawn loses the start (the rule's timeout
+   * frees the slot) and never repeats it.
    */
-  rejudge(opts: { all?: boolean; limit?: number; bench?: number; pack?: number; sinceDays?: number } = {}): RejudgeStatus {
-    if (this.rejudgeState.running) return this.rejudgeState;
+  act(effect: StartJobEffect | StopJobEffect | StartSubagentEffect | StopSubagentEffect): void {
+    this.defer(() => void this.perform(effect).catch((error) => console.error(`[sundial-kernel] ${effect.type} failed:`, error)), 0);
+  }
+
+  private async perform(effect: StartJobEffect | StopJobEffect | StartSubagentEffect | StopSubagentEffect): Promise<void> {
+    const actor = this.actors.get(effect.type === 'StartJob' || effect.type === 'StopJob' ? 'job' : 'subagent');
+    const fold = (type: string, payload: Record<string, unknown>) => this.retryIngestEvent(toDaemonEvent(type, payload));
+    const why = (error: unknown) => redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 300);
+    const lane = { reserve: (purpose: LlmPurpose) => this.reserveLlmCall(purpose, { caller: effect.type }) };
+    const missing = () => new Error(`no ${effect.type === 'StartJob' || effect.type === 'StopJob' ? 'night-shift runner' : 'work loop'} is loaded`);
+    if (effect.type === 'StartJob') {
+      let where: Record<string, unknown>;
+      try {
+        if (!actor) throw missing();
+        where = ((await actor.start(effect, lane)) ?? {}) as Record<string, unknown>;
+      } catch (error) {
+        await fold('job:finished', { jobId: effect.job.id, outcome: 'failed', note: `could not start: ${why(error)}` });
+        return;
+      }
+      await fold('job:started', { ...where, jobId: effect.job.id });
+    } else if (effect.type === 'StopJob') {
+      let result: Record<string, unknown> | null;
+      try {
+        if (!actor) throw missing();
+        result = (await actor.stop(effect)) as Record<string, unknown> | null;
+      } catch (error) {
+        result = { note: `could not read the result: ${why(error)}` };
+      }
+      // Null: the runner had no job of that id to stop.
+      if (result !== null) await fold('job:finished', { ...result, jobId: effect.jobId, outcome: effect.outcome });
+    } else if (effect.type === 'StartSubagent') {
+      const jobId = effect.job.id;
+      let started: { childId?: string | null; done?: Promise<unknown> };
+      try {
+        if (!actor) throw missing();
+        started = ((await actor.start(effect, lane)) ?? {}) as typeof started;
+      } catch (error) {
+        await fold('work:closed', { jobId, outcome: 'failed', note: `could not start: ${why(error)}` });
+        return;
+      }
+      await fold('work:started', { jobId, childId: started.childId ?? null });
+      // A child that ended without gnomon_shelve or gnomon_work_done (an empty
+      // step, an abort) would hold the slot until the rule's timeout, and every
+      // queued job waits behind it. Seen 2026-09-10: a flash model reasoned 586
+      // tokens and returned nothing. Closed when it ends; the rule ignores a
+      // close for a job no longer open.
+      if (started.done) {
+        void Promise.resolve(started.done)
+          .catch(() => undefined)
+          .then(() => {
+            if (this.state?.workbench.open?.id === jobId) void this.retryIngestEvent(toDaemonEvent('work:closed', { jobId, outcome: 'failed', note: 'the worker ended without reporting' }));
+          });
+      }
+    } else {
+      try {
+        await actor?.stop(effect);
+      } catch (error) {
+        console.warn(`[sundial-kernel] could not stop ${effect.jobId}: ${why(error)}`);
+      }
+      // Appended whether or not a child was in flight: after a restart the record can be open with no child anywhere.
+      await fold('work:closed', { jobId: effect.jobId, outcome: 'failed', note: 'stopped by owner' });
+    }
+  }
+
+  /** J2.6 / W3: the rejudge job as the fold holds it (`state.judgement.rejudge`), for the route's poll. */
+  rejudgeStatus(): RejudgeState {
+    return this.state?.judgement.rejudge ?? { running: false, startedAt: null, finishedAt: null, total: 0, done: 0, calls: 0, failedCalls: 0, error: null, bench: null, options: {} };
+  }
+
+  /**
+   * J2.6 — the rejudge job, off the lane, asked for by `rejudge:requested`
+   * (the route) through `judgementTrack`'s `RunRejudge`. Every stored moment
+   * without `data.judgement` (or all of them with `all`) goes through
+   * `moment-fanout` packed `pack` to a call, sixteen in flight, each answer
+   * ingested as a `judgement:result` the fold applies like a live close.
+   * `bench: n` judges n moments singly AND packed and reports the agreement
+   * instead — the bench the packing must pass before the job is trusted. `pack`
+   * defaults to 1 for the job: the bench of 2026-09-22 (40 moments) kept the
+   * `subject` pick 38/40 and the nouls within 0.09 when packed five, but moved a
+   * score level on 13/40 of `depth` and `worth`, and unpacked at sixteen in
+   * flight already fits the five-minute bound. W3: each pack reserves a
+   * `classify` call; at the cap the rest are not sent. The job answers with
+   * `rejudge:finished`.
+   */
+  async dispatchRunRejudge(effect: RunRejudgeEffect): Promise<void> {
     const backend = systemOneBackend();
     if (backend === 'off') {
-      this.rejudgeState = { ...this.rejudgeState, error: 'SUNDIAL_SYSTEMONE_BACKEND=off: nothing judges' };
-      return this.rejudgeState;
+      await this.ingestAndApply(toDaemonEvent('rejudge:finished', { error: 'SUNDIAL_SYSTEMONE_BACKEND=off: nothing judges' }));
+      return;
     }
-    this.rejudgeState = { running: true, startedAt: new Date().toISOString(), finishedAt: null, total: 0, done: 0, calls: 0, failedCalls: 0, error: null, bench: null };
+    this.defer(() => void this.performRejudge(effect.options, backend), 0);
+  }
+
+  private async performRejudge(opts: RejudgeOptions, backend: 'jev' | 'text-model'): Promise<void> {
+    let capped: string | null = null; // why it stopped early: the budget, or the route's breaker (both refuse the reservation)
     const deps = {
-      judge: (o: Parameters<typeof runAuditedJudgement>[0]) => this.judge(o),
+      judge: async (o: Parameters<typeof runAuditedJudgement>[0]) => {
+        const callId = capped ? null : await this.reserveLlmCall(o.purpose, { caller: 'RunRejudge' });
+        if (!callId) {
+          capped ??= heldUntil(this.state, this.routeOf(o.purpose), 'openUntil') !== null ? `stopped: the model route ${this.routeOf(o.purpose)} is paused after failing calls` : 'stopped at the classify cap';
+          throw new BudgetExhaustedError();
+        }
+        return this.judge({ ...o, callId });
+      },
       ingest: (payload: JudgementResultPayload) => this.retryIngestEvent(toDaemonEvent('judgement:result', payload as unknown as Record<string, unknown>)),
       backend,
     };
-    this.defer(() => {
-      void (async () => {
-        let rows = await getAllMoments();
-        if (opts.sinceDays) {
-          const cutoff = new Date(Date.now() - opts.sinceDays * 24 * 60 * 60 * 1000).toISOString();
-          rows = rows.filter((r) => r.startTime >= cutoff);
-        }
-        if (!opts.all) rows = rows.filter((r) => r.data.judgement === undefined);
-        // J2.7: the goals open NOW, in the slot order the live close uses.
-        const open = openGoals(this.state?.memory.factCursor ?? {}).slice(0, MAX_GOAL_SLOTS);
-        const promises = (this.state?.commitments.promises ?? []).slice(0, MAX_PROMISE_SLOTS);
-        const goals = { labels: open.map(goalLabel), ids: open.map((g) => g.entityId), promiseLabels: promises.map((c) => c.promise?.quote ?? c.name), promiseIds: promises.map((c) => c.id) };
-        if (opts.bench) {
-          // Spread across history, not the newest n: a bench on one afternoon is a bench on one kind of day.
-          const step = Math.max(1, Math.floor(rows.length / opts.bench));
-          rows = rows.filter((_, i) => i % step === 0).slice(0, opts.bench);
-          this.rejudgeState = { ...this.rejudgeState, total: rows.length };
-          const bench = await benchPacking(rows, deps, opts.pack ?? PACK_SIZE);
-          this.rejudgeState = { ...this.rejudgeState, running: false, finishedAt: new Date().toISOString(), done: bench.n, bench };
-          return;
-        }
-        if (opts.limit) rows = rows.slice(-opts.limit);
-        this.rejudgeState = { ...this.rejudgeState, total: rows.length };
-        const progress = await rejudgeMoments(rows, deps, { packSize: opts.pack ?? 1, goals, onProgress: (p) => (this.rejudgeState = { ...this.rejudgeState, ...p }) });
-        this.rejudgeState = { ...this.rejudgeState, ...progress, running: false, finishedAt: new Date().toISOString() };
-      })().catch((error) => {
-        this.rejudgeState = { ...this.rejudgeState, running: false, finishedAt: new Date().toISOString(), error: error instanceof Error ? error.message : String(error) };
-      });
-    }, 0);
-    return this.rejudgeState;
+    const finish = (payload: Record<string, unknown>) => this.retryIngestEvent(toDaemonEvent('rejudge:finished', { ...payload, ...(capped ? { error: capped } : {}) }));
+    try {
+      let rows = await getAllMoments();
+      if (opts.sinceDays) {
+        const cutoff = new Date(Date.now() - opts.sinceDays * 24 * 60 * 60 * 1000).toISOString();
+        rows = rows.filter((r) => r.startTime >= cutoff);
+      }
+      if (!opts.all) rows = rows.filter((r) => r.data.judgement === undefined);
+      // J2.7: the goals open NOW, in the slot order the live close uses.
+      const open = openGoals(this.state?.memory.factCursor ?? {}).slice(0, MAX_GOAL_SLOTS);
+      const promises = (this.state?.commitments.promises ?? []).slice(0, MAX_PROMISE_SLOTS);
+      const goals = { labels: open.map(goalLabel), ids: open.map((g) => g.entityId), promiseLabels: promises.map((c) => c.promise?.quote ?? c.name), promiseIds: promises.map((c) => c.id) };
+      if (opts.bench) {
+        // Spread across history, not the newest n: a bench on one afternoon is a bench on one kind of day.
+        const step = Math.max(1, Math.floor(rows.length / opts.bench));
+        rows = rows.filter((_, i) => i % step === 0).slice(0, opts.bench);
+        const bench = await benchPacking(rows, deps, opts.pack ?? PACK_SIZE);
+        await finish({ total: rows.length, done: bench.n, bench });
+        return;
+      }
+      if (opts.limit) rows = rows.slice(-opts.limit);
+      await finish({ ...(await rejudgeMoments(rows, deps, { packSize: opts.pack ?? 1, goals })) });
+    } catch (error) {
+      await finish({ error: error instanceof Error ? error.message : String(error) });
+    }
   }
 
   /**
@@ -1557,19 +1246,21 @@ export class KernelRuntime {
    * the event lane (a dsh tool call is not a fold), so the budget events go
    * through `retryIngestEvent`.
    */
-  async judgeNow(options: { purpose: JudgementPurpose; questionSetId: string; momentId: string | null; state: unknown; questions: Record<string, JudgeQuestion> }): Promise<{ answers: JudgementResultPayload['answers']; model: string } | null> {
+  async judgeNow(options: { purpose: JudgementPurpose; questionSetId: string; momentId: string | null; state: unknown; questions: Record<string, JudgeQuestion>; caller?: string }): Promise<{ answers: JudgementResultPayload['answers']; model: string } | null> {
     if (!this.state) return null;
     const backend = systemOneBackend();
     if (backend === 'off') return null;
-    const budget = this.state.budgets.byPurpose[options.purpose];
-    if (budget.callsToday >= this.effectiveDailyCaps[options.purpose]) return null;
-    await this.retryIngestEvent(toDaemonEvent('llm:dispatched', { purpose: options.purpose }));
+    const caller = options.caller ?? 'judgeNow';
+    const callId = await this.reserveLlmCall(options.purpose, { caller });
+    if (!callId) return null;
     try {
-      const result = await this.judge({ purpose: options.purpose, momentId: options.momentId, state: options.state, questions: options.questions, backend });
+      const result = await this.judge({ purpose: options.purpose, momentId: options.momentId, state: options.state, questions: options.questions, backend, callId });
+      // W3: the answer that shaped a decision is in the log, not only in the audit row.
+      await this.retryIngestEvent(toDaemonEvent('judgement:consulted', { callId, purpose: options.purpose, questionSetId: options.questionSetId, caller, answers: result.answers, model: result.model }));
       return { answers: result.answers, model: result.model };
     } catch (error) {
       console.warn(`[sundial-kernel] judgeNow failed (set=${options.questionSetId}):`, error instanceof Error ? error.message : error);
-      await this.retryIngestEvent(toDaemonEvent('llm:refunded', { purpose: options.purpose, errorClass: classifyLlmError(error) }));
+      await this.retryIngestEvent(toDaemonEvent('llm:refunded', { purpose: options.purpose, callId, errorClass: classifyLlmError(error) }));
       return null;
     }
   }
@@ -1581,7 +1272,7 @@ export class KernelRuntime {
    * says `off`: rules fall back to their pre-Jev paths. A Jev success clears
    * the mark. `SUNDIAL_SYSTEMONE_BACKEND=text-model` (or the old `local`) starts on the fallback.
    */
-  private async performJudgement(effect: JudgeEffect, attempt = 0, parentCallId: string | null = null): Promise<void> {
+  private async performJudgement(effect: JudgeEffect, attempt = 0, parentCallId: string | null = null, callId?: string): Promise<void> {
     const backend = systemOneBackend() === 'text-model' || attempt >= RETRY_MAX_ATTEMPTS ? 'text-model' : 'jev';
     let result: Awaited<ReturnType<typeof runAuditedJudgement>>;
     try {
@@ -1593,6 +1284,7 @@ export class KernelRuntime {
         backend,
         attempt: attempt + 1,
         parentCallId,
+        callId,
       });
     } catch (error) {
       const permanent = error instanceof LlmHttpError && error.status < 500 && error.status !== 429;
@@ -1639,7 +1331,7 @@ export class KernelRuntime {
    * without a 429, and ~360 facts at ~300 ms is under a minute. Each call is
    * budgeted under `audit` like any `Judge`; the pass stops at the cap.
    */
-  private async dispatchRunBeliefAudit(effect: RunBeliefAuditEffect): Promise<void> {
+  async dispatchRunBeliefAudit(effect: RunBeliefAuditEffect): Promise<void> {
     if (!this.state) return;
     if (systemOneBackend() === 'off') return;
     this.defer(() => void this.performBeliefAudit(effect), 0);
@@ -1651,7 +1343,7 @@ export class KernelRuntime {
    * merge it causes can be traced to this pass and its reason. An empty plan
    * appends nothing: a clean record is silent.
    */
-  private async performWorldHygiene(effect: RunWorldHygieneEffect): Promise<void> {
+  async performWorldHygiene(effect: RunWorldHygieneEffect): Promise<void> {
     if (!this.state) return;
     const [{ entities, facts }, toolSessionsInProject, wrong] = await Promise.all([getWorldForHygiene(), readToolSessionsInProject(), getCurrentFactIdsLastMarkedWrong()]);
     const actions = planHygiene(entities, facts, hygieneContext(this.state), { toolSessionsInProject, wrongFactIds: new Set(wrong), now: effect.ts });
@@ -1686,7 +1378,8 @@ export class KernelRuntime {
         const fact = facts[next];
         next += 1;
         if (!fact || !this.state) return;
-        if (this.state.budgets.byPurpose.audit.callsToday >= this.effectiveDailyCaps.audit) {
+        const callId = await this.reserveLlmCall('audit', { caller: 'RunBeliefAudit' });
+        if (!callId) {
           console.warn(`[sundial-kernel] belief audit stopped at the audit cap after ${sent} of ${facts.length} facts`);
           next = facts.length;
           return;
@@ -1704,7 +1397,6 @@ export class KernelRuntime {
           evidence: evidenceFor(fact),
         });
         sent += 1;
-        await this.retryIngestEvent(toDaemonEvent('llm:dispatched', { purpose: 'audit' }));
         await this.performJudgement({
           type: 'Judge',
           purpose: 'audit',
@@ -1715,7 +1407,7 @@ export class KernelRuntime {
           questions: built.questions,
           // `artifactId` = the fact id: an `entity_fact` verdict grades these answers (J5.4).
           metadata: { factId: fact.id, artifactId: fact.id, provenance: fact.provenance, confidence: fact.confidence, belief: `${fact.canonicalName} ${fact.predicate} ${fact.object}`.slice(0, 200) },
-        });
+        }, 0, null, callId);
       }
     };
     await Promise.all(Array.from({ length: Math.min(BELIEF_AUDIT_POOL, facts.length) }, worker));
@@ -1731,7 +1423,7 @@ export class KernelRuntime {
    * is not worth a call. Each pair is one `align-alias` judgement under the
    * `audit` cap; `applyAliasAlignment` files the answer as a suggestion.
    */
-  private async performAliasAlignment(effect: RunAliasAlignmentEffect): Promise<void> {
+  async performAliasAlignment(effect: RunAliasAlignmentEffect): Promise<void> {
     // The exact leg's row half, for rows the fold no longer knows. The rule
     // merges a synthetic `named:` root beside its real twin through
     // `project:merged` — but only for roots in `state.project.known`, and the
@@ -1810,22 +1502,22 @@ export class KernelRuntime {
         const i = next;
         next += 1;
         if (i >= pairs.length || !this.state) return;
-        if (this.state.budgets.byPurpose.audit.callsToday >= this.effectiveDailyCaps.audit) {
+        const callId = await this.reserveLlmCall('audit', { caller: 'RunAliasAlignment' });
+        if (!callId) {
           console.warn(`[sundial-kernel] alias alignment stopped at the audit cap after ${sent} of ${pairs.length} pairs`);
           next = pairs.length;
           return;
         }
         const built = alignAlias.build(pairs[i]!);
         sent += 1;
-        await this.retryIngestEvent(toDaemonEvent('llm:dispatched', { purpose: 'audit' }));
-        await this.performJudgement({ type: 'Judge', purpose: 'audit', questionSetId: alignAlias.id, momentId: null, delayMs: 0, state: built.state, questions: built.questions, metadata: meta[i] });
+        await this.performJudgement({ type: 'Judge', purpose: 'audit', questionSetId: alignAlias.id, momentId: null, delayMs: 0, state: built.state, questions: built.questions, metadata: meta[i] }, 0, null, callId);
       }
     };
     await Promise.all(Array.from({ length: Math.min(BELIEF_AUDIT_POOL, pairs.length) }, worker));
     console.log(`[sundial-kernel] alias alignment: ${sent} of ${pairs.length} changed pairs judged (${unchanged} unchanged since last judged)`);
   }
 
-  private async performReflectionCall(effect: RunReflectionEffect): Promise<void> {
+  private async performReflectionCall(effect: RunReflectionEffect, callId?: string): Promise<void> {
     const [moments, knowledgeEntries] = await Promise.all([getMomentsSince(effect.since), getKnowledgeEntriesSince(effect.since)]);
     if (moments.length === 0 && knowledgeEntries.length === 0) return;
 
@@ -1843,6 +1535,7 @@ export class KernelRuntime {
       const result = await runAuditedLlmCall({
         purpose: 'reflect',
         momentId: null,
+        callId,
         timeoutMs: REFLECTION_TIMEOUT_MS,
         messages: [
           {
@@ -1909,7 +1602,7 @@ export class KernelRuntime {
    * recomputes the identical answer, which is what makes the effect safe
    * at-least-once.
    */
-  private dispatchRunGoalTrial(effect: RunGoalTrialEffect): void {
+  dispatchRunGoalTrial(effect: RunGoalTrialEffect): void {
     this.defer(() => void this.performGoalTrial(effect), 0);
   }
 
@@ -1983,26 +1676,21 @@ export class KernelRuntime {
     }
   }
 
-  private async dispatchRunReflection(effect: RunReflectionEffect): Promise<void> {
+  async dispatchRunReflection(effect: RunReflectionEffect): Promise<void> {
     if (!this.state) return;
     if (!isLlmConfigured()) return;
 
-    const budget = this.state.budgets.byPurpose.reflect;
-    if (budget.callsToday >= this.effectiveDailyCaps.reflect) {
-      console.warn(`[sundial-kernel] LLM budget exhausted for purpose=reflect (${budget.callsToday}/${this.effectiveDailyCaps.reflect})`);
-      this.noteBudgetExhausted('reflect'); // lane H (H3)
-      return;
-    }
+    if (!(await this.hasBudget('reflect'))) return;
 
     const [reflectMoments, reflectKnowledge] = await Promise.all([getMomentsSince(effect.since), getKnowledgeEntriesSince(effect.since)]);
     if (reflectMoments.length === 0 && reflectKnowledge.length === 0) return;
 
-    await this.ingestAndApply(toDaemonEvent('llm:dispatched', { purpose: 'reflect' }));
-
-    this.defer(() => void this.performReflectionCall(effect), 0);
+    const callId = await this.reserveLlmCall('reflect', { caller: 'RunReflection', inLane: true });
+    if (!callId) return;
+    this.defer(() => void this.performReflectionCall(effect, callId), 0);
   }
 
-  private async performDailyJournalCall(effect: RunJournalEffect): Promise<void> {
+  private async performDailyJournalCall(effect: RunJournalEffect, callId?: string): Promise<void> {
     const aliases = this.state?.config.projectAliases ?? {};
     const ctx = await buildDailyContext(effect.date, { projectAliases: aliases, timeZone: this.state?.config.timezone ?? 'UTC' });
     if (ctx.coverage.trackedMin === 0) {
@@ -2016,17 +1704,17 @@ export class KernelRuntime {
         momentId: null,
         messages: buildJournalMessages(ctx),
         tools: gnomonToolDefinitions(),
-        execute: (name, args) => executeGnomonTool(name, args),
+        execute: (name, args) => executeGnomonTool(name, args, toolEnv(() => this.getState())),
         maxRounds: JOURNAL_MAX_ROUNDS,
         maxTokens: JOURNAL_MAX_TOKENS,
         requestTimeoutMs: JOURNAL_REQUEST_TIMEOUT_MS,
         deadlineMs: JOURNAL_DEADLINE_MS,
         validate: (content) => parseJournalResult(content) !== null,
-        beforeCall: async (round) => {
-          if (round === 1) return;
-          const live = this.state?.budgets.byPurpose.journal;
-          if (!live || live.callsToday >= this.effectiveDailyCaps.journal) throw new BudgetExhaustedError();
-          await this.ingestAndApply(toDaemonEvent('llm:dispatched', { purpose: 'journal' }));
+        beforeCall: async (round, reserveOptions) => {
+          if (round === 1) return callId;
+          const reserved = await this.reserveLlmCall('journal', { caller: 'RunJournal', overCap: reserveOptions?.overCap });
+          if (!reserved) throw new BudgetExhaustedError();
+          return reserved;
         },
       });
 
@@ -2059,25 +1747,21 @@ export class KernelRuntime {
    * internal (a job can do it with read tools and the shelf) or outward
    * (needs the owner). The fold does the rest (`goalPursuit`).
    */
-  private async dispatchRunGoalPlan(effect: RunGoalPlanEffect): Promise<void> {
+  async dispatchRunGoalPlan(effect: RunGoalPlanEffect): Promise<void> {
     if (!this.state || !isLlmConfigured()) return;
-    const budget = this.state.budgets.byPurpose.goal;
-    if (budget.callsToday >= this.effectiveDailyCaps.goal) {
-      console.warn(`[sundial-kernel] LLM budget exhausted for purpose=goal (${budget.callsToday}/${this.effectiveDailyCaps.goal})`);
-      this.noteBudgetExhausted('goal'); // lane H (H3)
-      return;
-    }
-    await this.ingestAndApply(toDaemonEvent('llm:dispatched', { purpose: 'goal' }));
-    this.defer(() => void this.performGoalPlan(effect), 0);
+    const callId = await this.reserveLlmCall('goal', { caller: 'RunGoalPlan', inLane: true });
+    if (!callId) return;
+    this.defer(() => void this.performGoalPlan(effect, callId), 0);
   }
 
-  private async performGoalPlan(effect: RunGoalPlanEffect): Promise<void> {
+  private async performGoalPlan(effect: RunGoalPlanEffect, callId?: string): Promise<void> {
     try {
       const recent = effect.progress.length > 0 ? await getMomentsByIds(effect.progress) : [];
       const evidence = recent.map((m) => `- ${m.startTime.slice(0, 16)} ${(m.data.intent as { text?: string } | undefined)?.text ?? m.processName}`).join('\n');
       const result = await runAuditedLlmCall({
         purpose: 'goal',
         momentId: null,
+        callId,
         maxTokens: 900,
         messages: [
           {
@@ -2100,23 +1784,16 @@ export class KernelRuntime {
     }
   }
 
-  private async dispatchRunJournal(effect: RunJournalEffect): Promise<void> {
+  async dispatchRunJournal(effect: RunJournalEffect): Promise<void> {
     if (!this.state) return;
     if (!isLlmConfigured()) return;
 
-    const budget = this.state.budgets.byPurpose.journal;
-    if (budget.callsToday >= this.effectiveDailyCaps.journal) {
-      console.warn(`[sundial-kernel] LLM budget exhausted for purpose=journal (${budget.callsToday}/${this.effectiveDailyCaps.journal})`);
-      this.noteBudgetExhausted('journal'); // lane H (H3)
-      return;
-    }
-
-    await this.ingestAndApply(toDaemonEvent('llm:dispatched', { purpose: 'journal' }));
-
-    this.defer(() => void this.performDailyJournalCall(effect), 0);
+    const callId = await this.reserveLlmCall('journal', { caller: 'RunJournal', inLane: true });
+    if (!callId) return;
+    this.defer(() => void this.performDailyJournalCall(effect, callId), 0);
   }
 
-  private async performProjectStatusCall(projectId: string, ts: string): Promise<void> {
+  private async performProjectStatusCall(projectId: string, ts: string, callId?: string): Promise<void> {
     const aliases = this.state?.config.projectAliases ?? {};
     const ctx = await buildProjectStatusContext(projectId, { projectAliases: aliases, timeZone: this.state?.config.timezone });
     if (!ctx) {
@@ -2128,6 +1805,7 @@ export class KernelRuntime {
       const result = await runAuditedLlmCall({
         purpose: 'journal',
         momentId: null,
+        callId,
         messages: buildProjectStatusMessages(ctx),
         maxTokens: JOURNAL_MAX_TOKENS,
       });
@@ -2153,19 +1831,13 @@ export class KernelRuntime {
     if (!this.state) return;
     if (!isLlmConfigured()) return;
 
-    const budget = this.state.budgets.byPurpose.journal;
-    if (budget.callsToday >= this.effectiveDailyCaps.journal) {
-      console.warn(`[sundial-kernel] LLM budget exhausted for purpose=journal (${budget.callsToday}/${this.effectiveDailyCaps.journal})`);
-      this.noteBudgetExhausted('journal'); // lane H (H3)
-      return;
-    }
-
-    await this.ingestAndApply(toDaemonEvent('llm:dispatched', { purpose: 'journal' }));
-
-    this.defer(() => void this.performProjectStatusCall(projectId, new Date().toISOString()), 0);
+    // Called by a tool, off the lane: the reservation queues onto it.
+    const callId = await this.reserveLlmCall('journal', { caller: 'project-status' });
+    if (!callId) return;
+    this.defer(() => void this.performProjectStatusCall(projectId, new Date().toISOString(), callId), 0);
   }
 
-  private async performFactExtractionCall(effect: RunFactExtractionEffect): Promise<void> {
+  private async performFactExtractionCall(effect: RunFactExtractionEffect, callId?: string): Promise<void> {
     const moments = await getMomentsSince(effect.since);
     if (moments.length === 0) return;
 
@@ -2185,6 +1857,7 @@ export class KernelRuntime {
       const result = await runAuditedLlmCall({
         purpose: 'extract',
         momentId: null,
+        callId,
         timeoutMs: FACT_EXTRACTION_TIMEOUT_MS,
         messages: [
           {
@@ -2259,7 +1932,7 @@ export class KernelRuntime {
    * failure must leave the alias unnamed for the next sweep rather than break
    * the tick that scheduled it.
    */
-  private async dispatchResolveAliases(effect: ResolveAliasesEffect): Promise<void> {
+  async dispatchResolveAliases(effect: ResolveAliasesEffect): Promise<void> {
     let resolved: ResolvedAlias[] = [];
     try {
       resolved = await resolveAliases();
@@ -2290,33 +1963,33 @@ export class KernelRuntime {
     }
   }
 
-  private async dispatchRunFactExtraction(effect: RunFactExtractionEffect): Promise<void> {
+  async dispatchRunFactExtraction(effect: RunFactExtractionEffect): Promise<void> {
     if (!this.state) return;
     if (!isLlmConfigured()) return;
 
-    const budget = this.state.budgets.byPurpose.extract;
-    if (budget.callsToday >= this.effectiveDailyCaps.extract) {
-      console.warn(`[sundial-kernel] LLM budget exhausted for purpose=extract (${budget.callsToday}/${this.effectiveDailyCaps.extract})`);
-      this.noteBudgetExhausted('extract'); // lane H (H3)
-      return;
-    }
+    if (!(await this.hasBudget('extract'))) return;
 
     const extractMoments = await getMomentsSince(effect.since);
     if (extractMoments.length === 0) return;
 
-    await this.ingestAndApply(toDaemonEvent('llm:dispatched', { purpose: 'extract' }));
-
-    this.defer(() => void this.performFactExtractionCall(effect), 0);
+    const callId = await this.reserveLlmCall('extract', { caller: 'RunFactExtraction', inLane: true });
+    if (!callId) return;
+    this.defer(() => void this.performFactExtractionCall(effect, callId), 0);
   }
 
   /**
    * The owner's chat turns → `entity:fact-candidate` with `provenance:
-   * 'conversation'`. Owner turns only, redacted with the ingest policy before
-   * they reach the model, and the transcript itself never lands in the log —
-   * see `conversation-extract.ts` for the invariant and its reasons.
+   * 'conversation'`. W1 step 7: the turns are the log's own `chat:owner` rows
+   * in the effect's window, sanitized at ingest like every signal, so a replay
+   * reads the same rows and nothing is redacted twice.
    */
-  private async performConversationExtractionCall(effect: RunConversationExtractionEffect): Promise<void> {
-    if (!this.conversationSource) return;
+  private async ownerTurns(effect: RunConversationExtractionEffect): Promise<ConversationTurn[]> {
+    return (await getAllSignalsInRange(effect.since, effect.ts, ['chat:owner']))
+      .map((row) => ({ sessionId: String(row.data.sessionId ?? ''), at: row.capturedAt, text: String(row.data.text ?? '').trim() }))
+      .filter((turn) => turn.text.length >= MIN_TURN_CHARS);
+  }
+
+  private async performConversationExtractionCall(effect: RunConversationExtractionEffect, turns: ConversationTurn[], callId?: string): Promise<void> {
     const ownerAliases = this.state?.config.ownerAliases ?? [];
     const ownerName = ownerAliases[0];
     if (!ownerName) {
@@ -2324,8 +1997,6 @@ export class KernelRuntime {
       return;
     }
 
-    const turns = (await this.conversationSource.readOwnerTurnsSince(effect.since)).map((turn) => ({ ...turn, text: redactWithPolicy(turn.text) }));
-    if (turns.length === 0) return;
     const transcript = formatTranscript(turns);
     if (transcript.trim() === '') return;
 
@@ -2333,6 +2004,7 @@ export class KernelRuntime {
       const result = await runAuditedLlmCall({
         purpose: 'extract',
         momentId: null,
+        callId,
         messages: [
           { role: 'system', content: withPersona(conversationExtractionInstructions(ownerName)) },
           { role: 'user', content: transcript },
@@ -2374,14 +2046,9 @@ export class KernelRuntime {
    * Without a model it does nothing at all, and the meeting question asks
    * "did you promise anything?" as it would have.
    */
-  private async dispatchRunMeetingPromises(effect: RunMeetingPromisesEffect): Promise<void> {
+  async dispatchRunMeetingPromises(effect: RunMeetingPromisesEffect): Promise<void> {
     if (!this.state || !isLlmConfigured()) return;
-    const budget = this.state.budgets.byPurpose.extract;
-    if (budget.callsToday >= this.effectiveDailyCaps.extract) {
-      console.warn(`[sundial-kernel] LLM budget exhausted for purpose=extract (${budget.callsToday}/${this.effectiveDailyCaps.extract}); meeting promise pass skipped`);
-      this.noteBudgetExhausted('extract'); // lane H (H3)
-      return;
-    }
+    if (!(await this.hasBudget('extract'))) return;
     this.defer(() => void this.performMeetingPromises(effect), 0);
   }
 
@@ -2397,10 +2064,10 @@ export class KernelRuntime {
       return;
     }
     // Counted only now: a meeting with nothing heard never spends an `extract` call.
-    if (!this.state || this.state.budgets.byPurpose.extract.callsToday >= this.effectiveDailyCaps.extract) return;
-    await this.ingestAndApply(toDaemonEvent('llm:dispatched', { purpose: 'extract', source: 'meeting' }));
+    const callId = await this.reserveLlmCall('extract', { caller: 'RunMeetingPromises' });
+    if (!callId) return;
     try {
-      const result = await runAuditedLlmCall({ purpose: 'extract', momentId: null, maxTokens: 2048, messages: meetingPromiseMessages({ title: effect.title, attendees: effect.attendees, ownerName, transcript }) });
+      const result = await runAuditedLlmCall({ purpose: 'extract', momentId: null, callId, maxTokens: 2048, messages: meetingPromiseMessages({ title: effect.title, attendees: effect.attendees, ownerName, transcript }) });
       const promises = parseMeetingPromises(result.content, transcript, effect.attendees);
       console.log(`[sundial-kernel] meeting promise pass: ${promises.length} grounded promise(s)`);
       await done(promises, null);
@@ -2410,40 +2077,19 @@ export class KernelRuntime {
     }
   }
 
-  private async dispatchRunConversationExtraction(effect: RunConversationExtractionEffect): Promise<void> {
-    if (!this.state) return;
-    if (!this.conversationSource) return;
-
-    const turns = await this.conversationSource.readOwnerTurnsSince(effect.since);
+  async dispatchRunConversationExtraction(effect: RunConversationExtractionEffect): Promise<void> {
+    if (!this.state || !isLlmConfigured()) return;
+    // A promise the owner stated outright opened when they typed it (`conversationTrack` on `chat:owner`).
+    const turns = await this.ownerTurns(effect);
     if (turns.length === 0) return;
-
-    // UC1 (U1-F11): a promise the owner stated outright opens without a model,
-    // so it needs neither the model nor its budget. Keyed by the turn, so a
-    // second pass over the same turns opens nothing twice.
-    for (const found of promisesInTurns(turns.map((turn) => ({ ...turn, text: redactWithPolicy(turn.text) })), this.state.config.timezone)) {
-      await this.ingestAndApply({
-        id: createEventId(),
-        type: 'commitment:heard',
-        ts: found.turn.at,
-        payload: { source: 'chat', id: `commitment:promise:${deriveId(found.turn.at, found.turn.sessionId, 'chat-promise', found.sentence)}`, direction: 'owner', counterparty: found.counterparty, deliverable: found.deliverable, dueText: found.dueText, quote: found.sentence },
-      });
-    }
-
-    if (!isLlmConfigured()) return;
     // Shares the `extract` purpose and its cap with the nightly moment pass:
     // one more call a night, same family of work, no five-place purpose plumbing.
-    const budget = this.state.budgets.byPurpose.extract;
-    if (budget.callsToday >= this.effectiveDailyCaps.extract) {
-      console.warn(`[sundial-kernel] LLM budget exhausted for purpose=extract (${budget.callsToday}/${this.effectiveDailyCaps.extract}); conversation pass skipped`);
-      this.noteBudgetExhausted('extract'); // lane H (H3)
-      return;
-    }
-
-    await this.ingestAndApply(toDaemonEvent('llm:dispatched', { purpose: 'extract', source: 'conversation' }));
-    this.defer(() => void this.performConversationExtractionCall(effect), 0);
+    const callId = await this.reserveLlmCall('extract', { caller: 'RunConversationExtraction', inLane: true });
+    if (!callId) return;
+    this.defer(() => void this.performConversationExtractionCall(effect, turns, callId), 0);
   }
 
-  private async performRefutationCall(effect: RunRefutationEffect): Promise<void> {
+  private async performRefutationCall(effect: RunRefutationEffect, callId?: string): Promise<void> {
     const facts = await getFactsForRefutation(effect.sampleSize);
     if (facts.length === 0) return;
 
@@ -2458,6 +2104,7 @@ export class KernelRuntime {
       const result = await runAuditedLlmCall({
         purpose: 'refute',
         momentId: null,
+        callId,
         messages: [
           {
             role: 'system',
@@ -2517,19 +2164,14 @@ export class KernelRuntime {
    * nothing left it appends `ask:harvest-drained`, which is what ends the
    * sweep; `askHarvestBackfill` folds it into `backfillDone`.
    */
-  private async dispatchRunAskHarvestBackfill(): Promise<void> {
+  async dispatchRunAskHarvestBackfill(): Promise<void> {
     if (!this.state) return;
     if (!isLlmConfigured()) return;
 
     // Checked here rather than in the rule for the same reason
     // `dispatchRunConversationExtraction` checks it here: a pure rule cannot
     // see a budget the executor spends. The sweep simply waits an hour.
-    const budget = this.state.budgets.byPurpose.extract;
-    if (budget.callsToday >= this.effectiveDailyCaps.extract) {
-      console.warn(`[sundial-kernel] LLM budget exhausted for purpose=extract (${budget.callsToday}/${this.effectiveDailyCaps.extract}); ask harvest backfill skipped`);
-      this.noteBudgetExhausted('extract'); // lane H (H3)
-      return;
-    }
+    if (!(await this.hasBudget('extract'))) return;
 
     const next = await getOldestUnharvestedOwnerAsk();
     if (next === null || next.answer === null) {
@@ -2541,22 +2183,17 @@ export class KernelRuntime {
     await this.ingestAndApply(toDaemonEvent(ASK_HARVEST_DUE, { askId: next.id, question: next.question, answer: next.answer }));
   }
 
-  private async dispatchRunRefutation(effect: RunRefutationEffect): Promise<void> {
+  async dispatchRunRefutation(effect: RunRefutationEffect): Promise<void> {
     if (!this.state) return;
     if (!isLlmConfigured()) return;
 
-    const budget = this.state.budgets.byPurpose.refute;
-    if (budget.callsToday >= this.effectiveDailyCaps.refute) {
-      console.warn(`[sundial-kernel] LLM budget exhausted for purpose=refute (${budget.callsToday}/${this.effectiveDailyCaps.refute})`);
-      this.noteBudgetExhausted('refute'); // lane H (H3)
-      return;
-    }
+    if (!(await this.hasBudget('refute'))) return;
 
     const candidates = await getFactsForRefutation(effect.sampleSize);
     if (candidates.length === 0) return;
 
-    await this.ingestAndApply(toDaemonEvent('llm:dispatched', { purpose: 'refute' }));
-
-    this.defer(() => void this.performRefutationCall(effect), 0);
+    const callId = await this.reserveLlmCall('refute', { caller: 'RunRefutation', inLane: true });
+    if (!callId) return;
+    this.defer(() => void this.performRefutationCall(effect, callId), 0);
   }
 }

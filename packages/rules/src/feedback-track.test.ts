@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { createInitialState } from '@sundial/kernel/initial-state.js';
 import type { SanitizedEvent } from '@sundial/kernel/types.js';
 import { feedbackTrack } from './feedback-track.js';
+import { rebuildAskClassGain } from './owner-ask.js';
 import { judgementTrack } from './judgement-track.js';
 import { questionId } from './questions/index.js';
 import { MOMENT_FANOUT_QUESTIONS } from './questions/moment-fanout.js';
@@ -232,70 +233,12 @@ describe('feedbackTrack', () => {
     });
   });
 
-  /**
-   * The v3 conversation made the answer surface the home screen, so a verdict on
-   * an ANSWER had to land somewhere. The asymmetry below is the whole design:
-   * keeping an answer is what turns it from history into retrievable evidence,
-   * so it is also what gives a later correction something to withdraw.
-   */
-  describe('a verdict on an ask thread', () => {
-    function withThread(remembered: boolean) {
-      const base = createInitialState('d1');
-      return {
-        ...base,
-        ask: {
-          ...base.ask,
-          recent: [
-            {
-              id: 't1',
-              question: 'What did I work on last Tuesday?',
-              askedAt: '2026-01-01T09:00:00.000Z',
-              answered: true,
-              sourceCount: 6,
-              remembered,
-              rememberedEntryId: remembered ? 'k-from-t1' : null,
-            },
-          ],
-        },
-      };
-    }
-
-    const WRONG_THREAD = { verdict: 'wrong', artifactKind: 'ask_thread', artifactId: 't1' };
-
-    it('is a recognised artifact kind — before v3 the answer surface took no verdict at all', () => {
-      const { state: next } = feedbackTrack(withThread(false), verdictEvent({ ...WRONG_THREAD, verdict: 'useful' }));
-      expect(next.feedback.recent).toHaveLength(1);
+  describe('a verdict on an answer (a chat turn)', () => {
+    const TURN = { verdict: 'wrong', artifactKind: 'ask_thread', artifactId: 'session-7f#3' };
+    it('is recorded, and withdraws nothing: an answer is history, not memory (W6 P4)', () => {
+      const { state: next, effects } = feedbackTrack(createInitialState('d1'), verdictEvent(TURN));
       expect(next.feedback.recent[0].artifactKind).toBe('ask_thread');
-    });
-
-    it('`wrong` on a KEPT answer retracts the entry that keep created', () => {
-      const { effects } = feedbackTrack(withThread(true), verdictEvent(WRONG_THREAD));
-      expect(effects).toEqual([
-        { type: 'RetractKnowledgeEntry', entryId: 'k-from-t1', reason: 'owner verdict: wrong (kept answer t1)', ts: '2026-01-01T10:00:00.000Z' },
-      ]);
-    });
-
-    it('`wrong` on an answer that was never kept withdraws nothing — it is history, not memory', () => {
-      const { state: next, effects } = feedbackTrack(withThread(false), verdictEvent(WRONG_THREAD));
-      expect(effects).toEqual([]);
-      // Still recorded, and still real prediction error.
       expect(next.feedback.countsByVerdict).toEqual({ wrong: 1 });
-      expect(next.memory.accumulatedImportance).toBeGreaterThan(0);
-    });
-
-    it('`wrong` on a thread this state has never seen withdraws nothing rather than guessing an entry id', () => {
-      const { effects } = feedbackTrack(withThread(true), verdictEvent({ ...WRONG_THREAD, artifactId: 't-unknown' }));
-      expect(effects).toEqual([]);
-    });
-
-    it('`useful` on an answer moves no belief — there is none behind model prose about the record', () => {
-      const { state: next, effects } = feedbackTrack(withThread(true), verdictEvent({ ...WRONG_THREAD, verdict: 'useful' }));
-      expect(effects).toEqual([]);
-      expect(next.memory.accumulatedImportance).toBe(0);
-    });
-
-    it('`not-now` on an answer retracts nothing — timing, not truth', () => {
-      const { effects } = feedbackTrack(withThread(true), verdictEvent({ ...WRONG_THREAD, verdict: 'not-now' }));
       expect(effects).toEqual([]);
     });
   });
@@ -369,21 +312,54 @@ describe('feedbackTrack', () => {
         judgementTrack(createInitialState('d1'), { id: `j-${artifactId}`, type: 'judgement:result', ts: '2026-09-21T09:59:00.000Z', payload: { purpose: 'classify', questionSetId: set, momentId: null, answers, model: 'm', latencyMs: 1, metadata: { artifactId } }, sanitized: true }).state;
       const notice = feedbackTrack(tagged('gate-features', 'absent:break', { speak_now: { type: 'noul', noul: 0.3 } }), verdictEvent({ verdict: 'useful', artifactKind: 'notice', artifactId: 'absent:break' })).state;
       expect(Object.values(notice.judgement.questions).some((q) => q.n === 1 && q.hits === 1)).toBe(true);
+      // W5 step 4: `is_false` at 0.8 on a fact the owner called wrong was RIGHT — an inverted question.
       const fact = feedbackTrack(tagged('audit-fact', 'f-1', { is_false: { type: 'noul', noul: 0.8 } }), verdictEvent({ verdict: 'wrong', artifactKind: 'entity_fact', artifactId: 'f-1' })).state;
-      expect(Object.values(fact.judgement.questions).some((q) => q.n === 1 && q.hits === 0)).toBe(true);
+      expect(fact.judgement.questions['audit-fact:is_false']).toMatchObject({ n: 1, hits: 1 });
+    });
+
+    it('W5 step 4: an answer that lands after the verdict is graded when it lands, once per set', () => {
+      const audit = (state: ReturnType<typeof createInitialState>, id: string, noul: number) =>
+        judgementTrack(state, { id, type: 'judgement:result', ts: '2026-09-22T02:00:00.000Z', payload: { purpose: 'classify', questionSetId: 'audit-fact', momentId: null, answers: { is_false: { type: 'noul', noul } }, model: 'm', latencyMs: 1, metadata: { artifactId: 'f-9' } }, sanitized: true }).state;
+      const rated = feedbackTrack(createInitialState('d1'), verdictEvent({ verdict: 'useful', artifactKind: 'entity_fact', artifactId: 'f-9' })).state;
+      expect(rated.judgement.questions['audit-fact:is_false']).toBeUndefined();
+      const first = audit(rated, 'a1', 0.1);
+      // A fact the owner confirmed is not false: graded, and not a hit for `is_false` (a low answer there was right).
+      expect(first.judgement.questions['audit-fact:is_false']).toMatchObject({ n: 1, hits: 0 });
+      // The next night's audit of the same fact is not a second sample of the one verdict.
+      expect(audit(first, 'a2', 0.2).judgement.questions['audit-fact:is_false']).toMatchObject({ n: 1 });
+    });
+
+    it('W5 step 4: a verdict on a notice\'s knowledge entry finds the answers behind the notice key', () => {
+      let state = judgementTrack(createInitialState('d1'), { id: 'g1', type: 'judgement:result', ts: '2026-09-21T09:59:00.000Z', payload: { purpose: 'classify', questionSetId: 'gate-features', momentId: null, answers: { speak_now: { type: 'noul', noul: 0.7 } }, model: 'm', latencyMs: 1, metadata: { artifactId: 'absent:flow' } }, sanitized: true }).state;
+      state.memory.recentInsights = [{ id: 'k7', noticeKey: 'absent:flow' } as (typeof state.memory.recentInsights)[number]];
+      state = feedbackTrack(state, verdictEvent({ verdict: 'useful', artifactKind: 'knowledge_entry', artifactId: 'k7' })).state;
+      expect(state.judgement.questions['gate-features:speak_now']).toMatchObject({ n: 1, hits: 1 });
+    });
+
+    it('W5 step 4: the nightly audit cannot flush a notice\'s answers out of the ring', () => {
+      let state = judgementTrack(createInitialState('d1'), { id: 'g1', type: 'judgement:result', ts: '2026-09-21T20:00:00.000Z', payload: { purpose: 'classify', questionSetId: 'gate-features', momentId: null, answers: { speak_now: { type: 'noul', noul: 0.7 } }, model: 'm', latencyMs: 1, metadata: { artifactId: 'absent:flow' } }, sanitized: true }).state;
+      for (let i = 0; i < 250; i += 1) state = judgementTrack(state, { id: `a${i}`, type: 'judgement:result', ts: '2026-09-22T02:00:00.000Z', payload: { purpose: 'classify', questionSetId: 'audit-fact', momentId: null, answers: { is_false: { type: 'noul', noul: 0.1 } }, model: 'm', latencyMs: 1, metadata: { artifactId: `f-${i}` } }, sanitized: true }).state;
+      expect(state.judgement.recentByArtifact.filter((r) => r.questionSetId === 'audit-fact')).toHaveLength(200);
+      state = feedbackTrack(state, verdictEvent({ verdict: 'useful', artifactKind: 'notice', artifactId: 'absent:flow' })).state;
+      expect(state.judgement.questions['gate-features:speak_now']).toMatchObject({ n: 1, hits: 1 });
     });
 
     it('`not-now` grades nothing, and a verdict on an unrelated artifact grades nothing', () => {
       const state = answered();
       expect(feedbackTrack(state, verdictEvent({ verdict: 'not-now', artifactKind: 'moment', artifactId: 'm-1' })).state.judgement).toBe(state.judgement);
-      expect(feedbackTrack(state, verdictEvent({ verdict: 'useful', artifactKind: 'moment', artifactId: 'm-2' })).state.judgement).toBe(state.judgement);
+      expect(feedbackTrack(state, verdictEvent({ verdict: 'useful', artifactKind: 'moment', artifactId: 'm-2' })).state.judgement.questions).toBe(state.judgement.questions);
     });
 
     it('the threshold stays at the lab default until twenty graded answers', () => {
-      let state = answered();
-      for (let i = 0; i < 19; i += 1) state = feedbackTrack(state, verdictEvent({ verdict: 'useful', artifactKind: 'moment', artifactId: 'm-1' }, `2026-01-01T10:${String(i).padStart(2, '0')}:00.000Z`, `e${i}`)).state;
+      // Twenty moments, one verdict each: a second verdict on one moment does not grade it again (W5 step 4).
+      const on = (state: ReturnType<typeof createInitialState>, m: string) =>
+        judgementTrack(state, { id: `j-${m}`, type: 'judgement:result', ts: '2026-09-21T09:59:00.000Z', payload: { purpose: 'classify', questionSetId: 'moment-fanout', momentId: m, answers: { is_work: { type: 'noul', noul: 0.82 } }, model: 'm', latencyMs: 1 }, sanitized: true }).state;
+      let state = createInitialState('d1');
+      for (let i = 0; i < 19; i += 1) state = feedbackTrack(on(state, `m-${i}`), verdictEvent({ verdict: 'useful', artifactKind: 'moment', artifactId: `m-${i}` }, `2026-01-01T10:${String(i).padStart(2, '0')}:00.000Z`, `e${i}`)).state;
       expect(state.judgement.questions[isWork]).toMatchObject({ n: 19, threshold: 0.5 });
-      state = feedbackTrack(state, verdictEvent({ verdict: 'useful', artifactKind: 'moment', artifactId: 'm-1' }, '2026-01-01T10:20:00.000Z', 'e20')).state;
+      state = feedbackTrack(state, verdictEvent({ verdict: 'useful', artifactKind: 'moment', artifactId: 'm-18' }, '2026-01-01T10:19:30.000Z', 'e19b')).state;
+      expect(state.judgement.questions[isWork]).toMatchObject({ n: 19 });
+      state = feedbackTrack(on(state, 'm-19'), verdictEvent({ verdict: 'useful', artifactKind: 'moment', artifactId: 'm-19' }, '2026-01-01T10:20:00.000Z', 'e20')).state;
       // Twenty hits, all in the 0.8 decile: any edge at or below 0.8 is perfect; ties keep the lowest, 0.1.
       expect(state.judgement.questions[isWork]).toMatchObject({ n: 20, hits: 20, threshold: 0.1 });
     });
@@ -401,6 +377,12 @@ describe('a verdict on an ASK quiets its class', () => {
     expect(next.ownerAsk.classGain.who).toEqual({ gain: 0.4, at: '2026-01-01T10:00:00.000Z', fires: 1 });
     // And only that class. The meeting questions are the ones that work.
     expect(next.ownerAsk.classGain.meeting).toBeUndefined();
+  });
+
+  it('W5 loop H: a `useful` verdict raises the class back to full', () => {
+    const quiet = feedbackTrack(createInitialState('d1'), ask('wrong')).state;
+    expect(feedbackTrack(quiet, ask('useful', 'owner-ask:who-person-9a8b7c6d5e')).state.ownerAsk.classGain.who).toBeUndefined();
+    expect(rebuildAskClassGain([{ askId: 'owner-ask:who-person-4b3c2d1e0f', verdict: 'wrong', at: '2026-01-01T10:00:00.000Z' }, { askId: 'owner-ask:who-person-9a8b7c6d5e', verdict: 'useful', at: '2026-01-02T10:00:00.000Z' }])).toEqual({});
   });
 
   it('a `not-now` lowers it the same way — it is the timing verdict and the gate is about timing', () => {

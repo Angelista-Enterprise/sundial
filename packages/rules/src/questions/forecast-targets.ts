@@ -12,7 +12,7 @@
  * history before anything is live.
  */
 import type { JudgeQuestion } from '@sundial/kernel/types.js';
-import { noul, type QuestionSet } from './index.js';
+import { noul, type QuestionSet, keyed } from './index.js';
 
 export const FORECAST_NOTE = 'The owner is a software developer in the Netherlands; hours are local, weekdays 0 = Sunday.';
 
@@ -25,6 +25,7 @@ export interface ForecastInput {
 
 function forecastSet(id: string, question: string, sample: Record<string, number | boolean | null>): QuestionSet<[ForecastInput]> & { question: JudgeQuestion } {
   const q = noul(question);
+  keyed(id, { yes: q });
   return {
     id,
     question: q,

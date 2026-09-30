@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { getDb } from '../db-client.js';
-import { commitments, moments, organizations, projects } from '../schemas/db-schema.js';
+import { commitments, moments, projects } from '../schemas/db-schema.js';
 
 export interface StoredProject {
   id: string;
@@ -39,33 +39,9 @@ export async function upsertProject(input: UpsertProjectInput): Promise<void> {
     .onConflictDoUpdate({ target: projects.id, set: { name: row.name, organizationId: row.organizationId } });
 }
 
-export async function getProjectByRootPath(rootPath: string): Promise<StoredProject | null> {
-  const db = getDb();
-  const rows = await db.select().from(projects).where(eq(projects.rootPath, rootPath)).limit(1);
-  return rows[0] ?? null;
-}
-
 export async function getAllProjects(): Promise<StoredProject[]> {
   const db = getDb();
   return db.select().from(projects);
-}
-
-export interface UpsertOrganizationInput {
-  id: string;
-  name: string;
-}
-
-/**
- * Upsert by `id` (the remote-derived owner slug) — one org is shared across
- * many projects, so re-detecting any of them re-writes the same row rather
- * than colliding. Same idempotency principle as `upsertProject`.
- */
-export async function upsertOrganization(input: UpsertOrganizationInput): Promise<void> {
-  const db = getDb();
-  await db
-    .insert(organizations)
-    .values({ id: input.id, name: input.name, createdAt: new Date().toISOString() })
-    .onConflictDoUpdate({ target: organizations.id, set: { name: input.name } });
 }
 
 /**

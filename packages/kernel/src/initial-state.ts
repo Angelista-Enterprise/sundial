@@ -1,6 +1,8 @@
-import type { KernelState, MomentRollup } from './types.js';
+import type { KernelState, MomentRollup, OpenLoop } from './types.js';
 import { NATURAL_KEY } from './watch.js';
 import { isTextKey, textKey } from '@sundial/helpers/derive-id.js';
+import { DEFAULT_SUNDIAL_CONFIG } from '@sundial/helpers/sundial-config.js';
+import { askLoop, type AskLike } from '@sundial/helpers/loops.js';
 
 /**
  * UTC, deliberately. This seeds `budgets.day` for a state that has no config yet
@@ -8,6 +10,22 @@ import { isTextKey, textKey } from '@sundial/helpers/derive-id.js';
  * config.json), so there is no owner timezone to consult. The first `clock:tick`
  * corrects it to the configured local day.
  */
+/**
+ * W4 step 16: a fresh record's board — the three stages you step through (a plain vertical stack;
+ * only the order of `y` matters, the tiler re-stacks every row) and the two anchor cards, where
+ * `boardTrack`'s tiler puts them. The page used to post these on first sight of an empty board.
+ * A persisted board is never merged with it (`hydrateSnapshot`): what the owner removed stays gone.
+ */
+export function defaultBoard(): Pick<KernelState['board'], 'cards' | 'sections'> {
+  const at = '1970-01-01T00:00:00.000Z';
+  const stage = (label: string, y: number, w: number, h: number, anchor: string | null) => ({ label, x: 0, y, w, h, anchor, at });
+  const card = (id: string, y: number, w: number) => ({ id, kind: id, x: 12, y, w, h: 800, z: 0, pinned: false, text: null, comment: null, filters: null, by: 'owner' as const, at });
+  return {
+    sections: { today: stage('Today', 0, 1144, 818, 'today'), work: stage('Work', 830, 400, 200, null), kanban: stage('Kanban', 1042, 1664, 818, 'kanban') },
+    cards: { today: card('today', 18, 1120), kanban: card('kanban', 1060, 1640) },
+  };
+}
+
 function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -59,22 +77,23 @@ export function createInitialState(deviceId: string): KernelState {
     project: { current: null, org: null, known: {}, recentDetections: [], lastClosedMoment: null },
     agent: { session: null },
     focusMode: { state: 'unknown', name: null, since: new Date().toISOString() },
-    power: { source: 'ac' },
-    // charging/timeRemainingMinutes deliberately omitted (optional) rather
-    // than defaulted to a guessed value — `powerTrack` fills them in from
-    // the first real `system:power` event; until then "unknown" is honestly
-    // represented by the key being absent, not a fabricated `false`/`null`.
     network: { fingerprint: '' },
     // Fold wave one — see the matching `KernelState` doc comments.
     files: { day: null, hot: {} },
     shell: { streak: null, lastCommandAt: null },
     pressure: { byApp: {}, total: 0, updatedAt: null },
     git: { unpushed: {} },
+    conversation: { sessions: {}, said: [] },
+    loops: { open: [], recent: [], saidToday: {}, day: null },
+    reliability: { llm: {} },
+    calibrated: { params: {}, noticeByKind: {}, watch: [], routine: null, app: null, probes: [] },
+    autonomy: { levels: {}, granted: {}, lowered: {} },
     av: { call: null, lastCall: null },
     browser: { current: null, authorized: true, lastError: null },
     hearing: { listening: false, reason: null, until: null, title: null, mutedUntil: null },
+    pending: { debounces: {} },
     settings: { autonomy: 'act', noticeBias: 0, autoAdvanceMs: null, paper: 'system', motion: 'full', blur: 'full', quiet: [], updatedAt: null },
-    board: { cards: {}, scenes: {}, lenses: {}, focus: null, notice: null, walk: null, plan: null, span: null, recent: [], sections: {}, updatedAt: null },
+    board: { cards: defaultBoard().cards, scenes: {}, lenses: {}, focus: null, notice: null, walk: null, plan: null, span: null, recent: [], sections: defaultBoard().sections, updatedAt: null },
     screen: { app: null, prevLines: [], eventId: null, kept: [], refs: [], audit: { captures: 0, lines: 0, kept: 0, furniture: 0, noise: 0 } },
     workbench: { open: null, queue: [], recent: [], done: {}, briefPoints: {}, day: null, countToday: 0 },
     meetings: { seen: {} },
@@ -98,8 +117,7 @@ export function createInitialState(deviceId: string): KernelState {
     // (see `KernelState.config`'s doc comment) — these are just the
     // zero-config defaults for a daemon that's never had `startDaemon` run
     // (e.g. a bare `createInitialState()` in a test).
-    config: { retentionDays: 180, screenTextRetentionDays: 14, transcriptRetentionDays: 14, autoHearMeetings: false, decayFactor: 0.95, projectRules: [], sharedPlaces: [], projectAliases: {}, orgByPath: {}, locationLabels: {}, ownerAliases: [], timezone: 'UTC', refutationEnabled: true, leisureRules: { browserProfiles: {}, domainOverrides: {}, processes: {}, excluded: [] }, experiments: { ownerStateInGateCost: false, learnedGate: false, forecasting: false, gateFeatures: false, presence: false }, vault: null },
-    pending: { llmCalls: {}, timers: {}, debounces: {} },
+    config: { retentionDays: 180, screenTextRetentionDays: 14, transcriptRetentionDays: 14, autoHearMeetings: false, decayFactor: 0.95, projectRules: [], sharedPlaces: [], projectAliases: {}, orgByPath: {}, locationLabels: {}, ownerAliases: [], timezone: 'UTC', refutationEnabled: true, leisureRules: { browserProfiles: {}, domainOverrides: {}, processes: {}, excluded: [] }, experiments: { ownerStateInGateCost: false, forecasting: false, gateFeatures: false, presence: false }, vault: null, budgets: {}, llm: { use: {}, providers: [] }, actions: DEFAULT_SUNDIAL_CONFIG.actions, pendingRestart: [] },
     budgets: {
       byPurpose: {
         intent: { callsToday: 0 },
@@ -111,6 +129,8 @@ export function createInitialState(deviceId: string): KernelState {
         refute: { callsToday: 0 },
         goal: { callsToday: 0 },
         transcript: { callsToday: 0 },
+        hand: { callsToday: 0 },
+        vision: { callsToday: 0 },
         perceive: { callsToday: 0 },
         classify: { callsToday: 0 },
         rank: { callsToday: 0 },
@@ -123,7 +143,6 @@ export function createInitialState(deviceId: string): KernelState {
     },
     baselines: { hourlyDurationsByKind: {}, lastAnomalyByKind: {} },
     retention: { lastPrunedAt: null },
-    recentHistory: [],
     memory: {
       accumulatedImportance: 0,
       lastReflectionAt: null,
@@ -164,15 +183,12 @@ export function createInitialState(deviceId: string): KernelState {
     // produced, plus the currently-open rating request (`solicitFeedback`).
     feedback: { recent: [], countsByVerdict: {}, lastVerdictAt: null, solicitation: null, solicitedRecently: [] },
     // What Jev's probabilities mean for this owner, learned per question id from verdicts. See `KernelState.judgement`.
-    judgement: { questions: {}, recent: [], recentByArtifact: [], degraded: 'none', degradedSince: null, degradedMs: 0 },
+    judgement: { questions: {}, recent: [], recentByArtifact: [], degraded: 'none', degradedSince: null, degradedMs: 0, consulted: {}, rejudge: null },
     // The commitment ledger — open threads of work spanning hours to weeks.
     commitments: { open: [], recentClosed: [], promises: [], promiseAsk: null },
-    // Wake-ups the owner or the model asked for. Folded from the log on
-    // `clock:tick`, never a timer — see `KernelState.wakeups`.
-    wakeups: { open: [] },
     // The question Gnomon is waiting on an answer to. One at a time; see
     // `KernelState.ownerAsk`.
-    ownerAsk: { open: null, askedCount: 0, answeredCount: 0, recent: [], lastBackfillAt: null, backfillDone: false, classGain: {} },
+    ownerAsk: { askedCount: 0, answeredCount: 0, recent: [], lastBackfillAt: null, backfillDone: false, classGain: {} },
     goals: { progress: {} },
     ingestAnomaly: { seen: [], marked: {} },
     vault: { day: null, notesToday: {} },
@@ -193,9 +209,8 @@ export function createInitialState(deviceId: string): KernelState {
     routines: { trail: [], learned: {} },
     // decisions/assistant-as-an-event-source: what the assistant proposed and
     // claimed, folded like any sensor's output so it can be scored.
-    assistant: { recent: [], proposedCount: 0, acceptedCount: 0, rejectedCount: 0, claimedCount: 0, lastAt: null },
+    assistant: { proposedCount: 0, acceptedCount: 0, rejectedCount: 0, claimedCount: 0, lastAt: null },
     // The questions the owner asked, and which answers they kept.
-    ask: { recent: [], askedCount: 0, rememberedCount: 0, lastAskedAt: null },
     lifeEvent: {
       lastMomentProject: null,
       lastMomentProcess: null,
@@ -359,6 +374,40 @@ function hydrateIngestAnomaly(state: KernelState): KernelState {
   return { ...state, ingestAnomaly: { seen, marked } };
 }
 
+const RETIRED_SLICES = ['ask', 'recentHistory', 'power'];
+
+type LegacyLoops = {
+  ownerAsk: KernelState['ownerAsk'] & { open?: AskLike | null };
+  wakeups?: { open?: { key: string; at: string; reason: string; scheduledAt: string }[] };
+  assistant: KernelState['assistant'] & { recent?: { id: string; summary: string; kind: string; outcome: string; at: string; resolvedAt: string | null }[] };
+};
+
+/**
+ * W2 M1–M3: a snapshot from before the migrations holds its wake-ups in `wakeups.open`, its
+ * proposals in `assistant.recent` and its open question in `ownerAsk.open`. Each becomes a loop, once, and the old field goes
+ * (`deepMergeDefaults` would keep it).
+ */
+function hydrateLoops(state: KernelState): KernelState {
+  const legacy = state as KernelState & LegacyLoops;
+  if (legacy.wakeups === undefined && legacy.assistant.recent === undefined && legacy.ownerAsk.open === undefined && !RETIRED_SLICES.some((key) => key in legacy) && !('llmCalls' in (legacy.pending ?? {}))) return state;
+  const { wakeups, ...rest } = legacy;
+  const { recent: proposals = [], ...assistant } = legacy.assistant;
+  const { open: ask = null, ...ownerAsk } = legacy.ownerAsk;
+  const base = { resolve: { when: { type: 'clock:tick' } }, seen: {}, target: { sessionId: null }, origin: 'tool' } as const;
+  const woke = (wakeups?.open ?? []).map((w): OpenLoop => ({ ...base, id: `wakeup:${w.key}:${w.scheduledAt}`, kind: 'wakeup', subject: w.key, about: w.reason, openedAt: w.scheduledAt, expiresAt: w.at, status: 'open' }));
+  const proposed = proposals.map((p): OpenLoop => ({ ...base, resolve: { when: { type: 'assistant:response', where: [{ field: 'proposalId', op: 'eq', value: p.id }] } }, id: p.id, kind: 'proposal', subject: p.id, about: p.summary, openedAt: p.at, expiresAt: new Date(Date.parse(p.at) + 7 * 86_400_000).toISOString(), status: p.outcome === 'open' ? 'open' : 'resolved', detail: { kind: p.kind, ...(p.outcome === 'open' ? {} : { outcome: p.outcome, resolvedAt: p.resolvedAt }) } }));
+  const migrated = new Set(['wakeup', 'proposal', 'owner-ask']);
+  // W6 P4 / P17: retired slices nothing reads (the Ask memory, `recentHistory`, `power`, `pending.llmCalls` / `timers`).
+  for (const key of RETIRED_SLICES) delete (rest as Record<string, unknown>)[key];
+  const pending = { debounces: rest.pending?.debounces ?? {} };
+  const asked = ask === null ? [] : [askLoop(ask) as OpenLoop];
+  const loops = { ...rest.loops, open: [...rest.loops.open.filter((l) => !migrated.has(l.kind)), ...woke, ...proposed.filter((l) => l.status === 'open'), ...asked], recent: [...rest.loops.recent.filter((l) => !migrated.has(l.kind)), ...proposed.filter((l) => l.status !== 'open').slice(-20)] };
+  return { ...rest, assistant, ownerAsk, pending, loops };
+}
+
 export function hydrateSnapshot(deviceId: string, persisted: Partial<KernelState>): KernelState {
-  return hydrateIngestAnomaly(hydrateWatch(hydrateRetiredForecasters(hydrateMoment(deepMergeDefaults(createInitialState(deviceId), persisted)))));
+  const defaults = createInitialState(deviceId);
+  // A saved board is the owner's: the default stages and cards seed a fresh record only.
+  defaults.board = { ...defaults.board, cards: {}, sections: {} };
+  return hydrateLoops(hydrateIngestAnomaly(hydrateWatch(hydrateRetiredForecasters(hydrateMoment(deepMergeDefaults(defaults, persisted))))));
 }

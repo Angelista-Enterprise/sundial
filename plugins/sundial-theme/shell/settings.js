@@ -433,6 +433,65 @@ function quietBlock(groups) {
   ])
 }
 
+/**
+ * W5 step 10: what Gnomon may do alone, one row per capability — its level,
+ * the numbers that earn it with their n, and Act, which needs both the
+ * numbers at target and the owner's yes. Below them, the scorecard rows that
+ * are folded (1–5, 8, 11), each with its n. A level is an `autonomy:*` event
+ * through the settings route, so a change is live at once.
+ */
+const CAPABILITY = { actions: 'Commands and outward actions', followups: 'Follow-ups in a chat', 'night-jobs': 'Night shift jobs' }
+const LEVELS = [
+  ['off', 'Off', 'Never does this.'],
+  ['ask', 'Ask', 'Asks first: says it in the list, or stops for your nod.'],
+  ['act', 'Act', 'Does it alone. Needs its numbers at target, and your yes.'],
+]
+const verdict = (meets) => el('span', { class: 'grant-state', 'data-state': meets === true ? 'on' : meets === false ? 'off' : 'unknown', text: meets === true ? 'Meets target' : meets === false ? 'Below target' : 'Not measured' })
+
+export function autonomyBlock() {
+  const rows = el('div', {})
+  const card = el('div', {})
+  const node = el('div', {}, [
+    el('h4', { class: 'set-title', text: 'What Gnomon may do alone' }),
+    rows,
+    el('p', { class: 'set-hint set-note', text: 'Act goes back to Ask by itself when the numbers fall below their target. Your own reminders, adopted rules and Sundial’s health are always said.' }),
+    el('h4', { class: 'set-title', text: 'Scorecard' }),
+    card,
+  ])
+  const draw = (data) => {
+    if (!data || data.failed) return rows.replaceChildren(el('p', { class: 'set-hint set-note', text: data?.failed ?? 'The levels could not be read.' }))
+    rows.replaceChildren(
+      ...data.capabilities.map((c) => {
+        const pick = (level) => (level === 'act' ? post({ capability: c.capability, level: 'act' }).then(() => post({ capability: c.capability, grant: true })) : post({ capability: c.capability, level })).then(read)
+        const buttons = LEVELS.map(([value, text, note]) =>
+          el('button', { type: 'button', class: 'set-opt', role: 'radio', 'aria-checked': String(value === c.level), disabled: value === 'act' && !c.earned ? '' : null, title: value === 'act' && !c.earned ? `Not earned yet: ${c.rows}` : note, text, onclick: () => pick(value) }),
+        )
+        const label = CAPABILITY[c.capability] ?? `Interrupt: ${c.capability.replace(/^notice:/, '')}`
+        return el('div', { class: 'set-row' }, [
+          el('div', { class: 'set-name' }, [
+            el('span', { class: 'set-label', text: label }),
+            el('span', { class: 'set-hint', text: c.granted && c.level !== 'act' ? `${c.rows}. You said yes; it acts once the numbers meet the target.` : c.rows }),
+            // The owner's Ask/Auto chip is their yes for what they ask for: below target warns there, never blocks.
+            c.capability === 'actions' && !c.earned ? el('span', { class: 'set-hint set-warn', text: 'Below target, a warning only: what you ask for runs as your Ask/Auto chip says. Only what Gnomon starts alone waits for your nod.' }) : null,
+          ]),
+          el('div', { class: 'set-opts', role: 'radiogroup', 'aria-label': label }, buttons),
+        ])
+      }),
+    )
+    card.replaceChildren(
+      ...data.scorecard.map((r) =>
+        el('div', { class: 'set-row' }, [
+          el('div', { class: 'set-name' }, [el('span', { class: 'set-label', text: `${r.id}. ${r.metric}` }), el('span', { class: 'set-hint', text: `${r.value}. Target ${r.target}.` })]),
+          el('div', { class: 'set-perm' }, [verdict(r.meets)]),
+        ]),
+      ),
+    )
+  }
+  const read = () => call('/gnomon/autonomy').then(draw)
+  read()
+  return node
+}
+
 /** The board's own write door, which is how a notice reaches the fold. */
 const postBoard = (body) =>
   fetch('/gnomon/api/board', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).catch(() => {})
@@ -443,6 +502,7 @@ export function settingsNode() {
   // Outside `draw`: a settings sync must not throw away the permission rows and their poll.
   const perms = permissionsBlock()
   const services = servicesBlock()
+  const autonomy = autonomyBlock()
   const node = el('div', { class: 'settings' }, [body])
   let groups = null
   call('/gnomon/api/services').then((data) => {
@@ -459,6 +519,7 @@ export function settingsNode() {
       SETTINGS.autonomy === 'off' ? null : choice('How much is worth saying', 'Moves the same bar the gate already judges by.', BIAS, SETTINGS.noticeBias, (v) => set({ noticeBias: v })),
       SETTINGS.autonomy === 'off' ? null : quietBlock(groups),
       SETTINGS.autonomy === 'act' ? choice('Walk steps', 'A step goes on by itself unless you touch the board.', DWELL, SETTINGS.autoAdvanceMs, (v) => set({ autoAdvanceMs: v })) : null,
+      autonomy,
       el('div', { class: 'set-sep' }),
       choice('Paper', 'Every tab, not just this one.', PAPER, SETTINGS.paper, (v) => set({ paper: v })),
       choice('Card blur', 'How much a card frosts what is behind it. A blur is re-sampled every frame, so Off is also the fast one.', BLUR, SETTINGS.blur ?? 'full', (v) => set({ blur: v })),

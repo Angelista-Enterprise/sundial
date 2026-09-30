@@ -10,10 +10,11 @@
 // element the current turn is appending into, and a map of open tool rows. The
 // canvas itself IS the state; there is no shadow copy of the transcript to keep
 // in step with it.
+import { COMPANION_SESSION_ID } from '@sundial/helpers/vocab.js'
 import { renderMarkdown, setCardLabel } from './markdown.js'
 import { figureStage, renderFigure } from './figures.js'
 import { el, liveFirst, renderSurface } from './surfaces.js'
-import { TODAY_PARTS, engineCard, inPlayCard, rhythmCard, todayParts, voiceCard } from './views.js'
+import { TODAY_PARTS, engineCard, hhmm, inPlayCard, rhythmCard, todayParts, voiceCard } from './views.js'
 import { elapsed, resultGist, toolLine } from './tool-line.js'
 import { jsonNode, jsonShape, parseResult } from './json-view.js'
 import { applyBoard, dismissPane, filtersOf, fitAll, focusPane, focused, has, lensShelf, mount, notice, onBoard, onChange, pane, pointAt, setResolver, titleOf, touchedSince, walkContinue } from './stage.js'
@@ -270,9 +271,6 @@ $('mascot').addEventListener('click', () => {
   showConversation()
   input.focus({ preventScroll: true })
 })
-
-/** The session the proactive plugin speaks into. Openable, never re-routed. */
-const COMPANION_SESSION_ID = 'gnomon-companion'
 
 /** Everything mutable, in one place so it is easy to see how little there is. */
 const state = {
@@ -1541,11 +1539,11 @@ function apply(frame) {
       break
 
     case 'say': {
-      // Replay: the whole block at once, so history is parsed once rather than
-      // pretending to stream.
+      // Replay: the whole block at once. A follow-up is a later line of Gnomon's, labelled with when.
       const block = prose()
       block._md = frame.text
       block.replaceChildren(renderMarkdown(frame.text))
+      if (frame.followup !== undefined) block.before(el('span', { class: 'followup-label', text: frame.followup ? `Follow-up · ${hhmm(frame.followup)}` : 'Follow-up' }))
       state.prose = null
       break
     }
@@ -1727,7 +1725,7 @@ function apply(frame) {
 const ownThread = (r) => r.id.startsWith('session-') || r.id === COMPANION_SESSION_ID
 
 /** Gnomon's own sessions. Archivable, never deletable while it is using them. */
-const PROTECTED = new Set(['gnomon-companion'])
+const PROTECTED = new Set([COMPANION_SESSION_ID])
 
 async function loadSessions() {
   let body = null
@@ -3168,7 +3166,7 @@ function drawStrip() {
   if (now.self?.due && !now.idle) parts.push(selfReportChips())
   else if (now.self?.lastTap && now.self.lastAt && Date.now() - Date.parse(now.self.lastAt) < 30 * 60_000) parts.push(el('span', { class: 'strip-day', title: 'Your last word on how it is going. Gnomon grades its own read against it.', text: `you said ${now.self.lastTap}` }))
   // A tendency, shown as one: faint, and honest about being a guess.
-  if (!now.idle && now.nextStep) parts.push(el('span', { class: 'strip-held', title: `Seen ${now.nextStep.support} times. About 27% reliable — a tendency, not a rule.`, text: `usually ${now.nextStep.process} next` }))
+  if (!now.idle && now.nextStep) parts.push(el('span', { class: 'strip-held', title: `Seen ${now.nextStep.support} times. Such forecasts held ${now.nextStep.reliability ?? 'how often is not measured yet'} — a tendency, not a rule.`, text: `usually ${now.nextStep.process} next` }))
   // What it noticed today — a button, because the number is an invitation to
   // go and see what those were, and the Unsaid tab is where that is answered.
   if ((now.noticedToday ?? 0) > 0 || now.held > 0) {

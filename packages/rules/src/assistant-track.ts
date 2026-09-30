@@ -1,13 +1,20 @@
 import { deriveId } from '@sundial/helpers/derive-id.js';
-import type { AssistantProposal, KernelState, Rule } from '@sundial/kernel/types.js';
+import { ENTITY_KINDS } from '@sundial/helpers/vocab.js';
+import { closeLoop } from '@sundial/helpers/loops.js';
+import type { Effect, KernelState, OpenLoop, Rule, SanitizedEvent } from '@sundial/kernel/types.js';
 
-/** Bounded ring of proposals. Enough to answer "what did it suggest this week", not a second log. */
-const MAX_RECENT_PROPOSALS = 40;
-
-/** Longest a proposal stays answerable. Past this the owner's silence is the answer. */
+/**
+ * Longest a proposal stays answerable by a response that names none. A response that names one
+ * still finds it later (the record has one, two days late); `expiresAt` says the same week.
+ */
 const PROPOSAL_TTL_MS = 7 * 86_400_000;
 
+/** Open proposals kept, as the old ring kept forty. */
+const MAX_OPEN_PROPOSALS = 40;
+
 interface ProposalPayload {
+  /** W6 D3: minted by the tool and carried by the response. Absent before; the id is then derived, as it always was. */
+  proposalId?: unknown;
   summary?: unknown;
   kind?: unknown;
 }
@@ -25,7 +32,7 @@ interface ClaimPayload {
   confidence?: unknown;
 }
 
-const VALID_ENTITY_KINDS = new Set(['person', 'project', 'tool', 'topic', 'task', 'owner', 'goal']);
+const VALID_ENTITY_KINDS = new Set<string>(ENTITY_KINDS);
 
 function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -41,7 +48,7 @@ function text(value: unknown): string {
  *
  * Three event types, one rule, no new subsystem:
  *
- * - `assistant:proposal` opens a proposal in `state.assistant.recent`. Nothing is
+ * - `assistant:proposal` opens a proposal (a `proposal` loop, W2 M2). Nothing is
  *   asserted; a proposal is a thing said, not a thing believed.
  * - `assistant:response` closes one with the owner's verdict. The accepted/rejected
  *   tally is the assistant's own outcome record, and it is deliberately kept
@@ -63,33 +70,38 @@ function text(value: unknown): string {
  * No ordering constraint in `RULE_MANIFEST`: it writes one slice nothing else
  * writes, and the candidate it emits is folded on the next event like any other.
  */
-export const assistantTrack: Rule = (state, event) => {
+/**
+ * W2 M2: a proposal is a `proposal` loop in `state.loops` (was `state.assistant.recent`), folded by
+ * `loopTrack` through this. `subject` is the proposal id (W6 D3: minted by the tool, carried by the
+ * response), `about` its summary; a response names it, or closes the newest open one within the
+ * TTL. The counts stay in `state.assistant`, counted by the rule below
+ * off what this closed on the same event.
+ */
+export function foldProposal(state: KernelState, event: SanitizedEvent): { state: KernelState; effects: Effect[] } | null {
   if (event.type === 'assistant:proposal') {
     const payload = event.payload as ProposalPayload;
     const summary = text(payload.summary);
     if (!summary) return { state, effects: [] };
-
-    const proposal: AssistantProposal = {
-      id: deriveId(event.ts, event.id, 'assistant-proposal'),
-      summary,
-      kind: text(payload.kind) || 'unknown',
-      outcome: 'open',
-      at: event.ts,
-      resolvedAt: null,
+    const id = text(payload.proposalId) || deriveId(event.ts, event.id, 'assistant-proposal');
+    const loop: OpenLoop = {
+      id,
+      origin: 'tool',
+      kind: 'proposal',
+      subject: id,
+      about: summary,
+      resolve: { when: { type: 'assistant:response', where: [{ field: 'proposalId', op: 'eq', value: id }] } },
+      seen: {},
+      target: { sessionId: null },
+      openedAt: event.ts,
+      expiresAt: new Date(Date.parse(event.ts) + PROPOSAL_TTL_MS).toISOString(),
+      status: 'open',
+      detail: { kind: text(payload.kind) || 'unknown' },
     };
-
-    return {
-      state: {
-        ...state,
-        assistant: {
-          ...state.assistant,
-          recent: [...state.assistant.recent, proposal].slice(-MAX_RECENT_PROPOSALS),
-          proposedCount: state.assistant.proposedCount + 1,
-          lastAt: event.ts,
-        },
-      },
-      effects: [],
-    };
+    // At most `MAX_OPEN_PROPOSALS` wait; the oldest goes quietly, as it left the old ring.
+    const open = [...state.loops.open, loop];
+    const extra = open.filter((l) => l.kind === 'proposal').length - MAX_OPEN_PROPOSALS;
+    const drop = new Set(open.filter((l) => l.kind === 'proposal').slice(0, Math.max(0, extra)));
+    return { state: { ...state, loops: { ...state.loops, open: open.filter((l) => !drop.has(l)) } }, effects: [] };
   }
 
   if (event.type === 'assistant:response') {
@@ -103,23 +115,32 @@ export const assistantTrack: Rule = (state, event) => {
     // the id to hand, and a response that cannot find its proposal would otherwise
     // silently vanish — the failure mode this whole decision exists to remove.
     const nowMs = Date.parse(event.ts);
-    const index = proposalId
-      ? state.assistant.recent.findIndex((p) => p.id === proposalId)
-      : state.assistant.recent.reduce((best, p, i) => (p.outcome === 'open' && nowMs - Date.parse(p.at) <= PROPOSAL_TTL_MS ? i : best), -1);
-    if (index < 0) return { state, effects: [] };
+    const open = state.loops.open.filter((l) => l.kind === 'proposal');
+    const target = proposalId ? open.find((l) => l.subject === proposalId) : open.filter((l) => nowMs - Date.parse(l.openedAt) <= PROPOSAL_TTL_MS).pop();
+    if (!target) return { state, effects: [] };
+    const closed: OpenLoop = { ...target, status: 'resolved', detail: { ...target.detail, outcome: verdict, resolvedAt: event.ts, byEventId: event.id } };
+    return { state: { ...state, loops: closeLoop(state.loops, closed) }, effects: [] };
+  }
 
-    const target = state.assistant.recent[index]!;
-    if (target.outcome !== 'open') return { state, effects: [] };
+  return null;
+}
 
-    const recent = [...state.assistant.recent];
-    recent[index] = { ...target, outcome: verdict, resolvedAt: event.ts };
+export const assistantTrack: Rule = (state, event) => {
+  // The counts, off what `loopTrack` (earlier in the manifest) folded on this same event.
+  if (event.type === 'assistant:proposal') {
+    if (!text((event.payload as ProposalPayload).summary)) return { state, effects: [] };
+    return { state: { ...state, assistant: { ...state.assistant, proposedCount: state.assistant.proposedCount + 1, lastAt: event.ts } }, effects: [] };
+  }
 
+  if (event.type === 'assistant:response') {
+    const closed = state.loops.recent.find((l) => l.kind === 'proposal' && l.detail?.byEventId === event.id);
+    if (!closed) return { state, effects: [] };
+    const verdict = closed.detail?.outcome;
     return {
       state: {
         ...state,
         assistant: {
           ...state.assistant,
-          recent,
           acceptedCount: state.assistant.acceptedCount + (verdict === 'accepted' ? 1 : 0),
           rejectedCount: state.assistant.rejectedCount + (verdict === 'rejected' ? 1 : 0),
           lastAt: event.ts,

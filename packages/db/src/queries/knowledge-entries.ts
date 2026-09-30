@@ -69,18 +69,6 @@ export async function retractKnowledgeEntry(id: string, retractedAt: string): Pr
 }
 
 /**
- * P6 — single entry by its unique `dedupeKey` (e.g. `daily:2026-07-20`). The
- * daily journal's `createdAt` is the day-boundary timestamp (the *next* day),
- * so it can't be found by "created on date X"; its dedupeKey encodes the
- * logical date, so `GET /daily` looks it up this way.
- */
-export async function getKnowledgeEntryByDedupeKey(dedupeKey: string): Promise<StoredKnowledgeEntry | null> {
-  const db = getDb();
-  const [row] = await db.select().from(knowledgeEntries).where(eq(knowledgeEntries.dedupeKey, dedupeKey));
-  return row ?? null;
-}
-
-/**
  * P6 — delete the entry with this `dedupeKey`, returning whether one existed.
  * Backs the daily journal's regenerate (`overwrite` on the journal effect;
  * its callers, the retired CLI's `gnomon journal --force` and a UI button, are gone): the `dedupeKey daily:<date>` insert is a no-op on conflict, so an

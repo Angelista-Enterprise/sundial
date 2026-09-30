@@ -11,7 +11,7 @@
  * declarative sentence 37/40 — here that is the point.
  */
 import type { JudgeQuestion } from '@sundial/kernel/types.js';
-import { choice, clip, noul, score, type QuestionSet } from './index.js';
+import { choice, clip, noul, score, type QuestionSet, keyed } from './index.js';
 
 export const MAX_GOALS = 6;
 export const goalSlot = (i: number): string => `goal_g${i}`;
@@ -32,7 +32,7 @@ const GOAL_VERDICT = (i: number): JudgeQuestion =>
     unmentioned: 'The reply does not say anything about this goal.',
   });
 
-export const LISTEN_REPLY_QUESTIONS = {
+export const LISTEN_REPLY_QUESTIONS = keyed('listen-reply', {
   answered: noul('Does `owner_replied` actually answer `assistant_asked`, rather than deflect or change the subject?'),
   wants_transcript_attached: noul('Does the owner ask, in `owner_replied`, for a transcript or recording to be attached or used?'),
   contains_decision: noul('Does `owner_replied` state a decision that was made?'),
@@ -41,10 +41,10 @@ export const LISTEN_REPLY_QUESTIONS = {
   asks_assistant_to_do_something: noul('Does `owner_replied` give the assistant an instruction — find, add, attach, remind, pause, drop?'),
   sentiment: score('How does the owner feel about what `assistant_asked` referred to?', ['Negative: frustrated, disappointed, or dismissive.', 'Flat: neutral, purely informational.', 'Positive: went well, satisfied.', 'Enthusiastic: clearly pleased or energised.']),
   worth_remembering: score('Should this reply become a lasting memory?', ['No: nothing to keep.', 'Note: a small detail worth a line.', 'Yes: a real update on a project, meeting or goal.', 'Definitely: a decision or a change of direction.']),
-};
+});
 
 /** The goal slot questions, fixed, so their ids are six stable ones. */
-export const GOAL_SLOT_QUESTIONS: Record<string, JudgeQuestion> = Object.fromEntries(Array.from({ length: MAX_GOALS }, (_, i) => [goalSlot(i), GOAL_VERDICT(i)]));
+export const GOAL_SLOT_QUESTIONS: Record<string, JudgeQuestion> = keyed('listen-reply', Object.fromEntries(Array.from({ length: MAX_GOALS }, (_, i) => [goalSlot(i), GOAL_VERDICT(i)])));
 
 export const listenReply: QuestionSet<[ListenReplyInput]> = {
   id: 'listen-reply',

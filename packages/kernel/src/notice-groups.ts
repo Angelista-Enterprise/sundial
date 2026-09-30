@@ -27,6 +27,7 @@ export const NOTICE_GROUPS: readonly NoticeGroup[] = [
   { id: 'forecasts', label: 'Forecasts', what: 'A fragmented hour or a project touch Gnomon expects.', kinds: ['hour-fragmented', 'project-touched'], prefixes: ['tournament:'] },
   { id: 'work', label: "Gnomon's own work", what: 'A job shelved or closed, a goal step, an action it could not check.', kinds: ['work-shelved', 'work-closed', 'action-unverified'], prefixes: ['goal-'] },
   { id: 'shell', label: 'Failing commands', what: 'The same command failing again and again.', kinds: ['shell-failing-streak'] },
+  { id: 'followups', label: 'Follow-ups', what: 'One line in the chat where Gnomon raised something, when it resolves — the push after it said commits were waiting.', kinds: [], prefixes: ['followup:'] },
   { id: 'rules', label: 'Your watch rules', what: 'Rules you made by talking, and the unusual-activity alerts.', kinds: [], prefixes: ['watch:', 'activity-'] },
   // lane H
   { id: 'health', label: "Sundial's own health", what: 'A permission dropped, a sensor stopped, hearing broke, a model refused its key, or config.json could not be read.', kinds: ['sensor-health'] },

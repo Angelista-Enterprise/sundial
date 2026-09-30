@@ -9,26 +9,22 @@
 // daemon's /ask route metered — conversation — and cannot double-count an
 // effect call.
 //
-// Semantics mirror ask.ts + runToolLoop's `beforeCall` seam, per ROUND TRIP:
-//   - check the LIVE `state.budgets.byPurpose.ask.callsToday` against the
-//     resolved daily cap BEFORE the provider is contacted; when exhausted (or
-//     state is null — kernel shutting down), short-circuit by yielding an
-//     error finish chunk and never calling next(). The chunk order contract
-//     (usage before finish, nothing after finish) is trivially satisfied: the
-//     stream is one finish chunk.
-//   - after next() completes, append ONE `llm:dispatched { purpose: 'ask' }`
-//     signal via gnomonKernel.appendSignal — the exact event the daemon's
-//     `recordLlmDispatch` ingested — so `budget-track` (the only writer of
-//     `state.budgets`) folds the spend and kernel budget state stays the
-//     single source of truth. The usage chunk's TokenUsage rides along in the
-//     payload for the record; budget-track reads only `purpose`.
+// Semantics, per ROUND TRIP (W3):
+//   - reserve the call BEFORE the provider is contacted, through
+//     gnomonKernel.reserveLlmCall: one step of the kernel's serialized lane
+//     that checks the LIVE `state.budgets.byPurpose.ask.callsToday` against the
+//     cap and folds `llm:dispatched { purpose: 'ask', callId, caller }`, so
+//     `budget-track` (the only writer of `state.budgets`) holds the spend and N
+//     parallel streams at a finite cap overshoot it by nothing. A refused
+//     reservation short-circuits with one error finish chunk and next() is
+//     never called.
+//   - the reservation's `callId` is the id of the call's `llm_audit` row, so
+//     the spend and the ledger row join.
 //
-// Spend is recorded in a `finally`, so an errored or aborted stream still
-// counts: the provider call happened, which is what a runaway-loop backstop
-// meters. Recording after (not before, as ask.ts did) keeps the guard from
-// spending a slot on a request the short-circuit path never sent; the
-// check-then-record gap between two concurrent turns can overshoot the cap
-// by at most the number of in-flight calls, which a backstop tolerates.
+// An errored or aborted stream still counts: the provider was contacted, which
+// is what a runaway-loop backstop meters. (Until W3 the spend was appended
+// after the stream, in a `finally`, and concurrent turns could overshoot by
+// the number in flight.)
 //
 // The guard is ALSO the chat half of the ledger (`recordAudit`, see audit.js).
 // A counter is not a ledger: `llm:dispatched` folds into `state.budgets` and
@@ -44,72 +40,97 @@
 //
 // Named exports only.
 
+import { TURN_IDLE_MS } from '@sundial/helpers/vocab.js';
+import { auditPurpose } from './audit.js';
+
 export const ASK_PURPOSE = 'ask';
 
 /** Stable machine code on the short-circuit finish, for surfaces that want to say why. */
 export const BUDGET_EXHAUSTED_CODE = 'GNOMON_ASK_BUDGET_EXHAUSTED';
 
+/** A chat call that sends nothing for this long (a stream that hung after a tool result) is ended as timed out; half the turn watchdog, so the turn ends with a reason before the client is closed as quiet. */
+export const STREAM_IDLE_MS = TURN_IDLE_MS / 2;
+export const STREAM_IDLE_CODE = 'GNOMON_STREAM_IDLE';
+
+/** W5: the chat's model route has its breaker open (10 failures in a row): the turn ends at once instead of hanging. */
+export const BREAKER_OPEN_CODE = 'GNOMON_ROUTE_BREAKER_OPEN';
+
 /**
  * Build the waterfall listener.
  *
  * @param options.getState live kernel state (gnomonKernel.getState), null before boot / during shutdown
- * @param options.getDailyCap (purpose) => number, from resolveDailyCaps(config.budgets)
- * @param options.appendSignal gnomonKernel.appendSignal — serialized ingest → reduce → effects
- * @param options.recordAudit optional `begin(options)` from createLlmAuditRecorder; omitted = no ledger row
+ * @param options.getDailyCap (purpose) => number, the cap the kernel enforces
+ * @param options.reserve gnomonKernel.reserveLlmCall — (purpose, { caller }) => callId, or null when refused
+ * @param options.recordAudit optional `begin(options, id)` from createLlmAuditRecorder; omitted = no ledger row
  * @returns an async-generator listener for `ctx.on('llm/stream', …)`
  */
-export function createAskBudgetGuard({ getState, getDailyCap, appendSignal, recordAudit }) {
+export function createAskBudgetGuard({ getState, getDailyCap, reserve, recordAudit }) {
   return async function* askBudgetGuard(options, next) {
     const state = getState();
     const cap = getDailyCap(ASK_PURPOSE);
-    const spent = state?.budgets?.byPurpose?.[ASK_PURPOSE]?.callsToday;
 
     // Uncapped (`Infinity`, the default since 2026-08-15) never blocks — not on
     // a spend total, and not on missing budget state during boot/shutdown. The
-    // guard degrades to a pure meter: it still records the spend below when
-    // state is live, and simply proceeds when it is not. A finite cap set via
-    // config.budgets.ask restores the old backstop, including the null-state
+    // guard degrades to a pure meter: it still reserves (records the spend)
+    // when state is live, and simply proceeds when it is not. A finite cap set
+    // via config.budgets.ask restores the backstop, including the null-state
     // refusal, because a caller who asked for a cap wants it enforced strictly.
     const capped = Number.isFinite(cap);
-    if (capped && (state === null || state === undefined || typeof spent !== 'number' || spent >= cap)) {
-      const detail =
-        state === null || state === undefined || typeof spent !== 'number'
-          ? 'the Gnomon kernel has no live budget state (booting or shutting down)'
-          : `daily LLM budget for '${ASK_PURPOSE}' already used (${spent}/${cap})`;
-      yield {
-        type: 'finish',
-        reason: { kind: 'error', failure: { message: `Gnomon: ${detail} — try again later.`, code: BUDGET_EXHAUSTED_CODE } },
-      };
+    const refuse = (detail, code = BUDGET_EXHAUSTED_CODE) => ({
+      type: 'finish',
+      reason: { kind: 'error', failure: { message: `Gnomon: ${detail} — try again later.`, code } },
+    });
+    if (capped && (state === null || state === undefined)) {
+      yield refuse('the Gnomon kernel has no live budget state (booting or shutting down)');
+      return;
+    }
+    const route = options?.provider;
+    // `sessionId`: dsh stamps it on every loop-built call, so a thread delete can take its ledger rows (W1).
+    const sessionId = options?.sessionId ? String(options.sessionId) : null;
+    const callId = state ? await reserve(ASK_PURPOSE, { caller: `chat:${auditPurpose(options)}`, ...(route ? { route } : {}), ...(sessionId ? { sessionId } : {}) }) : null;
+    // W5: refused because the route's breaker is open — say so, whatever the cap.
+    const openUntil = route ? getState()?.reliability?.llm?.[route]?.openUntil : null;
+    if (callId === null && openUntil && Date.parse(openUntil) > Date.now()) {
+      const at = new Date(openUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      yield refuse(`the model route '${route}' failed ${getState()?.reliability?.llm?.[route]?.streak ?? 10} calls in a row, so calls to it are paused; it tries again at ${at}`, BREAKER_OPEN_CODE);
+      return;
+    }
+    if (capped && callId === null) {
+      yield refuse(`daily LLM budget for '${ASK_PURPOSE}' already used (${getState()?.budgets?.byPurpose?.[ASK_PURPOSE]?.callsToday ?? '?'}/${cap})`);
       return;
     }
 
-    // Opened AFTER the short-circuit and BEFORE next(): a call the cap
-    // refused was never dispatched and has nothing to record, while a call
-    // that dies mid-stream must already be on the record when it does.
-    const audit = recordAudit ? await recordAudit(options) : null;
+    // Opened AFTER the reservation and BEFORE next(): a call the cap refused
+    // was never dispatched and has nothing to record, while a call that dies
+    // mid-stream must already be on the record when it does.
+    const audit = recordAudit ? await recordAudit(options, callId ?? undefined) : null;
 
-    let usage;
     let thrown;
+    const chunks = next()[Symbol.asyncIterator]();
     try {
-      for await (const chunk of next()) {
-        if (chunk.type === 'usage') usage = chunk.usage;
-        audit?.observe(chunk);
-        yield chunk;
+      for (;;) {
+        let timer;
+        const idle = new Promise((resolve) => (timer = setTimeout(() => resolve(null), STREAM_IDLE_MS)));
+        const step = await Promise.race([chunks.next(), idle]).finally(() => clearTimeout(timer));
+        if (step === null) {
+          // Settled as a failed (timeout) row through the finish it observes; the provider's stream is let go, not awaited.
+          void chunks.return?.()?.catch?.(() => {});
+          const chunk = { type: 'finish', reason: { kind: 'error', failure: { name: 'TimeoutError', message: `Gnomon: the model sent nothing for ${STREAM_IDLE_MS / 1000} s, so this call timed out — say it again, or pick another model.`, code: STREAM_IDLE_CODE } } };
+          audit?.observe(chunk);
+          yield chunk;
+          return;
+        }
+        if (step.done) break;
+        audit?.observe(step.value);
+        yield step.value;
       }
     } catch (error) {
       thrown = error;
       throw error;
     } finally {
       // The recorder swallows its own write failures, so this cannot mask the
-      // stream's outcome any more than the spend append below can.
+      // stream's outcome.
       await audit?.settle(thrown);
-      // The one durable spend record. Failure to append must not mask the
-      // stream's own outcome (or lack of one), so it is contained here.
-      try {
-        await appendSignal('llm:dispatched', { purpose: ASK_PURPOSE, ...(usage !== undefined ? { usage } : {}) });
-      } catch (error) {
-        console.error('[sundial-tools] failed to record ask budget spend:', error);
-      }
     }
   };
 }

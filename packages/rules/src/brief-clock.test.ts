@@ -97,3 +97,23 @@ describe('briefClock speaks before meetings (lane B #22, #13)', () => {
     expect(noticesOf(briefClock(s, ev('clock:tick', '2026-09-30T06:51:00.000Z')).effects)).toEqual([]);
   });
 });
+
+describe('briefClock composes the week in review through the executor (W4 step 7)', () => {
+  // Friday 2 Oct 2026, Amsterdam: 12:30 local is before the week is due, 13:30 after.
+  const asks = (effects: Effect[]) => effects.filter((e) => e.type === 'ComposeWeekReview');
+  it('asks once when the week turns due, then at most once an hour', () => {
+    let s = base();
+    expect(asks(briefClock(s, ev('clock:tick', '2026-10-02T10:30:00.000Z')).effects)).toHaveLength(0);
+    const first = briefClock(s, ev('clock:tick', '2026-10-02T11:30:00.000Z'));
+    expect(asks(first.effects)).toEqual([{ type: 'ComposeWeekReview', at: '2026-10-02T11:30:00.000Z' }]);
+    s = first.state;
+    expect(asks(briefClock(s, ev('clock:tick', '2026-10-02T12:00:00.000Z')).effects)).toHaveLength(0);
+    expect(asks(briefClock(s, ev('clock:tick', '2026-10-02T12:30:00.000Z')).effects)).toHaveLength(1);
+  });
+  it('folds brief:week-composed into briefs.week, and ignores an empty one', () => {
+    const week = { from: '2026-09-28', to: '2026-10-02', lines: ['Shipped: 3 commits.'], at: '2026-10-02T11:30:00.000Z' };
+    const s = briefClock(base(), ev('brief:week-composed', '2026-10-02T11:30:02.000Z', week)).state;
+    expect(s.briefs!.week).toEqual(week);
+    expect(briefClock(s, ev('brief:week-composed', '2026-10-02T12:30:00.000Z', { ...week, lines: [] })).state.briefs!.week).toEqual(week);
+  });
+});

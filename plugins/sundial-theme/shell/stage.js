@@ -9,7 +9,8 @@
 // what draws is whatever the live channel says the board is.
 //
 // Nothing is pinned: every card can go, and a card the owner removed stays
-// gone across reloads. Only a FRESH board (no cards, no rows) seeds itself.
+// gone across reloads. A fresh record starts with its stages and anchor cards
+// (`defaultBoard` in the kernel's initial state); the page never seeds one.
 import { RETIRED, heirOf } from './cards.js'
 import { el } from './surfaces.js'
 import { icon } from './icons.js'
@@ -20,21 +21,6 @@ import { SETTINGS, settingsNode } from './settings.js'
 const headers = { accept: 'application/json', 'content-type': 'application/json' }
 const post = (body) => fetch('/gnomon/api/board', { method: 'POST', headers, body: JSON.stringify(body) }).catch(() => {})
 
-/**
- * The stages a fresh board is born with, in the order you step through them.
- *
- * A plain vertical stack, and only the ORDER of `y` matters — the tiler
- * re-stacks every row from the top anyway. They used to carry a 2-D layout
- * (three rows sharing y = -420, two sharing y = 1180), and because a card
- * joins the row whose band holds it, overlapping bands sent Mood's card into
- * Kanban's row. Bands that do not overlap cannot be ambiguous.
- */
-const SECTIONS = {
-  today: { label: 'Today', x: 0, y: 0, w: 1200, h: 900, anchor: 'today' },
-  // Where Gnomon works: the Work card per turn, and whatever it lays down while working.
-  work: { label: 'Work', x: 0, y: 1000, w: 1200, h: 900, anchor: null },
-  kanban: { label: 'Kanban', x: 0, y: 2000, w: 1700, h: 900, anchor: 'kanban' },
-}
 /**
  * The anchor card of each stage. Placed by the stage's NAME, never by x/y: a
  * coordinate has to be re-read against whatever the tiler did last, where a
@@ -206,8 +192,6 @@ export function pane(id, { title, mark = null, node, home = null, sticky = false
   else ensureCard(id)
   return p
 }
-/** True when the record had no cards and no rows on first read: only then does registering a pane put a card down by itself. */
-let fresh = false
 /**
  * The rule: one card is always in focus — unless the owner stepped back to see
  * the whole board (Esc, ⌥F from a framed card, a row's name), which is fit-and-pan mode until the
@@ -266,23 +250,8 @@ export function setReading(id, text) {
  * frame comes back, a few milliseconds later.
  */
 const asked = new Set()
-/**
- * A fresh board is born with its stages, THEN its cards.
- *
- * In order, and awaited. Fired off together, the `place` posts raced the
- * `section` posts they depended on: a pane asking for `near: 'today'` before
- * the Today row existed had its wish resolve to nothing and landed in whatever
- * row was there, and the board came up as one giant stage holding everything.
- */
-let seeding = null
 /** Retired card ids already being replaced, so a burst of frames posts once. */
 const retiring = new Set()
-function seed() {
-  seeding = (async () => {
-    for (const [id, s] of Object.entries(SECTIONS)) await post({ action: 'section', id, ...s })
-  })()
-  for (const id of ['today', 'kanban']) ensureCard(id)
-}
 function ensureCard(id, { want = false } = {}) {
   if (id in board.cards) {
     place(id)
@@ -290,13 +259,10 @@ function ensureCard(id, { want = false } = {}) {
   }
   // A pane registered at boot does not re-place a card the owner removed; a
   // pane the owner (or Gnomon) asks for now does.
-  if (!want && !fresh) return
+  if (!want) return
   if (asked.has(id)) return
   asked.add(id)
-  // Every pane on a fresh board registers while the stages are still being
-  // written, so the wish has to wait for the stage it names to exist.
-  if (seeding !== null) void seeding.then(() => askFor(id))
-  else askFor(id)
+  askFor(id)
 }
 /** Ask the record for a place: in the stage this pane names, else where the owner is looking. */
 function askFor(id) {
@@ -683,10 +649,6 @@ export function applyBoard(next, { first = false } = {}) {
       if (!(heir.id in board.cards)) await post({ action: 'place', id: heir.id, kind: heir.id, x: card.x, y: card.y, ...(heir.filters ? { filters: heir.filters } : {}) })
     })()
   }
-  // A FRESH board is born with its rows and anchors. A board with cards but no
-  // rows is one the owner emptied on purpose: every row is theirs to remove.
-  if (first) fresh = Object.keys(board.sections).length === 0 && Object.keys(board.cards).length === 0
-  if (first && fresh) void seed()
   for (const id of [...panes.keys()]) if (!(id in board.cards) && !DEFAULTS[id]) leave(id)
   for (const [id, card] of Object.entries(board.cards)) {
     if (panes.has(id)) {

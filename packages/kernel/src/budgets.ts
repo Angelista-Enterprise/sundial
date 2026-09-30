@@ -7,6 +7,15 @@ import type { LlmPurpose } from './types.js';
  * the Ledger (`sundial-theme`) all enforce and show the same numbers.
  */
 /**
+ * Background model calls in flight at once on one route (the chat is not
+ * counted). A burst after a gap sent 86 in 12 s and hit the provider's rate
+ * limit; and a breaker opened after 10 failures still failed every call
+ * already in flight (17 and 25 in the 2026-09-30 E2E), so this also bounds
+ * an outage at 10 + this many failures.
+ */
+export const MAX_BACKGROUND_IN_FLIGHT = 4;
+
+/**
  * Caps are a runaway-loop backstop, not a cost lever (docs/design/07 §14) —
  * the owner self-hosts the LLM, so these are tuned HIGH enough never to bind
  * in normal use. `intent: 200` in particular would throttle a busy day (a
@@ -61,6 +70,18 @@ export const DEFAULT_DAILY_CAPS: Record<LlmPurpose, number> = {
    * convenience and no evidence.
    */
   transcript: 200,
+  /**
+   * W3: the Claude hand (`hands.claude`): one call is a whole background job on
+   * the owner's Claude Code, already capped in dollars per job. Twenty is a
+   * loop backstop — the workbench opens a handful of jobs a day.
+   */
+  hand: 20,
+  /**
+   * W5: the screen-vision sensor (a local model, one frame per call). Its own
+   * interval bounds it (15 s at the least): 6,000 is a whole day at that, a
+   * loop backstop only.
+   */
+  vision: 6000,
   /**
    * Jev's purposes (docs/jarvis/02, "Budgets: new purposes, generous caps").
    * Loop guards, not cost controls: at ~700 input tokens a call, a day at

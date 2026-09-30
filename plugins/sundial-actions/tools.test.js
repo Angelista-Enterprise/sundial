@@ -5,15 +5,27 @@
 // fold never stored produces a cancel that silently does nothing, which reads as
 // "Gnomon ignored me" and cannot be diagnosed from either side alone.
 import { describe, it, expect, vi } from 'vitest'
+import { askLoop } from '@sundial/helpers/loops.js'
 import { internalTools, calendarCreateTool } from './tools.js'
 
-function harness(state = { ownerAsk: { open: null } }) {
+function harness(state = { ownerAsk: {}, loops: { open: [], recent: [] } }) {
   const sent = []
   const tools = internalTools(async (type, payload) => sent.push({ type, payload }), () => state)
   return { sent, byName: Object.fromEntries(tools.map((t) => [t.name, t])) }
 }
 
 const inAnHour = () => new Date(Date.now() + 60 * 60 * 1000).toISOString()
+
+describe('gnomon_propose (W6 D3)', () => {
+  it('mints the proposal id, puts it on the signal and returns it, so a response names the same row', async () => {
+    const { sent, byName } = harness()
+    const result = await byName.gnomon_propose.execute({ summary: 'Draft the BOX-484 reply' })
+    expect(result.proposalId).toMatch(/^[0-9A-Z]{26}$/)
+    expect(sent[0]).toEqual({ type: 'assistant:proposal', payload: { proposalId: result.proposalId, summary: 'Draft the BOX-484 reply' } })
+    await byName.gnomon_record_outcome.execute({ verdict: 'accepted', proposalId: result.proposalId })
+    expect(sent[1].payload.proposalId).toBe(result.proposalId)
+  })
+})
 
 describe('gnomon_schedule_wakeup', () => {
   it('returns the SAME key it put on the signal, so a later cancel names something real', async () => {
@@ -52,8 +64,8 @@ describe('gnomon_schedule_wakeup', () => {
 
 describe('gnomon_ask_owner', () => {
   it('refuses a second question while one is open, naming the one still outstanding', async () => {
-    const open = { askId: 'owner-ask:1', question: 'Which project is this?' }
-    const { sent, byName } = harness({ ownerAsk: { open } })
+    const open = { askId: 'owner-ask:1', question: 'Which project is this?', reason: '', choices: [], ts: '2026-01-01T09:00:00.000Z' }
+    const { sent, byName } = harness({ ownerAsk: {}, loops: { open: [askLoop(open)], recent: [] } })
     const result = await byName.gnomon_ask_owner.execute({ question: 'And this one?' })
 
     expect(result.asked).toBe(false)
@@ -74,15 +86,15 @@ describe('gnomon_ask_owner', () => {
   })
 
   it('wait: true holds the turn until the fold closes the ask, then returns the recorded answer', async () => {
-    const state = { ownerAsk: { open: null, recent: [] } }
+    const state = { ownerAsk: { recent: [] }, loops: { open: [], recent: [] } }
     const sent = []
     const tools = internalTools(
       async (type, payload) => {
         sent.push({ type, payload })
         // Stand-in for the fold: open now, answered one poll later.
-        state.ownerAsk.open = { askId: payload.askId, question: payload.question }
+        state.loops.open = [askLoop({ askId: payload.askId, question: payload.question, reason: '', choices: [], ts: '2026-01-01T09:00:00.000Z' })]
         setTimeout(() => {
-          state.ownerAsk.open = null
+          state.loops.open = []
           state.ownerAsk.recent = [{ askId: payload.askId, question: payload.question, answer: 'sundial', answeredAt: 'now' }]
         }, 15)
       },
@@ -97,10 +109,10 @@ describe('gnomon_ask_owner', () => {
   })
 
   it('wait: true gives up after the deadline and says the question stays open', async () => {
-    const state = { ownerAsk: { open: null, recent: [] } }
+    const state = { ownerAsk: { recent: [] }, loops: { open: [], recent: [] } }
     const tools = internalTools(
       async (_type, payload) => {
-        state.ownerAsk.open = { askId: payload.askId, question: payload.question }
+        state.loops.open = [askLoop({ askId: payload.askId, question: payload.question, reason: '', choices: [], ts: '2026-01-01T09:00:00.000Z' })]
       },
       () => state,
       { askWaitMs: 20, askPollMs: 5 },

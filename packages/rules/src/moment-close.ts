@@ -104,11 +104,14 @@ function openNewMoment(
   windowTitle: string,
   attribution: WindowAttribution,
   carryOverRollup: MomentRollup | null = null,
+  /** W6 D1: a dropped sub-20-s predecessor's start. Its time is merged with its work, so `activeMs` never outgrows the duration. */
+  carriedFrom: string | null = null,
 ): OpenMoment {
   return {
     id: deriveId(event.ts, event.id, 'moment-close'),
     sessionId: event.id,
     startTime: event.ts,
+    ...(carriedFrom ? { carriedFrom } : {}),
     processName,
     // Per-window attribution (from the opening window's own locator), NOT the
     // old global `state.project.current` — see `isMomentClosingBoundary`.
@@ -250,13 +253,16 @@ function closeMoment(
   /** Passed in rather than read from `state`, like `location` and `currentProject` — this function deliberately never sees the whole state. */
   leisureRules: KernelState['config']['leisureRules'],
 ): { effects: Effect[]; carryOverRollup: MomentRollup | null; closed: KernelState['project']['lastClosedMoment'] } {
-  const durationMs = Math.max(0, Date.parse(endTs) - Date.parse(moment.startTime));
-  if (durationMs < MIN_MOMENT_DURATION_MS) {
+  if (Date.parse(endTs) - Date.parse(moment.startTime) < MIN_MOMENT_DURATION_MS) {
     // Dropped, not written — so it is not the "last closed moment" either. The
     // span it interrupted continues to be the thing a later excursion is judged
     // against.
     return { effects: [], carryOverRollup: moment.rollup, closed: lastClosed };
   }
+  // W6 D1: the drop is judged on the moment's own span (which moments are written is unchanged);
+  // the row covers the flicks merged into it too, whose work its rollup already holds.
+  const startTime = moment.carriedFrom ?? moment.startTime;
+  const durationMs = Math.max(0, Date.parse(endTs) - Date.parse(startTime));
   // `kind`/`focusScore`/`focusQuality` aren't part of `MomentRollup` (they're
   // closed-moment derivations, meaningless on a still-open moment) — computed
   // here, once, at write time and merged into the JSON blob. `focusScore` feeds
@@ -296,7 +302,7 @@ function closeMoment(
         table: 'moments',
         row: {
           id: moment.id,
-          startTime: moment.startTime,
+          startTime,
           endTime: endTs,
           durationMs,
           processName: moment.processName,
@@ -461,7 +467,7 @@ export const momentClose: Rule = (state, event) => {
   }
 
   const { effects, carryOverRollup, closed } = closeMoment(open, event.ts, s.project.current, resolveLocation(s), s.project.lastClosedMoment, s.config.leisureRules);
-  const nextMoment = enteringGap ? null : openNewMoment(event, processName, windowTitle, attribution, carryOverRollup);
+  const nextMoment = enteringGap ? null : openNewMoment(event, processName, windowTitle, attribution, carryOverRollup, carryOverRollup ? (open.carriedFrom ?? open.startTime) : null);
   return { state: { ...s, moment: nextMoment, project: { ...s.project, lastClosedMoment: closed } }, effects: [...pre.effects, ...effects] };
 };
 

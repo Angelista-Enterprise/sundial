@@ -80,7 +80,7 @@ describe('judgementTrack', () => {
     const back = hydrateSnapshot('d1', JSON.parse(JSON.stringify(graded)) as Partial<KernelState>);
     expect(back.judgement).toEqual(graded.judgement);
     const { judgement: _dropped, ...old } = createInitialState('d1');
-    expect(hydrateSnapshot('d1', old as Partial<KernelState>).judgement).toEqual({ questions: {}, recent: [], recentByArtifact: [], degraded: 'none', degradedSince: null, degradedMs: 0 });
+    expect(hydrateSnapshot('d1', old as Partial<KernelState>).judgement).toEqual({ questions: {}, recent: [], recentByArtifact: [], degraded: 'none', degradedSince: null, degradedMs: 0, consulted: {}, rejudge: null });
   });
 });
 
@@ -107,5 +107,48 @@ describe('gradeAnswer and bestThreshold', () => {
     expect(record.bins.hits[8]).toBe(10);
     expect(record.bins.hits[6]).toBe(0);
     expect(bestThreshold(record.bins)).toBe(0.7);
+  });
+});
+
+describe('judgementTrack: W3 consults and the rejudge job', () => {
+  const ev = (type: string, ts: string, payload: Record<string, unknown> = {}): SanitizedEvent => ({ id: `${type}-${ts}`, type, ts, payload, sanitized: true });
+
+  it('counts a consult per question set; the answers stay in the log', () => {
+    let state = createInitialState('d1');
+    for (const set of ['rank-evidence', 'rank-evidence', 'route-ask']) state = judgementTrack(state, ev('judgement:consulted', '2026-09-29T10:00:00.000Z', { callId: 'c', questionSetId: set, answers: {} })).state;
+    expect(state.judgement.consulted).toEqual({ 'rank-evidence': 2, 'route-ask': 1 });
+  });
+
+  it('a request opens the job and asks for RunRejudge; a second while it runs does nothing; a finish closes it', () => {
+    const opened = judgementTrack(createInitialState('d1'), ev('rejudge:requested', '2026-09-29T10:00:00.000Z', { all: false, limit: 50, bench: 'x', pack: -1 }));
+    expect(opened.effects).toEqual([{ type: 'RunRejudge', options: { limit: 50 } }]);
+    expect(opened.state.judgement.rejudge).toMatchObject({ running: true, startedAt: '2026-09-29T10:00:00.000Z', options: { limit: 50 } });
+    expect(judgementTrack(opened.state, ev('rejudge:requested', '2026-09-29T10:05:00.000Z', { all: true })).effects).toEqual([]);
+    const done = judgementTrack(opened.state, ev('rejudge:finished', '2026-09-29T10:06:00.000Z', { total: 50, done: 48, calls: 50, failedCalls: 2 })).state;
+    expect(done.judgement.rejudge).toMatchObject({ running: false, finishedAt: '2026-09-29T10:06:00.000Z', total: 50, done: 48, calls: 50, failedCalls: 2, error: null });
+    expect(judgementTrack(done, ev('rejudge:requested', '2026-09-29T10:07:00.000Z', { all: true })).effects).toEqual([{ type: 'RunRejudge', options: { all: true } }]);
+  });
+
+  it('a job that never reported back stops holding the slot after an hour', () => {
+    const opened = judgementTrack(createInitialState('d1'), ev('rejudge:requested', '2026-09-29T10:00:00.000Z')).state;
+    expect(judgementTrack(opened, ev('rejudge:requested', '2026-09-29T11:00:01.000Z')).effects).toEqual([{ type: 'RunRejudge', options: {} }]);
+  });
+});
+
+describe('migrateQuestionIds (W6 D4, the one-time mapping)', () => {
+  it('moves records and rings from wording hashes to template ids, pools what lands on one, and is idempotent', async () => {
+    const { migrateQuestionIds, gradeAnswer: grade } = await import('./judgement-track.js');
+    const { wordingHash } = await import('./questions/index.js');
+    const hash = wordingHash(MOMENT_FANOUT_QUESTIONS.is_work);
+    const base = createInitialState('d1').judgement;
+    const empty = { type: 'noul', threshold: 0.5, n: 0, hits: 0, bins: { n: Array(10).fill(0), hits: Array(10).fill(0) }, lastVerdictAt: null };
+    const old = grade(empty, 0.8, true, '2026-09-20T10:00:00.000Z');
+    const already = grade(empty, 0.3, false, '2026-09-21T10:00:00.000Z');
+    const before = { ...base, questions: { [hash]: old, 'moment-fanout:is_work': already, 'f00dfeedbeef': empty }, recent: [{ ts: 't', questionSetId: 'moment-fanout', momentId: 'm-1', artifactId: null, p: { [hash]: 0.8 } }] };
+    const after = migrateQuestionIds(before);
+    expect(Object.keys(after.questions).sort()).toEqual(['f00dfeedbeef', 'moment-fanout:is_work']);
+    expect(after.questions['moment-fanout:is_work']).toMatchObject({ n: 2, hits: 1, lastVerdictAt: '2026-09-21T10:00:00.000Z' });
+    expect(after.recent[0]!.p).toEqual({ 'moment-fanout:is_work': 0.8 });
+    expect(migrateQuestionIds(after)).toBe(after);
   });
 });

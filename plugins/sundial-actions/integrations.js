@@ -9,38 +9,10 @@
 //
 // This file decides nothing about permission. It reads the config, expands the
 // secrets, and mounts. The gate (gate.js) decides what each tool may do.
-import { readFileSync } from 'node:fs'
-import { getSundialHome } from '@sundial/helpers/config.js'
-import { join } from 'node:path'
+import { readSundialEnvFile } from '@sundial/helpers/sundial-env.js'
 
 /** `$NAME` or `${NAME}`, anywhere in a value — `Bearer ${TOKEN}` is the common case. */
 const REF = /\$\{([A-Z][A-Z0-9_]*)\}|\$([A-Z][A-Z0-9_]*)/g
-
-/**
- * `~/.sundial/.env`, parsed the way the LLM plugin parses it: `KEY=VALUE` lines,
- * `#` comments, optional surrounding quotes. `process.env` always wins, so a
- * shell export overrides the file.
- */
-export function readEnvFile(path = join(getSundialHome(), '.env')) {
-  const out = {}
-  let text = ''
-  try {
-    text = readFileSync(path, 'utf8')
-  } catch {
-    return out
-  }
-  for (const rawLine of text.split('\n')) {
-    const line = rawLine.trim()
-    if (line === '' || line.startsWith('#')) continue
-    const eq = line.indexOf('=')
-    if (eq <= 0) continue
-    const key = line.slice(0, eq).trim()
-    let value = line.slice(eq + 1).trim()
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1)
-    out[key] = value
-  }
-  return out
-}
 
 /**
  * Expand `$NAME` references in a string map. Returns the expanded map and the
@@ -89,7 +61,7 @@ export function mcpConfigFor(integration, env) {
  * @param McpClient the `@deepseek-ai/dsh-mcp-client` namespace.
  * @param integrations the resolved config.
  */
-export function mountIntegrations(ctx, McpClient, integrations, { env = { ...readEnvFile(), ...process.env }, log = console.log, warn = console.warn } = {}) {
+export function mountIntegrations(ctx, McpClient, integrations, { env = { ...readSundialEnvFile(), ...process.env }, log = console.log, warn = console.warn } = {}) {
   // One status per configured integration, mounted or not, WITH the reason —
   // so the UI can show "not mounted: missing OBSIDIAN_API_KEY" rather than the
   // owner having to find it in a log.

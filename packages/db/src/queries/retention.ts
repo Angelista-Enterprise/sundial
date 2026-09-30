@@ -83,17 +83,38 @@ export async function trimAuditBodies(olderThan: string): Promise<{ llmBodiesCle
  * `eventTypes` narrows a sweep to those `event_type`s (`audio:transcript`
  * without the headphone rows that share its `signal_type`).
  */
+/**
+ * W1 step 8: a deleted thread's `llm_audit` rows — every call the chat guard
+ * reserved under that session (`llm:dispatched {callId, sessionId}`).
+ */
+export async function deleteLlmAuditOfSession(sessionId: string): Promise<number> {
+  const result = await getDb().run(sql`
+    DELETE FROM llm_audit WHERE id IN (
+      SELECT json_extract(data, '$.callId') FROM signals
+      WHERE signal_type = 'llm' AND event_type = 'dispatched' AND json_extract(data, '$.sessionId') = ${sessionId}
+    )
+  `);
+  return result.rowsAffected;
+}
+
 export async function deleteSignalsOlderThan(
   olderThan: string,
   signalTypes: readonly string[],
-  { apps = [], eventTypes, limit = 5000 }: { apps?: readonly string[]; eventTypes?: readonly string[]; limit?: number } = {},
+  { apps = [], eventTypes, sessionId, limit = 5000 }: { apps?: readonly string[]; eventTypes?: readonly string[]; sessionId?: string; limit?: number } = {},
 ): Promise<number> {
   if (signalTypes.length === 0) return 0;
   const db = getDb();
   if (apps.length === 0) {
     const result = await db
       .delete(signals)
-      .where(and(lt(signals.capturedAt, olderThan), inArray(signals.signalType, [...signalTypes]), eventTypes ? inArray(signals.eventType, [...eventTypes]) : undefined));
+      .where(
+        and(
+          lt(signals.capturedAt, olderThan),
+          inArray(signals.signalType, [...signalTypes]),
+          eventTypes ? inArray(signals.eventType, [...eventTypes]) : undefined,
+          sessionId !== undefined ? sql`json_extract(data, '$.sessionId') = ${sessionId}` : undefined,
+        ),
+      );
     return result.rowsAffected;
   }
   const who = sql`lower(coalesce(json_extract(data, '$.processName'), '') || ' ' || coalesce(json_extract(data, '$.bundleId'), ''))`;

@@ -185,6 +185,7 @@ export const appliedEffects = sqliteTable(
  * already the natural unique key, and using it directly means `projectTrack`
  * (a pure rule, no I/O) never needs a DB round-trip to know a project's id.
  */
+// W6 P9: no writer or reader since; the org is `projects.organizationId`. Kept so the schema matches the migrations.
 export const organizations = sqliteTable('organizations', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
@@ -320,25 +321,8 @@ export const knowledgeEntries = sqliteTable(
 );
 
 /**
- * Ask threads — a materialized view of the `ask:answered`/`ask:remembered`
- * events in the log, with `askTrack` as its single writer (same relationship
- * `moments` has to `momentClose`). NOT the source of truth: the log is, and
- * this table is rebuildable from it.
- *
- * A thread lives here rather than in `KernelState` because an answer is
- * unbounded prose and `KernelState` is serialized whole into every snapshot;
- * `state.ask` keeps only the metadata a rule needs. It lives here rather than
- * in `llm_audit` (which already stores the prompt and response of the same
- * call) because an audit row is about a model call — one exists for a failed
- * call and none exists for an answer refused from the record — while a thread
- * is about a question the owner asked.
- *
- * `remembered` is the owner's decision to promote the answer into the
- * knowledgebase, and `rememberedEntryId` names the `knowledge_entries` row that
- * promotion created. A thread is history either way; only a remembered one is
- * retrievable memory. `sourceCount` is kept precisely so a later rule can
- * decide to promote a well-sourced answer on its own — the manual button is the
- * first version of that policy, not a replacement for it.
+ * W6 P4: the retired Ask surface's Q&A log, last written 2026-08-15. No writer or reader is left;
+ * the definition stays so the schema matches the migrations, and dropping its rows is the owner's call.
  */
 export const askThreads = sqliteTable(
   'ask_threads',
@@ -385,7 +369,7 @@ export const askThreads = sqliteTable(
 );
 
 /**
- * Questions GNOMON asked the OWNER — the mirror of `ask_threads`, which records
+ * Questions GNOMON asked the OWNER — the mirror of the retired `ask_threads`, which recorded
  * questions the owner asked Gnomon.
  *
  * A separate table rather than a reuse of `ask_threads` because that table's

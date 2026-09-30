@@ -1,4 +1,4 @@
-import { config as loadDotenv } from 'dotenv';
+import { config as loadDotenv, parse } from 'dotenv';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getSundialHome } from './config.js';
@@ -20,6 +20,20 @@ export function loadSundialEnv(): void {
   loadDotenv({ path: SUNDIAL_ENV_FILE, quiet: true });
 
   warnIfLegacyRepoEnv();
+}
+
+/**
+ * W3: the one `.env` parser. `$SUNDIAL_HOME/.env` (or `file`) as a plain map,
+ * by dotenv's own parser (quotes, `export`, comments), never merged into
+ * `process.env`: the caller decides whether a shell export wins. A missing
+ * file is an empty map. Resolved per call, so a test's `SUNDIAL_HOME` holds.
+ */
+export function readSundialEnvFile(file = path.join(getSundialHome(), '.env')): Record<string, string> {
+  try {
+    return parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return {};
+  }
 }
 
 function warnIfLegacyRepoEnv(): void {

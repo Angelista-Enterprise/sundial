@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { AXIS_ABOVE, AXIS_BELOW, GATE_DAILY_BUDGET, GATE_PHASIC_CAP, SHIPPED_PHASIC_BAR, SHIPPED_TONIC_BAR, barsFor, biasSentence, gateCensus, noticePrecision, octaves, outcomeOf, weightAt, weightScale, whySentence, placedWeight } from './gate.js'
+import { AXIS_ABOVE, AXIS_BELOW, GATE_DAILY_BUDGET, GATE_PHASIC_CAP, SHIPPED_PHASIC_BAR, SHIPPED_TONIC_BAR, barsFor, biasSentence, gateCensus, octaves, outcomeOf, weightAt, weightScale, whySentence, placedWeight } from './gate.js'
 
 const SHIPPED = barsFor(0)
 
@@ -279,30 +279,5 @@ describe('a row is placed against the bar it actually met (K0.2)', () => {
     )
     expect(c.placedRows).toBe(2)
     expect(c.movedBar).toBe(1)
-  })
-})
-
-describe('notice precision (N1)', () => {
-  it('leaves out test and smoke keys, counts the latest verdict per notice, and splits by kind with n', () => {
-    const kinds = { 'who:a': 'owner-question', 'who:b': 'owner-question', 'break:1': 'return-from-break' }
-    const p = noticePrecision(
-      [
-        { artifactId: 'break:1', verdict: 'wrong', at: '2026-09-01T10:00:00.000Z' },
-        { artifactId: 'break:1', verdict: 'useful', at: '2026-09-01T10:05:00.000Z' },
-        { artifactId: 'who:a', verdict: 'wrong', at: '2026-09-02T10:00:00.000Z' },
-        { artifactId: 'who:b', verdict: 'not-now', at: '2026-09-02T11:00:00.000Z' },
-        { artifactId: 'smoke-test:x', verdict: 'useful', at: '2026-09-03T10:00:00.000Z' },
-        { artifactId: 'j0.8-probe', verdict: 'useful', at: '2026-09-03T10:00:00.000Z' },
-        { artifactId: 'drift:w38', verdict: 'useful', at: '2026-09-03T12:00:00.000Z' },
-      ],
-      (key) => kinds[key],
-    )
-    expect(p).toMatchObject({ n: 4, useful: 2, excluded: 2 })
-    expect(p.byKind).toEqual([
-      { kind: 'owner-question', n: 2, useful: 0, wrong: 1, notNow: 1 },
-      // No decision row names it: the key's own prefix does.
-      { kind: 'drift', n: 1, useful: 1, wrong: 0, notNow: 0 },
-      { kind: 'return-from-break', n: 1, useful: 1, wrong: 0, notNow: 0 },
-    ])
   })
 })

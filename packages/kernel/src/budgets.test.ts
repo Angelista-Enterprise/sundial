@@ -20,7 +20,7 @@ describe('resolveDailyCaps', () => {
   // (`dispatchJudge`, docs/jarvis/02) — Jev's slots, apart from the text model's.
   it('caps exactly the purposes something can actually request', () => {
     expect(Object.keys(DEFAULT_DAILY_CAPS).sort()).toEqual(
-      ['ask', 'companion', 'extract', 'goal', 'intent', 'journal', 'reflect', 'refute', 'transcript', 'perceive', 'classify', 'rank', 'judge', 'audit', 'forecast', 'listen'].sort(),
+      ['ask', 'companion', 'extract', 'goal', 'hand', 'intent', 'journal', 'reflect', 'refute', 'transcript', 'perceive', 'classify', 'rank', 'judge', 'audit', 'forecast', 'listen', 'vision'].sort(),
     );
   });
 

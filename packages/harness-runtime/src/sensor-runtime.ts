@@ -32,6 +32,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadSundialConfig, type ResolvedSundialConfig } from '@sundial/helpers/sundial-config.js';
 import { getAllProjects } from '@sundial/db/index.js';
+import { openLlmAudit } from '@sundial/llm/audit.js';
 import { consentedNetworkFingerprint } from '@sundial/rules/presence-track.js';
 import type { KernelState } from '@sundial/kernel/index.js';
 import {
@@ -94,6 +95,8 @@ export interface SensorRuntimeOptions {
   getAllProjects?: () => Promise<{ rootPath: string }[]>;
   /** Injectable for tests; defaults to `loadSundialConfig()`. */
   config?: ResolvedSundialConfig;
+  /** W5: `ctx.gnomonKernel.reserveLlmCall`, the one budget gate, for the sensors that call a model (screen vision). */
+  reserveLlmCall?: (purpose: 'vision', options: { caller: string }) => Promise<string | null>;
 }
 
 export class SensorRuntime {
@@ -162,7 +165,7 @@ export class SensorRuntime {
     this.audioTranscriptSensor = new AudioTranscriptSensor({ enabled: this.config.audio.enabled, languages: this.config.audio.languages });
     // J3.4: the helper reads the page's text too when the owner has not turned it off; the browser must allow JavaScript from Apple Events.
     this.browserSensor = new BrowserSensor({ supervisor: new BrowserHelperSupervisor(undefined, this.config.browser.pageText ? ['--page-text'] : []) });
-    this.screenVisionSensor = new ScreenVisionSensor({ enabled: this.config.ocr.enabled && this.config.ocr.vision.enabled, model: this.config.ocr.vision.model, intervalMs: this.config.ocr.vision.intervalMs });
+    this.screenVisionSensor = new ScreenVisionSensor({ enabled: this.config.ocr.enabled && this.config.ocr.vision.enabled, model: this.config.ocr.vision.model, intervalMs: this.config.ocr.vision.intervalMs, openAudit: openLlmAudit, ...(options.reserveLlmCall ? { reserve: (purpose) => options.reserveLlmCall!(purpose, { caller: 'screen-vision' }) } : {}) });
     this.mailSensor = new MailSensor({ enabled: this.config.privacy.mail, messages: this.config.privacy.messages });
     this.hearingWindowPath = path.join(getSundialHome(), '.daemon', 'audio-listen.json');
     // J3.5: the vault, only when the owner named one. Paths only.

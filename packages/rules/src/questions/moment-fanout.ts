@@ -18,7 +18,7 @@
  * reads it; the lab's numbers are for the lab's wording.
  */
 import type { MomentRollup } from '@sundial/kernel/types.js';
-import { choice, clip, noul, score, type QuestionSet } from './index.js';
+import { choice, clip, noul, score, type QuestionSet, keyed } from './index.js';
 
 export interface MomentFanoutInput {
   rollup: MomentRollup;
@@ -111,7 +111,7 @@ const WORTH = score('If the owner asked about this session a month from now, how
   'Significant: a decision, a milestone, a meeting with outcomes, or a long deep session.',
 ]);
 
-export const MOMENT_FANOUT_QUESTIONS = {
+export const MOMENT_FANOUT_QUESTIONS = keyed('moment-fanout', {
   subject: SUBJECT,
   is_work: noul('Was the owner doing work, as opposed to leisure or personal activity, during this session?'),
   depth: DEPTH,
@@ -119,7 +119,7 @@ export const MOMENT_FANOUT_QUESTIONS = {
   contains_commitment: noul('Does the evidence — especially `heard_aloud` — show the owner taking on an obligation to someone, such as promising to send, do, or deliver something?'),
   contains_blocker: noul('Does the evidence show the owner hitting something that blocked progress, such as a failing build, an error, or a missing permission?'),
   interrupt_ok: noul('At the end of this session, would it have been acceptable for an assistant to interrupt the owner with a short message?'),
-};
+});
 
 const baseRollup = (over: Partial<MomentRollup> = {}): MomentRollup => ({
   processName: 'Code',
@@ -145,14 +145,14 @@ const baseRollup = (over: Partial<MomentRollup> = {}): MomentRollup => ({
 });
 
 /** One noul per goal slot (law 6: independent labels), fixed wording so six ids serve every moment. */
-export const GOAL_ADVANCE_QUESTIONS: Record<string, ReturnType<typeof noul>> = Object.fromEntries(
+export const GOAL_ADVANCE_QUESTIONS: Record<string, ReturnType<typeof noul>> = keyed('moment-fanout', Object.fromEntries(
   Array.from({ length: MAX_GOAL_SLOTS }, (_, i) => [goalAdvanceSlot(i), noul(`Was time in this session spent on the goal described in \`open_goals.g${i}\`, so that the goal moved forward?`)]),
-);
+));
 
 /** One noul per open promise: does this session show it being kept? Fixed wording, four ids. */
-export const PROMISE_RESOLVE_QUESTIONS: Record<string, ReturnType<typeof noul>> = Object.fromEntries(
+export const PROMISE_RESOLVE_QUESTIONS: Record<string, ReturnType<typeof noul>> = keyed('moment-fanout', Object.fromEntries(
   Array.from({ length: MAX_PROMISE_SLOTS }, (_, i) => [promiseSlot(i), noul(`Does this session show the promise quoted in \`open_promises.p${i}\` being kept — the thing promised was sent, done, delivered or handed over?`)]),
-);
+));
 
 /** The set's questions: the fixed seven, plus one slot per open goal, plus one per open promise. */
 export function momentFanoutQuestions(goalCount: number, promiseCount = 0): Record<string, ReturnType<typeof noul>> {

@@ -2,12 +2,14 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import { getLlmAuditOverview, getRecentLlmAudit, getSignalsAfter, getLatestSnapshot, initializeDatabase, insertSnapshot, resetDb } from '@sundial/db/index.js';
 import { getEffectJournalEntry, markEffectCompleted, markEffectStarted } from '@sundial/db/queries/applied-effects.js';
 import { getAllProjects } from '@sundial/db/queries/projects.js';
 import { effectDeliveryGuarantee } from '@sundial/kernel/effect-delivery.js';
+import { MAX_BACKGROUND_IN_FLIGHT } from '@sundial/kernel/budgets.js';
 import { createEventId } from '@sundial/helpers/event-id.js';
+import { loadSundialConfig } from '@sundial/helpers/sundial-config.js';
 import { KernelRuntime, REJUDGE_AFTER_DAYS, SNAPSHOT_WARN_BYTES, aliasPairKey, journalShifted, needsAudit, snapshotSizeWarning, replayDecision, spokenEvidence, tablesTouched, toDaemonEvent } from './runtime.js';
 
 /**
@@ -223,6 +225,50 @@ describe('KernelRuntime', () => {
     await runtime.shutdown();
     expect(seen.flat()).toContain('state');
   });
+
+  it('W3: a config.json edited while stopped is one boot config:changed, and the next boot logs none', async () => {
+    const rules = (project: string) => ({ ...loadSundialConfig(), projectRules: [{ titleContains: 'BOX-484', project }] });
+    const first = new KernelRuntime({ deviceId: 'test-device', config: rules('puzzlebox-studio') });
+    await first.boot();
+    await first.shutdown();
+    const before = (await getSignalsAfter(null)).length;
+    const second = new KernelRuntime({ deviceId: 'test-device', config: rules('lantern') });
+    await second.boot();
+    await second.shutdown();
+    const third = new KernelRuntime({ deviceId: 'test-device', config: rules('lantern') });
+    await third.boot();
+    await third.shutdown();
+    const logged = (await getSignalsAfter(null)).slice(before).filter((s) => s.signalType === 'config');
+    expect(logged.map((s) => s.data)).toEqual([{ source: 'boot', diff: [{ path: 'projectRules', was: [{ titleContains: 'BOX-484', project: 'puzzlebox-studio' }], now: [{ titleContains: 'BOX-484', project: 'lantern' }] }], restart: [] }]);
+    expect(third.getState()?.config.projectRules).toEqual([{ titleContains: 'BOX-484', project: 'lantern' }]);
+  });
+
+  it('W3: two reservations at cap − 1 race on the lane and exactly one wins; the spent budget is noted once', async () => {
+    const runtime = new KernelRuntime({ deviceId: 'test-device', config: { ...loadSundialConfig(), budgets: { goal: 1 } } });
+    await runtime.boot();
+    expect(runtime.getState()?.budgets.byPurpose.goal.callsToday).toBe(0);
+    const ids = await Promise.all([runtime.reserveLlmCall('goal', { caller: 'test-a' }), runtime.reserveLlmCall('goal', { caller: 'test-b' })]);
+    expect(await runtime.reserveLlmCall('goal', { caller: 'test-c' })).toBeNull();
+    await runtime.shutdown();
+    expect(ids.filter((id) => id !== null)).toHaveLength(1);
+    expect(runtime.getState()?.budgets.byPurpose.goal.callsToday).toBe(1);
+    const signals = await getSignalsAfter(null);
+    const dispatched = signals.filter((s) => s.signalType === 'llm' && s.eventType === 'dispatched' && (s.data as { purpose?: string }).purpose === 'goal');
+    expect(dispatched.map((s) => s.data)).toEqual([{ purpose: 'goal', callId: ids.find((id) => id !== null), caller: expect.stringMatching(/^test-[ab]$/), route: 'openai' }]);
+    expect(signals.filter((s) => s.signalType === 'llm' && s.eventType === 'budget-exhausted' && (s.data as { purpose?: string }).purpose === 'goal')).toHaveLength(1);
+  });
+
+  it('W3: a cap change applies without a restart — the gate reads the config in the log', async () => {
+    const runtime = new KernelRuntime({ deviceId: 'test-device', config: { ...loadSundialConfig(), budgets: { goal: 1 } } });
+    await runtime.boot();
+    const spent = runtime.getState()?.budgets.byPurpose.goal.callsToday ?? 0;
+    await runtime.appendSignal('config:changed', { source: 'owner', diff: [{ path: 'budgets', was: { goal: 1 }, now: { goal: spent + 1 } }], restart: [] });
+    expect(await runtime.reserveLlmCall('goal', { caller: 'test' })).not.toBeNull();
+    expect(await runtime.reserveLlmCall('goal', { caller: 'test' })).toBeNull();
+    await runtime.appendSignal('config:changed', { source: 'owner', diff: [{ path: 'budgets', was: { goal: spent + 1 }, now: { goal: spent + 2 } }], restart: [] });
+    expect(await runtime.reserveLlmCall('goal', { caller: 'test' })).not.toBeNull();
+    await runtime.shutdown();
+  });
 });
 
 describe('Judge → judgement:result (docs/jarvis/02, one effect, one event)', () => {
@@ -333,7 +379,15 @@ describe('Judge → judgement:result (docs/jarvis/02, one effect, one event)', (
     }
     expect(calls).toHaveLength(2);
     // Two signals minted in one millisecond sort either way by id; the set is what is asserted.
-    expect((await getSignalsAfter(null)).slice(before).map((s) => `${s.signalType}:${s.eventType}`).sort()).toEqual(['llm:dispatched', 'llm:dispatched', 'llm:refunded']);
+    const after = (await getSignalsAfter(null)).slice(before);
+    expect(after.map((s) => `${s.signalType}:${s.eventType}`).sort()).toEqual(['judgement:consulted', 'llm:dispatched', 'llm:dispatched', 'llm:refunded']);
+    // W3: one consult per answered call, joined to its spend and its audit row by the call id; a failure refunds that same id.
+    const [first, second] = after.filter((s) => s.eventType === 'dispatched').map((s) => (s.data as { callId: string }).callId);
+    const consulted = after.find((s) => s.eventType === 'consulted')?.data;
+    expect(consulted).toMatchObject({ callId: first, purpose: 'rank', questionSetId: 'rank-evidence', caller: 'judgeNow', answers: answer.answers });
+    expect(calls[0]).toMatchObject({ callId: first });
+    expect(after.find((s) => s.eventType === 'refunded')?.data).toMatchObject({ callId: second });
+    expect(runtime.getState()?.judgement.consulted['rank-evidence']).toBe(1);
     await runtime.shutdown();
   });
 
@@ -414,6 +468,12 @@ describe('J0.9 chaos: Jev at a dead port', () => {
       expect(local).toHaveLength(1);
       expect(local[0].success).toBe(true);
       expect(asked.filter((ms) => ms > 0)).toEqual([1000, 2000]);
+      // W5: each failed row is one `llm:failed` on the route that failed, with its attempt and no error text.
+      await new Promise((r) => setTimeout(r, 50));
+      const failed = (await getSignalsAfter(null)).slice(before).filter((s) => s.signalType === 'llm' && s.eventType === 'failed').map((s) => s.data as Record<string, unknown>);
+      expect(failed.map((f) => [f.route, f.purpose, f.attempt])).toEqual([['jev', 'classify', 1], ['jev', 'classify', 2], ['jev', 'classify', 3]]);
+      expect(failed.map((f) => f.callId).sort()).toEqual(jev.map((r) => r.id).sort());
+      expect(Object.keys(failed[0]!).sort()).toEqual(['attempt', 'callId', 'errorClass', 'purpose', 'route']);
       await runtime.shutdown();
     } finally {
       process.env = { ...env };
@@ -539,6 +599,163 @@ describe('a journal shift (hardening S6)', () => {
   });
 });
 
+describe('W1 step 7: the nightly conversation pass reads the log', () => {
+  it('reads the window\'s chat:owner rows (already sanitized), skips a one-word turn, and files a conversation candidate', async () => {
+    const asked: string[] = [];
+    const chat = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => {
+        asked.push(body);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ choices: [{ message: { content: '[{"entityKind":"owner","canonicalName":"Mira Bakker","predicate":"prefers","object":"climbing on Thursdays","confidence":70}]' }, finish_reason: 'stop' }], usage: { prompt_tokens: 40, completion_tokens: 12, total_tokens: 52 } }));
+      });
+    });
+    await new Promise<void>((r) => chat.listen(0, '127.0.0.1', () => r()));
+    const env = { ...process.env };
+    process.env.SUNDIAL_LLM_BASE_URL = `http://127.0.0.1:${(chat.address() as { port: number }).port}/v1`;
+    process.env.SUNDIAL_LLM_MODEL = 'qwen/test-local';
+    try {
+      const runtime = new KernelRuntime({ deviceId: 'test-device' });
+      await runtime.boot();
+      const live = runtime as unknown as { state: { config: Record<string, unknown> }; dispatchRunConversationExtraction: (e: unknown) => Promise<void> };
+      live.state = { ...live.state, config: { ...live.state.config, ownerAliases: ['Mira Bakker'] } };
+      const at = (min: number) => new Date(Date.parse('2026-09-28T20:00:00.000Z') + min * 60_000).toISOString();
+      await runtime.appendSignal('chat:owner', { sessionId: 'session-7f', turnId: 't1', text: 'I usually go climbing on Thursdays', chars: 34, images: 0 }, at(1));
+      await runtime.appendSignal('chat:owner', { sessionId: 'session-7f', turnId: 't2', text: 'ok', chars: 2, images: 0 }, at(2));
+      await runtime.appendSignal('chat:owner', { sessionId: 'session-7f', turnId: 't3', text: 'outside the window: the BOX-484 notes', chars: 37, images: 0 }, at(200));
+      const before = (await getSignalsAfter(null)).length;
+      await live.dispatchRunConversationExtraction({ type: 'RunConversationExtraction', since: at(0), ts: at(60) });
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline && !(await getSignalsAfter(null)).slice(before).some((s) => s.signalType === 'entity')) await new Promise((r) => setTimeout(r, 50));
+      expect(asked).toHaveLength(1);
+      const transcript = JSON.parse(asked[0]!).messages.at(-1).content as string;
+      expect(transcript).toBe('[2026-09-28T20:01 · session-7f] I usually go climbing on Thursdays');
+      const candidate = (await getSignalsAfter(null)).slice(before).find((s) => s.signalType === 'entity' && s.eventType === 'fact-candidate');
+      expect(candidate?.data).toMatchObject({ predicate: 'prefers', provenance: 'conversation', entityKind: 'owner' });
+      await runtime.shutdown();
+    } finally {
+      process.env = { ...env };
+      await new Promise<void>((r) => chat.close(() => r()));
+    }
+  }, 10_000);
+});
+
+describe('W1 step 8: a deleted thread leaves the log and the ledger', () => {
+  it('chat:forget deletes that session\'s chat rows and the llm_audit rows reserved under it, and nothing else', async () => {
+    const { openLlmAudit } = await import('@sundial/llm/audit.js');
+    const runtime = new KernelRuntime({ deviceId: 'test-device' });
+    await runtime.boot();
+    const gone = await runtime.reserveLlmCall('ask', { caller: 'chat:ask', sessionId: 'session-gone' });
+    const kept = await runtime.reserveLlmCall('ask', { caller: 'chat:ask', sessionId: 'session-kept' });
+    for (const id of [gone!, kept!]) await (await openLlmAudit({ id, momentId: null, purpose: 'ask', model: 'm', prompt: 'p' })).settle({ respondedAt: 'now', latencyMs: 1, success: true });
+    await runtime.appendSignal('chat:owner', { sessionId: 'session-gone', turnId: 't1', text: 'the BOX-484 notes', chars: 17, images: 0 });
+    await runtime.appendSignal('chat:owner', { sessionId: 'session-kept', turnId: 't2', text: 'the puzzlebox-studio plan', chars: 25, images: 0 });
+    await new Promise((r) => setTimeout(r, 5));
+    await runtime.appendSignal('chat:forget', { sessionId: 'session-gone' });
+    await new Promise((r) => setTimeout(r, 50));
+    const chat = (await getSignalsAfter(null)).filter((s) => s.signalType === 'chat' && s.eventType === 'owner').map((s) => (s.data as { sessionId: string }).sessionId);
+    expect(chat).not.toContain('session-gone');
+    expect(chat).toContain('session-kept');
+    const audit = (await getRecentLlmAudit(50)).map((r) => r.id);
+    expect(audit).not.toContain(gone);
+    expect(audit).toContain(kept);
+    await runtime.shutdown();
+  });
+});
+
+describe('W5: the breaker at the one budget gate', () => {
+  it('refuses every call on an open route but one probe per 2 minutes, and a success closes it', async () => {
+    const runtime = new KernelRuntime({ deviceId: 'test-device' });
+    await runtime.boot();
+    const t0 = Date.now();
+    const before = (await getSignalsAfter(null)).length;
+    for (let i = 0; i < 10; i++) await runtime.appendSignal('llm:failed', { callId: `f${i}`, purpose: 'intent', route: 'openai', errorClass: 'network', attempt: 1 });
+    expect(runtime.getState()?.reliability.llm.openai?.openedAt).not.toBeNull();
+    const reserve = () => runtime.reserveLlmCall('intent', { caller: 'test' });
+    expect([await reserve(), await reserve()]).toEqual([null, null]);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(t0 + 2 * 60_000 + 1000);
+    try {
+      const probe = await reserve();
+      expect(probe).not.toBeNull();
+      expect(await reserve()).toBeNull(); // the probe holds the route while in flight
+      await runtime.appendSignal('llm:recovered', { route: 'openai', callId: probe });
+      expect(await reserve()).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+    const dispatched = (await getSignalsAfter(null)).slice(before).filter((s) => s.signalType === 'llm' && s.eventType === 'dispatched').map((s) => s.data as Record<string, unknown>);
+    expect(dispatched.map((d) => [d.route, d.probe ?? false])).toEqual([['openai', true], ['openai', false]]);
+    // A notice was said once, as sensor health.
+    expect((await getSignalsAfter(null)).slice(before).filter((s) => s.signalType === 'notice' && s.eventType === 'candidate').map((s) => (s.data as { key: string }).key)).toEqual(['sensor-health:llm-breaker:openai']);
+    await runtime.shutdown();
+  });
+
+  it('20 × 429 do not open the breaker or refuse the chat; a background call waits for the cooldown', async () => {
+    const runtime = new KernelRuntime({ deviceId: 'test-device' });
+    await runtime.boot();
+    const before = (await getSignalsAfter(null)).length;
+    for (let i = 0; i < 19; i++) await runtime.appendSignal('llm:failed', { callId: `r${i}`, purpose: 'intent', route: 'openai', errorClass: 'rate-limit', attempt: 1 });
+    await runtime.appendSignal('llm:failed', { callId: 'r19', purpose: 'intent', route: 'openai', errorClass: 'rate-limit', attempt: 1, retryAfterMs: 300 });
+    expect(runtime.getState()?.reliability.llm.openai).toMatchObject({ streak: 0, openedAt: null, openUntil: null });
+    expect(await runtime.reserveLlmCall('ask', { caller: 'chat:ask', route: 'openai' })).not.toBeNull();
+    const t0 = Date.now();
+    const background = await runtime.reserveLlmCall('intent', { caller: 'test' });
+    expect(background).not.toBeNull();
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(200);
+    expect((await getSignalsAfter(null)).slice(before).filter((s) => s.signalType === 'notice' && s.eventType === 'candidate')).toEqual([]);
+    await runtime.shutdown();
+  });
+
+  it('a 16-wide job never has more than MAX_BACKGROUND_IN_FLIGHT calls in flight; an outage fails at most 10 + that many', async () => {
+    const { openLlmAudit } = await import('@sundial/llm/index.js');
+    const runtime = new KernelRuntime({ deviceId: 'test-device' });
+    await runtime.boot();
+    let inFlight = 0;
+    let most = 0;
+    let failures = 0;
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (next++ < 64) {
+        const callId = await runtime.reserveLlmCall('intent', { caller: 'test' });
+        if (!callId) return;
+        most = Math.max(most, (inFlight += 1));
+        const row = await openLlmAudit({ id: callId, momentId: null, purpose: 'intent', model: 'm', prompt: 'p', route: 'openai' });
+        await new Promise((r) => setTimeout(r, 5));
+        inFlight -= 1;
+        failures += 1;
+        await row.settle({ respondedAt: new Date().toISOString(), latencyMs: 5, success: false, error: 'down', errorClass: 'network' });
+      }
+    };
+    await Promise.all(Array.from({ length: 16 }, worker));
+    expect(most).toBe(MAX_BACKGROUND_IN_FLIGHT);
+    expect(runtime.getState()?.reliability.llm.openai?.openedAt).not.toBeNull();
+    expect(failures).toBeGreaterThanOrEqual(10);
+    expect(failures).toBeLessThanOrEqual(10 + MAX_BACKGROUND_IN_FLIGHT);
+    await runtime.shutdown();
+  });
+
+  it('a rejudge the breaker stops says so, not that the classify cap was reached', async () => {
+    const { insertMoment } = await import('@sundial/db/queries/moments.js');
+    await insertMoment({ id: 'm-rejudge', startTime: '2026-09-28T09:00:00.000Z', endTime: '2026-09-28T09:30:00.000Z', durationMs: 1_800_000, processName: 'Warp', data: {}, importanceScore: 1, projectId: null });
+    const env = { ...process.env };
+    process.env.SUNDIAL_SYSTEMONE_BACKEND = 'text-model';
+    try {
+      const runtime = new KernelRuntime({ deviceId: 'test-device' });
+      await runtime.boot();
+      for (let i = 0; i < 10; i++) await runtime.appendSignal('llm:failed', { callId: `f${i}`, purpose: 'classify', route: 'openai', errorClass: 'network', attempt: 1 });
+      await runtime.appendSignal('rejudge:requested', { all: false });
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline && runtime.rejudgeStatus().running) await new Promise((r) => setTimeout(r, 20));
+      expect(runtime.rejudgeStatus().error).toBe('stopped: the model route openai is paused after failing calls');
+      await runtime.shutdown();
+    } finally {
+      process.env = { ...env };
+    }
+  });
+});
+
 describe('toDaemonEvent', () => {
   it('defaults ts to now and generates a fresh ULID id', () => {
     const a = toDaemonEvent('clock:tick', {});
@@ -598,5 +815,112 @@ describe('a snapshot over 1 MB is said at boot (Q9)', () => {
     const warning = snapshotSizeWarning({ ingestAnomaly: 'x'.repeat(SNAPSHOT_WARN_BYTES), small: 1 });
     expect(warning).toMatch(/snapshot is 1024 KB, over 1024 KB/);
     expect(warning).toContain('Largest: ingestAnomaly 1024 KB');
+  });
+});
+
+describe('W3: action effects and their actors', () => {
+  type Exec = { executeEffects: (id: string, type: string, effects: unknown[]) => Promise<void> };
+  const START = { type: 'StartJob' as const, job: { id: 'job-night-1', repo: '~/Projects/puzzlebox-studio', subject: 'Fix the retry test', brief: 'Make BOX-484 pass.' }, folder: 'night1', maxMinutes: 90 };
+  const outcomes = async (jobId: string) => (await getSignalsAfter(null)).filter((s) => (s.data as { jobId?: string }).jobId === jobId).map((s) => ({ type: `${s.signalType}:${s.eventType}`, ...(s.data as object) }));
+
+  it('a missing actor folds a failure outcome instead of throwing', async () => {
+    const runtime = new KernelRuntime({ deviceId: 'test-device' });
+    await runtime.boot();
+    await (runtime as unknown as Exec).executeEffects(createEventId(), 'clock:tick', [{ ruleName: 'nightShift', effect: START }]);
+    const work = { id: 'job-work-1', kind: 'topic-brief', key: 'k', subject: 'vitest', reason: 'r', detail: {}, openedAt: '2026-09-29T10:00:00.000Z' };
+    await (runtime as unknown as Exec).executeEffects(createEventId(), 'clock:tick', [{ ruleName: 'workbench', effect: { type: 'StartSubagent', job: work } }]);
+    // Dispatched off the lane: the outcome follows.
+    await vi.waitFor(async () => expect(await outcomes('job-work-1')).toHaveLength(1));
+    await runtime.shutdown();
+    expect(await outcomes('job-night-1')).toEqual([{ type: 'job:finished', jobId: 'job-night-1', outcome: 'failed', note: 'could not start: no night-shift runner is loaded' }]);
+    expect(await outcomes('job-work-1')).toEqual([{ type: 'work:closed', jobId: 'job-work-1', outcome: 'failed', note: 'could not start: no work loop is loaded' }]);
+  });
+
+  it('a replayed StartJob with a started row is abandoned (indeterminate), never started twice', async () => {
+    const runtime = new KernelRuntime({ deviceId: 'test-device' });
+    await runtime.boot();
+    const start = vi.fn(async () => ({ worktree: '/w', branch: 'night/x', base: 'abc' }));
+    runtime.registerActor('job', { start, stop: async () => null });
+    const eventId = createEventId();
+    const job = { ...START, job: { ...START.job, id: 'job-night-2' } };
+    await markEffectStarted(eventId, 0, { ruleName: 'nightShift', eventType: 'clock:tick', effectDetail: 'StartJob job-night-2' });
+    const error = console.error;
+    console.error = () => {};
+    try {
+      await (runtime as unknown as Exec).executeEffects(eventId, 'clock:tick', [{ ruleName: 'nightShift', effect: job }]);
+    } finally {
+      console.error = error;
+    }
+    expect(start).not.toHaveBeenCalled();
+    expect(await getEffectJournalEntry(eventId, 0)).toMatchObject({ status: 'indeterminate' });
+    // A fresh one runs once and folds where it started.
+    await (runtime as unknown as Exec).executeEffects(createEventId(), 'clock:tick', [{ ruleName: 'nightShift', effect: job }]);
+    await vi.waitFor(async () => expect(await outcomes('job-night-2')).toHaveLength(1));
+    await runtime.shutdown();
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(await outcomes('job-night-2')).toEqual([{ type: 'job:started', jobId: 'job-night-2', worktree: '/w', branch: 'night/x', base: 'abc' }]);
+  });
+
+  it('W6 P10: a night job end to end through StartJob and StopJob, the tmux runner stubbed: queued, started in its worktree, stopped, collected, shelved', async () => {
+    // A path in a variable, so `tsc -b` does not pull the plugin's JS into this package's build.
+    const plugin = '../../../plugins/sundial-proactive/night-shift.js';
+    const { installNightShift, createTmuxRunner } = await import(/* @vite-ignore */ plugin);
+    const { getKnowledgeEntriesSince } = await import('@sundial/db/queries/knowledge-entries.js');
+    const runtime = new KernelRuntime({ deviceId: 'test-device' });
+    await runtime.boot();
+    const state = runtime.getState()!;
+    state.config.jobs = { enabled: true, maxUsdPerJob: 2, maxUsdPerNight: 5, maxJobsPerNight: 2, maxMinutes: 90 };
+    state.project.known[`${tmpDir}/puzzlebox-studio`] = { name: 'puzzlebox-studio', org: null, remote: null, branch: 'main' };
+    state.lifeEvent.idle.isIdle = true;
+    // Only the process boundary is fake: git and tmux answer as they would, and nothing runs.
+    const calls: string[][] = [];
+    const exec = (cmd: string, args: string[]) => {
+      calls.push([cmd, ...args]);
+      if (args.includes('rev-parse')) return 'a1b2c3\n';
+      if (args.includes('--count')) return '2\n';
+      if (args.includes('--format=%s')) return 'Make the retry test wait on the event\nDrop the sleep\n';
+      if (args.includes('--shortstat')) return ' 2 files changed, 9 insertions(+), 4 deletions(-)';
+      return '';
+    };
+    const kernel = { getState: () => runtime.getState(), appendSignal: (type: string, payload: Record<string, unknown>) => runtime.appendSignal(type, payload), registerActor: (kind: 'job', actor: never) => runtime.registerActor(kind, actor) };
+    const unregister = installNightShift({ tools: { register: () => {} }, gnomonKernel: kernel } as never, { home: tmpDir, jobs: state.config.jobs, runner: createTmuxRunner({ home: tmpDir, claudePath: '/opt/claude', exec }), log: () => {} });
+
+    await runtime.appendSignal('job:requested', { repo: `${tmpDir}/puzzlebox-studio`, subject: 'Fix the retry test', brief: 'Make BOX-484 pass without sleeping.' });
+    await runtime.tickClock();
+    const id = runtime.getState()!.nightShift!.open!.id;
+    await vi.waitFor(async () => expect((await outcomes(id)).map((o) => o.type)).toContain('job:started'));
+    expect(runtime.getState()!.nightShift!.open).toMatchObject({ status: 'running', branch: expect.stringMatching(/^night\//), base: 'a1b2c3' });
+    expect(calls.some((c) => c[0] === 'tmux' && c[1] === 'new-session')).toBe(true);
+
+    await runtime.appendSignal('job:stop-requested', { jobId: id });
+    await vi.waitFor(async () => expect((await outcomes(id)).map((o) => o.type)).toContain('job:finished'));
+    await vi.waitFor(() => expect(runtime.getState()!.nightShift!.open).toBeNull());
+    expect(calls.some((c) => c[0] === 'tmux' && c[1] === 'kill-session')).toBe(true);
+    expect((await outcomes(id)).find((o) => o.type === 'job:finished')).toMatchObject({ commits: 2, outcome: 'stopped' });
+    const shelf = (await getKnowledgeEntriesSince('2000-01-01T00:00:00.000Z')).filter((e) => e.kind === 'shelf');
+    expect(shelf.map((e) => e.title)).toEqual(['Night shift: Fix the retry test']);
+    expect(shelf[0]!.body).toContain('Drop the sleep');
+    unregister();
+    await runtime.shutdown();
+  });
+
+  it('a subagent that ends without reporting is closed failed; a stop folds the close', async () => {
+    const runtime = new KernelRuntime({ deviceId: 'test-device' });
+    await runtime.boot();
+    let finish: () => void = () => {};
+    const stop = vi.fn(async () => {});
+    runtime.registerActor('subagent', { start: async () => ({ childId: 'child-9', done: new Promise<void>((resolve) => (finish = resolve)) }), stop });
+    await runtime.appendSignal('work:requested', { subject: 'Read the ledger spec', brief: 'what L1-L7 left open' });
+    const open = runtime.getState()?.workbench.open;
+    expect(open).not.toBeNull();
+    await vi.waitFor(async () => expect((await outcomes(open!.id)).map((o) => o.type)).toEqual(['work:started']));
+    finish();
+    await vi.waitFor(async () => expect((await outcomes(open!.id)).map((o) => o.type)).toEqual(['work:started', 'work:closed']));
+    expect((await outcomes(open!.id))[1]).toMatchObject({ outcome: 'failed', note: 'the worker ended without reporting' });
+    await runtime.appendSignal('work:stop-requested', { jobId: 'job-gone' });
+    await vi.waitFor(async () => expect(await outcomes('job-gone')).toHaveLength(2));
+    await runtime.shutdown();
+    expect(stop).toHaveBeenCalledWith({ type: 'StopSubagent', jobId: 'job-gone' });
+    expect(await outcomes('job-gone')).toEqual([{ type: 'work:stop-requested', jobId: 'job-gone' }, { type: 'work:closed', jobId: 'job-gone', outcome: 'failed', note: 'stopped by owner' }]);
   });
 });

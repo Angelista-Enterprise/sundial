@@ -35,6 +35,16 @@ describe('observedTrack', () => {
     expect(wouldDrop(state, event('agent:fleet', { sessions: [{ ...one, title: 'Split the gate, then test' }] }))).toBe(false);
   });
 
+  it('W6 P19: an OCR capture identical, after sanitizing, to its region\'s last one is not written again', () => {
+    const ocr = { timestamp: '2026-07-29T12:00:00.000Z', region: 'focused', processName: 'Arc', bundleId: 'company.thebrowser.Browser', screenText: 'BOX-484 is green', lineCount: 1, topics: [] };
+    let state = observedTrack(createInitialState('d1'), event('screen:ocr', ocr)).state;
+    expect(wouldDrop(state, event('screen:ocr', { ...ocr, timestamp: '2026-07-29T12:00:02.000Z' }))).toBe(true);
+    expect(wouldDrop(state, event('screen:ocr', { ...ocr, region: 'cursor' }))).toBe(false);
+    expect(wouldDrop(state, event('screen:ocr', { ...ocr, screenText: 'BOX-484 is red' }))).toBe(false);
+    state = observedTrack(state, event('screen:ocr', { ...ocr, screenText: 'x'.repeat(5000) })).state;
+    expect(state.observed['screen:ocr|focused']).toHaveLength(16);
+  });
+
   it('lets a genuine change through', () => {
     let state = createInitialState('d1');
     state = observedTrack(state, event('location:network', { fingerprint: 'net2_home', gatewayIp: '192.168.1.1' })).state;

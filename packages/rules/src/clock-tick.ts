@@ -38,6 +38,8 @@ export const clockTick: Rule = (state, event) => {
           refute: { callsToday: 0 },
           goal: { callsToday: 0 },
           transcript: { callsToday: 0 },
+          hand: { callsToday: 0 },
+          vision: { callsToday: 0 },
         perceive: { callsToday: 0 },
         classify: { callsToday: 0 },
         rank: { callsToday: 0 },

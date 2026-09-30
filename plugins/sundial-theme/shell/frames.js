@@ -21,6 +21,16 @@
 // Both emit the same frame VOCABULARY, so the client has one renderer.
 
 /**
+ * W1: why a session's agent spoke unprompted — the cause its last brief
+ * recorded (`state.conversation`, folded from `chat:shown`), so a restart
+ * between the notice and the reply keeps the words bound to that notice.
+ */
+export function briefCause(state, sessionId) {
+  const cause = state?.conversation?.sessions?.[sessionId]?.cause
+  return { noticeKey: cause?.noticeKey ?? null, askId: cause?.askId ?? null }
+}
+
+/**
  * The wire hands a tool's json argument over as the model's unparsed JSON
  * string. Tolerant on purpose: a truncated call is a real thing that happens
  * mid-stream, and it should draw as an unfinished surface rather than throw.
@@ -192,7 +202,10 @@ export function liveFrames(event) {
     // the client — so a second window watching the same session sees it too.
     if (isOwnerMessage(data)) return [{ type: 'user', text: textOf(data) }]
     const brought = broughtFrame(data)
-    return brought === null ? [] : [brought]
+    if (brought !== null) return [brought]
+    // A follow-up is a whole Gnomon line of its own: said, and done.
+    const line = followupFrame(data, event)
+    return line === null ? [] : [line, { type: 'done', reason: 'complete' }]
   }
   if (type === 'tool/call') {
     const frame = toolFrame(data)
@@ -247,6 +260,20 @@ function broughtFrame(data) {
   return data?.source?.kind === 'plugin' && typeof summary === 'string' && BROUGHT.test(summary) ? { type: 'brought', title: summary.replace(BROUGHT, '') } : null
 }
 
+/**
+ * A follow-up line (W2): one sentence the proactive plugin put in this thread
+ * when something Gnomon raised here resolved. It rides as a plugin notice whose
+ * summary starts "Follow-up:", and draws as Gnomon's own line — marked as a later one, with the
+ * time it was said when the log carries it (`followup`: an ISO instant, or null).
+ */
+const FOLLOWUP = /^Follow-up: /
+function followupFrame(data, event) {
+  const summary = data?.source?.summary
+  if (data?.source?.kind !== 'plugin' || typeof summary !== 'string' || !FOLLOWUP.test(summary)) return null
+  const t = event?.time instanceof Date ? event.time.getTime() : event?.time
+  return { type: 'say', text: textOf(data).replace(FOLLOWUP, ''), followup: Number.isFinite(t) ? new Date(t).toISOString() : null }
+}
+
 export function replayFrames(events) {
   const frames = []
   for (const event of events ?? []) {
@@ -259,6 +286,8 @@ export function replayFrames(events) {
         if (isOwnerMessage(data)) frames.push({ type: 'user', text: textOf(data) })
         const brought = broughtFrame(data)
         if (brought !== null) frames.push(brought)
+        const line = followupFrame(data, event)
+        if (line !== null) frames.push(line)
         break
       }
       case 'assistant/message': {

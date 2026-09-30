@@ -7,7 +7,7 @@
  * derived event, no title text. The judge returns likelihoods; the code keeps
  * the belief (`ownerPerceive`'s Beta filter) — Jev is not the filter.
  */
-import { choice, noul, type QuestionSet } from './index.js';
+import { choice, noul, type QuestionSet, keyed } from './index.js';
 
 export interface PerceiveInput {
   switches_last_10_min: number;
@@ -22,7 +22,7 @@ export interface PerceiveInput {
   hour_local: number;
 }
 
-export const PERCEIVE_QUESTIONS = {
+export const PERCEIVE_QUESTIONS = keyed('perceive', {
   in_flow: noul('Judged from these rates alone, is the owner in a stretch of focused, productive work that an interruption would break?'),
   stuck: noul('Judged from these rates alone, does the owner look blocked or churning — much switching and little steady input, for a while?'),
   interruptible: noul('Judged from these rates alone, would a short message from an assistant be acceptable to the owner right now?'),
@@ -34,7 +34,7 @@ export const PERCEIVE_QUESTIONS = {
     winding_down: 'Wrapping up, tidying, or drifting to leisure.',
     unclear: 'The rates do not say.',
   }),
-};
+});
 
 export const perceive: QuestionSet<[PerceiveInput]> = {
   id: 'perceive',

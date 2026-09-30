@@ -95,7 +95,13 @@ export const DOING = {
   RunJournal: 'wrote the journal',
   RunGoalTrial: 'ran a study',
   RunGoalPlan: 'planned a goal',
+  ComposeWeekReview: 'reviewed the week',
   RunWorldHygiene: 'tidied what it knows',
+  RunRejudge: 'judged its moments again',
+  StartJob: 'started a night job',
+  StopJob: 'stopped a night job',
+  StartSubagent: 'started a job of its own',
+  StopSubagent: 'stopped a job',
   EmitEvent: 'told itself something',
   Notify: 'said something to you',
 }

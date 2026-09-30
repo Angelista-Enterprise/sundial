@@ -16,23 +16,25 @@
 //   tonic  → inject only. The observation is waiting in context the next time
 //            the owner says anything; nobody is interrupted.
 //
-// SIGNALS ARE NOT SESSION LOGS. Four crossings exist between the telemetry log
-// and this conversation, and no others: tools read kernel state into a turn,
-// this plugin injects admitted notices, verdicts re-enter as candidate
-// signals through `appendSignal`, and owner assertions re-enter the same way
-// (gnomon_assert, registered by sundial-tools). The companion never writes to
-// the log directly, and the log never learns what was said in the chat.
+// SIGNALS ARE NOT SESSION LOGS, but the log learns what was said (W1). The
+// crossings between the telemetry log and this conversation: every turn's
+// brief (`gnomonKernel.brief`) is logged as `chat:shown`; the chat recorder
+// (sundial-tools/route-log.js) logs the owner's words and Gnomon's reply as
+// `chat:owner` / `chat:said`; this plugin injects admitted notices and logs
+// `notice:delivered` / `notice:dropped`; verdicts and owner assertions re-enter
+// through `appendSignal`. The companion never writes to the log directly.
 import { loadSundialConfig } from '@sundial/helpers/sundial-config.js'
 import { getSundialHome } from '@sundial/helpers/config.js'
 import { getApiTokenPath } from '@sundial/helpers/sundial-paths.js'
 import { verdictActions } from '@sundial/helpers/verdict-sign.js'
+import { VERDICTS } from '@sundial/helpers/vocab.js'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { readFileSync } from 'node:fs'
 import { ensureCompanion } from './companion.js'
 import { createDelivery } from './delivery.js'
 import { createNativeNotifier, watchNoticeVerdicts } from './native-notify.js'
 import { createPush, phoneVerdicts } from './push.js'
-import { installWorkLoop } from './work.js'
+import { briefSubagent, installWorkLoop } from './work.js'
 // lane E (#12)
 import { installNightShift } from './night-shift.js'
 
@@ -44,7 +46,6 @@ export const name = 'sundial-proactive'
 // tool-subagent reaches its optional `jobs` service.
 export const inject = ['agents', 'agentDefaultModel', 'tools', 'gnomonKernel']
 
-const VERDICTS = ['useful', 'wrong', 'not-now']
 
 export async function apply(ctx, config = {}) {
   const home = config.home ?? getSundialHome()
@@ -104,6 +105,12 @@ export async function apply(ctx, config = {}) {
     onDropCompanion: () => {
       companion = null
     },
+    // W2: another chat's agent, from the theme (resolved at call time: no load-order dependency on it).
+    getThread: (sessionId) => ctx.get?.('gnomonThreads')?.agentFor?.(sessionId) ?? null,
+    record: (type, payload) => void ctx.gnomonKernel.appendSignal(type, payload).catch(() => {}),
+    // W1: a notice that wakes a turn is briefed, the notice as its cause.
+    brief: (input) => ctx.gnomonKernel.brief(input),
+    announce: (notice) => ctx.emit('gnomon/noticed', notice),
     notifyNative: (payload) => notifier.post(payload),
     // lane D — #6: ntfy on every route; the route only drops the banner when away.
     // lane H (H4): titled by the notice's group; an agent wait offers only "Not now".
@@ -113,6 +120,8 @@ export async function apply(ctx, config = {}) {
   })
 
   ctx.on('gnomon/notice', (notice) => delivery.enqueue(notice))
+  // W5 (Phase 2B's risk): a helper the model starts is briefed once, as it starts.
+  ctx.on('subagent/start', (info) => briefSubagent(ctx, info))
 
   // The work loop's hands (see work.js): jobs the `workbench` rule opens ride
   // the same `gnomon/notice` event on their own channel and wake a separate

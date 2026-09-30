@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { ASK_TOOL_REGISTRY, TOOL_REGISTRY, gnomonToolDefinitions } from './index.js';
 import { ToolArgumentError, UnknownToolError, executeTool, type GnomonTool } from './registry.js';
+import type { KernelState } from '../types.js';
 
 describe('the tool registry', () => {
   it('has a unique name per tool', () => {
@@ -57,6 +58,8 @@ describe('the tool registry', () => {
       'gnomon_did_i',
       'gnomon_timeline',
       'gnomon_what_if',
+      // W5 step 9: Gnomon's own scorecard, every row with its n.
+      'gnomon_reliability',
       // Last on purpose: a model shown the drawing tool early reaches for it
       // before it has anything to draw. See the ordering note in `index.ts`.
       'gnomon_compose_figure',
@@ -137,5 +140,21 @@ describe('executeTool', () => {
       { name: 'boom', description: 'x'.repeat(30), schema: {}, readOnly: true, handler: async () => { throw new Error('the database is on fire'); } },
     ];
     await expect(executeTool(boom, 'boom', {})).rejects.toThrow('the database is on fire');
+  });
+
+  // W4 step 5: a tool reads its clock and its state from the call, never the wall or the snapshot itself.
+  it('hands the call environment to the handler', async () => {
+    const now = new Date('2026-03-04T09:00:00Z');
+    const seen: GnomonTool[] = [{ name: 'when', description: 'x'.repeat(30), schema: {}, readOnly: true, handler: async (_args, env) => ({ at: env.now.toISOString(), state: await env.state() }) }];
+    const state = { device: { id: 'd' } } as unknown as KernelState;
+    await expect(executeTool(seen, 'when', {}, { now, state: async () => state })).resolves.toEqual({ at: '2026-03-04T09:00:00.000Z', state });
+  });
+
+  it('gnomon_tickets answers for the call instant and the live state it is given', async () => {
+    const tickets = { 'BOX-484': { id: 'BOX-484', days: ['2026-03-03'], lastSeen: '2026-03-03T10:00:00Z', stage: 'seen', sources: {}, commits: 0, pr: null } };
+    const state = { tickets } as unknown as KernelState;
+    const at = (iso: string) => executeTool(TOOL_REGISTRY, 'gnomon_tickets', { days: 2 }, { now: new Date(iso), state: async () => state }) as Promise<{ count: number }>;
+    expect((await at('2026-03-04T09:00:00Z')).count).toBe(1);
+    expect((await at('2026-03-09T09:00:00Z')).count).toBe(0);
   });
 });
