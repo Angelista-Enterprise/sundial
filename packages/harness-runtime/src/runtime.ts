@@ -984,14 +984,8 @@ export class KernelRuntime {
     if (!this.state) return;
     if (!isLlmConfigured()) return;
 
-    // A delayed call waits BEFORE it takes a route slot: holding a slot through
-    // the 10 s analysis delay capped a boot replay at 4 calls per 11 s (measured
-    // 2026-09-30: a replayed week of 1,592 moments at ~20 calls a minute).
     if (!deferred && (effect.delayMs > 0 || this.slots.busy(this.routeOf(effect.purpose), this.state))) return this.defer(() => void this.dispatchScheduleLLM({ ...effect, delayMs: 0 }, true), effect.delayMs);
     const callId = await this.reserveLlmCall(effect.purpose, { caller: 'ScheduleLLM', inLane: !deferred });
-    // A refused call waits past an open breaker once; a second refusal drops it. Keyed on `retried`,
-    // not `deferred`: a delayed call is always deferred, and dropping those on one refusal lost 913
-    // of a replayed week's 1,594 moment lines to a ten-minute network blip (2026-09-30).
     if (!callId) return retried ? undefined : this.deferPastBreaker(this.routeOf(effect.purpose), () => this.dispatchScheduleLLM(effect, true, true));
     this.defer(() => void this.performScheduledLlmCall(effect, undefined, undefined, callId), effect.delayMs);
   }
@@ -1014,7 +1008,6 @@ export class KernelRuntime {
     // W5: while Jev's breaker is open, a judgement starts on the text-model fallback.
     const jevOpen = this.routeOf(effect.purpose) === 'jev' && heldUntil(this.state, 'jev', 'openUntil') !== null;
     const route = jevOpen ? (getLlmConfig(effect.purpose)?.route ?? DEFAULT_PROVIDER) : this.routeOf(effect.purpose);
-    // Wait out the delay before taking a slot, as `dispatchScheduleLLM` does.
     if (!deferred && (effect.delayMs > 0 || this.slots.busy(route, this.state))) return this.defer(() => void this.dispatchJudge({ ...effect, delayMs: 0 }, true), effect.delayMs);
     const callId = await this.reserveLlmCall(effect.purpose, { caller: 'Judge', inLane: !deferred, route });
     if (!callId) return retried ? undefined : this.deferPastBreaker(route, () => this.dispatchJudge(effect, true, true));
