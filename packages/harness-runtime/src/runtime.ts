@@ -980,13 +980,19 @@ export class KernelRuntime {
     await this.retryIngestEvent(toDaemonEvent('llm:result', { purpose: effect.purpose, momentId: effect.momentId, text: result.content, auditId: result.auditId, metadata: effect.metadata }));
   }
 
-  async dispatchScheduleLLM(effect: ScheduleLLMEffect, deferred = false): Promise<void> {
+  async dispatchScheduleLLM(effect: ScheduleLLMEffect, deferred = false, retried = false): Promise<void> {
     if (!this.state) return;
     if (!isLlmConfigured()) return;
 
-    if (!deferred && this.slots.busy(this.routeOf(effect.purpose), this.state)) return this.defer(() => void this.dispatchScheduleLLM(effect, true), 0);
+    // A delayed call waits BEFORE it takes a route slot: holding a slot through
+    // the 10 s analysis delay capped a boot replay at 4 calls per 11 s (measured
+    // 2026-09-30: a replayed week of 1,592 moments at ~20 calls a minute).
+    if (!deferred && (effect.delayMs > 0 || this.slots.busy(this.routeOf(effect.purpose), this.state))) return this.defer(() => void this.dispatchScheduleLLM({ ...effect, delayMs: 0 }, true), effect.delayMs);
     const callId = await this.reserveLlmCall(effect.purpose, { caller: 'ScheduleLLM', inLane: !deferred });
-    if (!callId) return deferred ? undefined : this.deferPastBreaker(this.routeOf(effect.purpose), () => this.dispatchScheduleLLM(effect, true));
+    // A refused call waits past an open breaker once; a second refusal drops it. Keyed on `retried`,
+    // not `deferred`: a delayed call is always deferred, and dropping those on one refusal lost 913
+    // of a replayed week's 1,594 moment lines to a ten-minute network blip (2026-09-30).
+    if (!callId) return retried ? undefined : this.deferPastBreaker(this.routeOf(effect.purpose), () => this.dispatchScheduleLLM(effect, true, true));
     this.defer(() => void this.performScheduledLlmCall(effect, undefined, undefined, callId), effect.delayMs);
   }
 
@@ -998,7 +1004,7 @@ export class KernelRuntime {
    * Backend `off` (`SUNDIAL_SYSTEMONE_BACKEND`) drops every judgement here,
    * before the budget is spent; rules then fall back to their pre-Jev paths.
    */
-  async dispatchJudge(effect: JudgeEffect, deferred = false): Promise<void> {
+  async dispatchJudge(effect: JudgeEffect, deferred = false, retried = false): Promise<void> {
     if (!this.state) return;
     if (systemOneBackend() === 'off') {
       await this.markDegraded('off', true);
@@ -1008,9 +1014,10 @@ export class KernelRuntime {
     // W5: while Jev's breaker is open, a judgement starts on the text-model fallback.
     const jevOpen = this.routeOf(effect.purpose) === 'jev' && heldUntil(this.state, 'jev', 'openUntil') !== null;
     const route = jevOpen ? (getLlmConfig(effect.purpose)?.route ?? DEFAULT_PROVIDER) : this.routeOf(effect.purpose);
-    if (!deferred && this.slots.busy(route, this.state)) return this.defer(() => void this.dispatchJudge(effect, true), 0);
+    // Wait out the delay before taking a slot, as `dispatchScheduleLLM` does.
+    if (!deferred && (effect.delayMs > 0 || this.slots.busy(route, this.state))) return this.defer(() => void this.dispatchJudge({ ...effect, delayMs: 0 }, true), effect.delayMs);
     const callId = await this.reserveLlmCall(effect.purpose, { caller: 'Judge', inLane: !deferred, route });
-    if (!callId) return deferred ? undefined : this.deferPastBreaker(route, () => this.dispatchJudge(effect, true));
+    if (!callId) return retried ? undefined : this.deferPastBreaker(route, () => this.dispatchJudge(effect, true, true));
     this.defer(() => void this.performJudgement(effect, jevOpen ? RETRY_MAX_ATTEMPTS : 0, null, callId), effect.delayMs);
   }
 

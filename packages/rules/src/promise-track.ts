@@ -18,6 +18,7 @@ import type { MeetingPromise } from './promise-extract.js';
 import { briefsOf, meetingPrepKey } from '@sundial/kernel/briefs.js';
 import { counterpartyIn, defaultDue, keyNouns, namesDeliverable, parseDue, parseStatedPromise, samePerson } from './promise-terms.js';
 import { openAsk } from '@sundial/helpers/loops.js';
+import { PAST, deliverableShape, promisePhrase } from '@sundial/kernel/promise-words.js';
 
 /** Open promises kept in state. Its own cap: twenty branch threads can no longer evict one (U1-F22). */
 export const MAX_PROMISES = 20;
@@ -30,9 +31,8 @@ const clipQuote = (text: string): string => (text.length > QUOTE_MAX ? `${text.s
 
 /** What a promise is called on a row: its deliverable, with the person when there is one. */
 export function promiseName(terms: Pick<PromiseTerms, 'direction' | 'counterparty' | 'deliverable'>): string {
-  const who = terms.counterparty;
-  if (terms.direction === 'awaiting') return who ? `${who} owes you ${terms.deliverable}` : `Owed to you: ${terms.deliverable}`;
-  return who ? `${terms.deliverable} for ${who}` : terms.deliverable;
+  if (terms.direction === 'awaiting' && !terms.counterparty) return `Owed to you: ${deliverableShape(terms.deliverable).thing}`;
+  return promisePhrase(terms.direction, terms.deliverable, terms.counterparty);
 }
 
 export interface OpenInput {
@@ -432,13 +432,11 @@ export function whoOf(state: KernelState, counterparty: string | null): string |
   return /^person-[0-9a-f]{10}$/.test(named) ? null : named;
 }
 
-const PAST: Record<string, string> = { send: 'sent', stuur: 'sent', sturen: 'sent', share: 'shared', deel: 'shared', delen: 'shared', review: 'reviewed', fix: 'fixed', finish: 'finished', deliver: 'delivered', write: 'written', make: 'made', maak: 'made', check: 'checked', update: 'updated', book: 'booked', plan: 'planned', schedule: 'scheduled', call: 'called', bel: 'called' };
-
 /** "The draft is not sent." — the owner's own sentence for a promise still open. */
 export function notDone(deliverable: string): string {
-  const words = deliverable.trim().split(/\s+/);
-  const verb = PAST[words[0]?.toLowerCase() ?? ''];
-  const thing = (verb ? words.slice(1) : words).join(' ') || deliverable;
+  const shape = deliverableShape(deliverable);
+  const verb = shape.verb ? PAST[shape.verb] : undefined;
+  const thing = shape.thing;
   const last = thing.split(/\s+/).pop() ?? '';
   const plural = /[^s]s$/i.test(last) && last.length > 3;
   return `${thing.charAt(0).toUpperCase()}${thing.slice(1)} ${plural ? 'are' : 'is'} not ${verb ?? 'sent'}`;
@@ -523,7 +521,7 @@ export function promiseLine(state: KernelState, thread: Commitment): string {
   if (!terms) return thread.name;
   const who = whoOf(state, terms.counterparty);
   const due = terms.dueKind === 'explicit' && terms.due ? `, by ${dayOf(terms.due, thread.openedAt, state.config.timezone)}` : '';
-  return terms.direction === 'awaiting' ? `${who ?? 'someone'} owes you ${terms.deliverable}${due}` : `${terms.deliverable}${who ? ` for ${who}` : ''}${due}`;
+  return `${promisePhrase(terms.direction, terms.deliverable, who)}${due}`;
 }
 
 /** A question put to the owner when a promise is past due and nothing was seen (U1-F32): ask, never guess "broken". */
@@ -531,7 +529,9 @@ function keptQuestion(state: KernelState, thread: Commitment, event: SanitizedEv
   const terms = thread.promise!;
   const who = whoOf(state, terms.counterparty);
   const askId = `owner-ask:promise-${deriveId(thread.openedAt, thread.id, 'kept').slice(0, 12)}`;
-  const question = terms.direction === 'awaiting' ? `Did ${who ?? 'they'} deliver ${terms.deliverable}?` : who ? `Did ${terms.deliverable} reach ${who}?` : `Did you get to ${terms.deliverable}?`;
+  const { verb, thing } = deliverableShape(terms.deliverable);
+  const question =
+    terms.direction === 'awaiting' ? `Did ${who ?? 'they'} ${verb ?? 'deliver'} ${thing}?` : verb ? `Did you ${promisePhrase('owner', terms.deliverable, who)}?` : who ? `Did ${thing} reach ${who}?` : `Did you get to ${thing}?`;
   return {
     type: 'EmitEvent',
     event: {
