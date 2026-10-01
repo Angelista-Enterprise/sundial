@@ -40,6 +40,7 @@ import {
 import { localDate } from '@sundial/helpers/local-day.js';
 import { openAsk, wakeupsOf } from '@sundial/helpers/loops.js';
 import type { KernelState } from './types.js';
+import { promisePhrase } from './promise-words.js';
 
 /** Owner facts shown at most — the newest per predicate, then the newest overall. */
 export const MAX_OWNER_FACTS = 15;
@@ -317,7 +318,7 @@ export async function gatherAmbientInput(options: GatherAmbientOptions): Promise
       const p = c.promise;
       const who = p?.counterparty ? (state?.memory.aliasNames?.[p.counterparty] ?? p.counterparty) : null;
       const named = who && !/^person-[0-9a-f]{10}$/.test(who) ? who : null;
-      const line = !p ? c.name : p.direction === 'awaiting' ? `${named ?? 'someone'} owes you ${p.deliverable}` : `${p.deliverable}${named ? ` for ${named}` : ''}`;
+      const line = p ? promisePhrase(p.direction, p.deliverable, named) : c.name;
       return { line, due: p?.due ?? null, confirmed: p?.confirmed === true };
     }),
     commitments: (state?.commitments.open ?? []).map((commitment) => ({

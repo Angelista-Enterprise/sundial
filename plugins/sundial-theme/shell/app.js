@@ -163,7 +163,7 @@ document.addEventListener('gnomon:card', async (event) => {
   // its facts now, set to the same view (an old Trust link opens the Engine room on Trust).
   const heir = heirOf(String(event.detail ?? ''))
   if (heir?.filters) await setFilters(heir.id, heir.filters)
-  const id = heir?.id ?? String(event.detail ?? '')
+  const id = sameCard(heir?.id ?? String(event.detail ?? ''))
   if (id === '') return fitAll()
   // A lens whose card was thrown away is put back from the shelf, through the
   // record, so it lands exactly as Gnomon's own placement did — and the board
@@ -191,6 +191,10 @@ mount({ board: $('board'), world: $('world'), tools: $('board-tools'), parked: $
 $('thread-picker').append($('rail'))
 // A board saved while Threads was a card still names one; it has nothing to draw.
 onChange(({ cards }) => cards.includes('threads') && dismissPane('threads'))
+// The model lowercases a name: a link to `entity:mira bakker` opens the `entity:Mira Bakker` card already up.
+let boardIds = []
+onChange(({ cards }) => (boardIds = cards))
+const sameCard = (id) => (has(id) ? id : boardIds.find((k) => k.toLowerCase() === id.toLowerCase()) ?? id)
 
 // The conversation is a card (it was the ghost, a panel over the board's
 // right edge, until 2026-09-23). `#ghost` keeps its id so every seam that
@@ -1544,7 +1548,11 @@ function apply(frame) {
 
     case 'tool': {
       dropLiveLine()
-      const row = frame.name === SHELL_TOOL ? shellBlock(frame) : frame.name === 'ask_user_question' ? questionNode(frame) : isPointing(frame) ? pointNode(frame) : toolChip(frame)
+      // A cold tool called through the menu (`gnomon_call {name, args}`) points like the tool
+      // itself: a walk's step called that way drew as a plain chip, with no Next, and the
+      // turn waited ten minutes on a press that could not happen.
+      const called = frame.name === 'gnomon_call' && typeof frame.args?.name === 'string' ? { ...frame, name: frame.args.name, args: typeof frame.args.args === 'string' ? parseResult(frame.args.args).value : frame.args.args } : frame
+      const row = frame.name === SHELL_TOOL ? shellBlock(frame) : frame.name === 'ask_user_question' ? questionNode(frame) : isPointing(called) ? pointNode(called) : toolChip(frame)
       // Remembered on the row rather than in a second map: the row is already
       // the thing keyed by call id, and a parallel map is one more thing that
       // can disagree with it.

@@ -64,6 +64,19 @@ describe('safety', () => {
     expect(seen).toEqual(['inst:goals', '']);
   });
 
+  // A person card is `entity:<Name>`, and a name has a space in it. The board
+  // matches the id's case itself, so the link passes it on as written.
+  it('takes a board link whose card id has a space', () => {
+    const seen = [];
+    document.addEventListener('gnomon:card', (e) => seen.push(e.detail));
+    const root = md('ask [Mira Bakker](board:entity:Mira Bakker) or [Mira](board:entity:mira bakker)');
+    const buttons = root.querySelectorAll('button.board-link');
+    expect(root.textContent).not.toContain('](board:');
+    expect([...buttons].map((b) => b.textContent)).toEqual(['Mira Bakker', 'Mira']);
+    for (const b of buttons) b.click();
+    expect(seen).toEqual(['entity:Mira Bakker', 'entity:mira bakker']);
+  });
+
   // What the model actually writes when told to link a card: the brackets with
   // no target, or the id in backticks. Both name a card that can be opened, so
   // both are places — under the card's NAME, never its id — and a word that

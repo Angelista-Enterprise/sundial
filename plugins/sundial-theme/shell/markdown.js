@@ -105,7 +105,8 @@ const INLINE = [
   { re: /\*(?!\s)([^*\n]+?)(?<!\s)\*/, build: (m) => el('em', {}, inline(m[1])) },
   { re: /(?<![A-Za-z0-9_])_(?!\s)([^_\n]+?)(?<!\s)_(?![A-Za-z0-9_])/, build: (m) => el('em', {}, inline(m[1])) },
   {
-    re: /\[([^\]\n]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/,
+    // A board target may hold a space (`entity:Mira Bakker`); a URL may not.
+    re: /\[([^\]\n]*)\]\((board:[^)\n]*|[^)\s]+)(?:\s+"[^"]*")?\)/,
     build: (m) => {
       const place = BOARD_LINK.exec(m[2])
       if (place !== null) {

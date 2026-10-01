@@ -36,6 +36,13 @@ describe('callSystemOneTextModel', () => {
     expect(messages[1].content).toContain('"minutes":31');
   });
 
+  it('reads a choice answered as a flat map, without the probabilities wrapper', async () => {
+    callChatCompletion.mockResolvedValueOnce({ content: '{"answers":{"is_work":{"noul":0.9},"subject":{"project":0.9,"app":0.1},"depth":{"0":0.3,"1":0.7}}}', statusCode: 200, promptTokens: 1, completionTokens: 1, totalTokens: 2, toolCalls: [], finishReason: 'stop' });
+    const result = await callSystemOneTextModel({}, questions);
+    expect(result.answers.subject).toMatchObject({ type: 'choice', choice: 'project', confidence: 0.9 });
+    expect(result.answers.depth).toMatchObject({ type: 'score', score: 1 });
+  });
+
   it('throws on prose instead of JSON so the executor can count it as a failure', async () => {
     callChatCompletion.mockResolvedValueOnce({ content: 'I think they were working.', statusCode: 200, promptTokens: 1, completionTokens: 1, totalTokens: 2, toolCalls: [], finishReason: 'stop' });
     await expect(callSystemOneTextModel({}, questions)).rejects.toThrow(/no JSON/);

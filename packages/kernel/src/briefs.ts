@@ -9,6 +9,7 @@
  */
 import { formatClock, localDate, localHour, localWeekday } from '@sundial/helpers/local-day.js';
 import type { BriefDay, BriefState, Commitment, KernelState, UpcomingEvent, WeekBrief } from './types.js';
+import { promisePhrase } from './promise-words.js';
 
 export const EMPTY_BRIEFS: BriefState = { days: {}, prState: {}, lastMet: {}, done: {} };
 export const briefsOf = (state: KernelState): BriefState => state.briefs ?? EMPTY_BRIEFS;
@@ -81,7 +82,7 @@ export function promiseText(state: KernelState, c: Commitment): string {
   const p = c.promise;
   if (!p) return c.name;
   const who = nameOf(state, p.counterparty);
-  return p.direction === 'awaiting' ? `${who ?? 'someone'} owes you ${p.deliverable}` : `${p.deliverable}${who ? ` for ${who}` : ''}`;
+  return promisePhrase(p.direction, p.deliverable, who);
 }
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;

@@ -202,6 +202,27 @@ describe('the promise clock speaks once per deadline, then asks (U1-F19 F21 F28 
     expect(moved.commitments.promiseAsk).toBeNull();
   });
 
+  it('asks and lists a promise by its shape: a thing reaches someone, a deed is done to or for them', async () => {
+    const { promiseLine } = await import('./promise-track.js');
+    const said = (who: string, what: string, to: string | null = 'Mira Bakker') => {
+      const state = promiseTrack(base(), heardDraft([{ who, kind: 'promise', to, what, due: 'by Thursday', quote: `${what} by Thursday` }])).state;
+      const [ask] = asksOf(promiseTrack(promiseTrack(state, tick('2026-10-01T15:10:00.000Z')).state, tick('2026-10-03T15:10:00.000Z')).effects);
+      return { question: ask!.question, line: promiseLine(state, state.commitments.promises[0]!) };
+    };
+    // "I will have the export fix to you by Thursday, Mira"
+    expect(said('owner', 'have the export fix to you')).toEqual({ question: 'Did the export fix reach Mira Bakker?', line: 'the export fix for Mira Bakker, by Thursday' });
+    expect(said('owner', 'the draft')).toEqual({ question: 'Did the draft reach Mira Bakker?', line: 'the draft for Mira Bakker, by Thursday' });
+    expect(said('owner', 'send the deck')).toEqual({ question: 'Did you send the deck to Mira Bakker?', line: 'send the deck to Mira Bakker, by Thursday' });
+    expect(said('owner', 'review the PR')).toEqual({ question: 'Did you review the PR for Mira Bakker?', line: 'review the PR for Mira Bakker, by Thursday' });
+    expect(said('owner', 'stuur de notulen').question).toBe('Did you send de notulen to Mira Bakker?');
+    expect(said('other', 'send the deck')).toEqual({ question: 'Did Mira Bakker send the deck?', line: 'Mira Bakker is to send the deck, by Thursday' });
+    expect(said('other', 'the numbers')).toEqual({ question: 'Did Mira Bakker deliver the numbers?', line: 'Mira Bakker owes you the numbers, by Thursday' });
+    const { promiseName } = await import('./promise-track.js');
+    expect(promiseName({ direction: 'owner', counterparty: 'Mira Bakker', deliverable: 'send the deck' }), 'the row name too').toBe('send the deck to Mira Bakker');
+    expect(promiseName({ direction: 'owner', counterparty: 'Mira Bakker', deliverable: 'have the export fix to you' })).toBe('the export fix for Mira Bakker');
+    expect(promiseName({ direction: 'awaiting', counterparty: null, deliverable: 'send the deck' })).toBe('Owed to you: the deck');
+  });
+
   it('closes, silently, a fortnight past its deadline; and the owner can close it with a reason or move it (U1-F29)', () => {
     const state = withDue('by Thursday');
     expect(promiseTrack(state, tick('2026-10-16T00:00:00.000Z')).state.commitments.recentClosed[0]).toMatchObject({ closedBecause: 'went-quiet' });
@@ -215,6 +236,7 @@ describe('the promise clock speaks once per deadline, then asks (U1-F19 F21 F28 
     expect(notDone('the draft')).toBe('The draft is not sent');
     expect(notDone('review the PR')).toBe('The PR is not reviewed');
     expect(notDone('the numbers')).toBe('The numbers are not sent');
+    expect(notDone('have the export fix to you')).toBe('The export fix is not sent');
   });
 });
 
