@@ -46,8 +46,11 @@ function normalise(type: SystemOneQuestion['type'], raw: unknown): SystemOneAnsw
     const p = typeof r.noul === 'number' ? r.noul : typeof (raw as { p?: unknown }).p === 'number' ? (raw as { p: number }).p : null;
     return p === null ? null : { type, noul: Math.min(1, Math.max(0, p)) };
   }
-  if (typeof r.probabilities !== 'object' || r.probabilities === null) return null;
-  const entries = Object.entries(r.probabilities as Record<string, unknown>).filter((e): e is [string, number] => typeof e[1] === 'number' && e[1] >= 0);
+  // qwen/qwen3.8-flash-next often leaves out the wrapper and answers a choice as
+  // {"project": 0.95, "app": 0.05}; measured 2026-09-30 on half of all moment-fanout
+  // calls, each one a partial answer set. A flat map of numbers is the same answer.
+  const given = typeof r.probabilities === 'object' && r.probabilities !== null ? r.probabilities : raw;
+  const entries = Object.entries(given as Record<string, unknown>).filter((e): e is [string, number] => typeof e[1] === 'number' && e[1] >= 0);
   const total = entries.reduce((sum, [, p]) => sum + p, 0);
   if (entries.length === 0 || total <= 0) return null;
   const probabilities = Object.fromEntries(entries.map(([k, p]) => [k, p / total]));

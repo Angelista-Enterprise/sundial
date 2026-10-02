@@ -5,12 +5,6 @@ import { DEFAULT_SUNDIAL_CONFIG } from '@sundial/helpers/sundial-config.js';
 import { askLoop, type AskLike } from '@sundial/helpers/loops.js';
 
 /**
- * UTC, deliberately. This seeds `budgets.day` for a state that has no config yet
- * (`createInitialState` runs before `startDaemon` overwrites `state.config` from
- * config.json), so there is no owner timezone to consult. The first `clock:tick`
- * corrects it to the configured local day.
- */
-/**
  * W4 step 16: a fresh record's board — the three stages you step through (a plain vertical stack;
  * only the order of `y` matters, the tiler re-stacks every row) and the two anchor cards, where
  * `boardTrack`'s tiler puts them. The page used to post these on first sight of an empty board.
@@ -24,10 +18,6 @@ export function defaultBoard(): Pick<KernelState['board'], 'cards' | 'sections'>
     sections: { today: stage('Today', 0, 1144, 818, 'today'), work: stage('Work', 830, 400, 200, null), kanban: stage('Kanban', 1042, 1664, 818, 'kanban') },
     cards: { today: card('today', 18, 1120), kanban: card('kanban', 1060, 1640) },
   };
-}
-
-function today(): string {
-  return new Date().toISOString().slice(0, 10);
 }
 
 /**
@@ -139,7 +129,10 @@ export function createInitialState(deviceId: string): KernelState {
         forecast: { callsToday: 0 },
         listen: { callsToday: 0 },
       },
-      day: today(),
+      // No day seen yet. The first `clock:tick` sets it without a boundary: seeding the wall
+      // clock's date here made that tick fire `day:boundary` for a day that never ran
+      // (a replay of an older log, or a fresh install between UTC and local midnight).
+      day: '',
     },
     baselines: { hourlyDurationsByKind: {}, lastAnomalyByKind: {} },
     retention: { lastPrunedAt: null },

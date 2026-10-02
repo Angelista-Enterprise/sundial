@@ -22,7 +22,6 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 import { ASSERTABLE_ENTITY_KINDS } from '@sundial/helpers/vocab.js';
 import { executeGnomonTool, toolEnv } from '@sundial/kernel/tools/index.js';
 import { ASK_TOOL_REGISTRY } from '@sundial/kernel/tools/index.js';
-import { toolDefinitions } from '@sundial/kernel/tools/registry.js';
 import { resolveDailyCaps } from '@sundial/kernel/budgets.js';
 import { loadSundialConfig } from '@sundial/helpers/sundial-config.js';
 import { DEFAULT_PROVIDER, LEGACY_PROVIDER } from '@sundial/helpers/llm-providers.js';
@@ -33,13 +32,13 @@ import { toDshTool } from './to-dsh-tool.js';
 import { createHandleCache } from './handles.js';
 import { createRerank } from './rerank.js';
 import { createRouteLog } from './route-log.js';
-import { deferredToolsContext, DISCOVER_TOOL_NAME, DISPATCH_TOOL_NAME, layerTools, splitByHeat } from './layers.js';
+import { DISCOVER_TOOL_NAME, DISPATCH_TOOL_NAME, hideColdTools, layerTools } from './layers.js';
 import { createAskBudgetGuard } from './budget.js';
 import { createLlmAuditRecorder } from './audit.js';
 import { createShellWitness } from './shell-witness.js';
 import { CARD_KINDS, normKind } from '@sundial/rules/board-track.js';
 import { createCardReaders } from './card-readers.js';
-import { BOARD_LOOK_ID, boardContextText, boardSummary } from './board-context.js';
+import { BOARD_COACHING, BOARD_LOOK_ID, boardContextText, boardSummary } from './board-context.js';
 import { LENS_AGGS, LENS_OPS, LENS_SHOWS, lensProblem, runLens } from '../sundial-theme/shell/lens-core.js';
 import { CARDS, checkFilters, describeCard } from '../sundial-theme/shell/cards.js';
 import { showSurfaceTool, SURFACE_TOOL_NAME } from './show-surface.js';
@@ -85,33 +84,21 @@ export function apply(ctx) {
     // PHASE5: onFigure — the UI projection hook (see to-dsh-tool.js).
   };
 
-  // Every tool is BUILT; only the hot ones are REGISTERED. The cold ones are
-  // reachable through `gnomon_call`, which runs this same definition — so the
-  // handles, the capture points, the zod validation and the timeout all apply
-  // whichever door a tool came through. See layers.js for why the registered
-  // set must never change shape mid-conversation.
+  // Every tool is REGISTERED; only the hot ones are SHOWN. `hideColdTools`
+  // drops the rest from the model-facing list at prompt assembly and puts a
+  // grouped menu in their place; `gnomon_call` runs one through dsh's own
+  // pipeline, so the gate and the audit see its real name. See layers.js.
   // J1.3: the retriever's hits go through Jev before the model sees them.
   // Wrapped HERE, not in the kernel tool, because the judge and the learned
   // thresholds live on the kernel service — the MCP server keeps the raw list.
   const rerank = createRerank({ judgeNow: (options) => ctx.gnomonKernel.judgeNow(options), getState: () => ctx.gnomonKernel.getState() });
   const withRerank = (tool) => (tool.name === 'gnomon_semantic_search' ? { ...tool, handler: async (args) => rerank(args.query, await tool.handler(args)) } : tool);
-  // gnomon_board is the one way the chat moves the owner's view.
-  const CHAT_TOOLS = ASK_TOOL_REGISTRY;
-  const definitionsByName = new Map(CHAT_TOOLS.map((tool) => [tool.name, toDshTool(withRerank(tool), deps)]));
-  const { hot, cold } = splitByHeat(CHAT_TOOLS);
+  for (const tool of ASK_TOOL_REGISTRY) ctx.tools.register(toDshTool(withRerank(tool), deps));
 
-  for (const tool of hot) {
-    ctx.tools.register(definitionsByName.get(tool.name));
-  }
-
-  const { discover, dispatch } = layerTools({ coldTools: cold, definitionsByName, defineTool, toolDefinitions });
+  const { discover, dispatch } = layerTools({ tools: ctx.tools, defineTool });
   ctx.tools.register(discover);
   ctx.tools.register(dispatch);
-
-  // The deferred tools' NAMES stay in every prompt, roughly 100 tokens for the
-  // list. That is the insurance against the one real risk of deferring: a model
-  // that stops using a tool because it no longer knows the tool is there.
-  ctx.systemPrompt.context(deferredToolsContext(cold));
+  hideColdTools(ctx);
 
   // A handle says "the full result is still above". Compaction rewrites the
   // history and can remove the message it is talking about, so every handle for
@@ -530,6 +517,8 @@ export function apply(ctx) {
         'section (id, label, x, y, w, h, anchor?) names a region of the board. place takes an optional near (a card id, or a section id — inside that region): the card lands beside that card, in the nearest free spot; with no x/y or near it lands at the nearest free spot to the origin. Nothing ever lands on another card; sizes have per-kind floors.',
         'Use it when the owner asks to be shown something beside something else, to tidy, to save or bring back a layout, or when a figure you drew deserves a place next to what it explains.',
         'Do not narrate every move; the owner watches the board.',
+        // The staging rules travel with the tool, so they reach the model only when it means to stage.
+        BOARD_COACHING,
       ].join(' '),
       parameters: {
         action: { type: 'string', required: true, enum: BOARD_ACTIONS, description: 'What to do.' },
@@ -757,6 +746,6 @@ export function apply(ctx) {
   );
 
   console.log(
-    `[sundial-tools] registered ${hot.length} hot read tools + ${cold.length} deferred behind ${DISCOVER_TOOL_NAME}/${DISPATCH_TOOL_NAME} + gnomon_assert + ${SURFACE_TOOL_NAME} + the board brief section; repeat-call handles armed; ask budget guard armed (cap ${dailyCap('ask')}/day), chat calls written to the ledger`,
+    `[sundial-tools] registered ${ASK_TOOL_REGISTRY.length} read tools (the cold ones behind the ${DISCOVER_TOOL_NAME}/${DISPATCH_TOOL_NAME} menu) + gnomon_assert + ${SURFACE_TOOL_NAME} + the board brief section; repeat-call handles armed; ask budget guard armed (cap ${dailyCap('ask')}/day), chat calls written to the ledger`,
   );
 }

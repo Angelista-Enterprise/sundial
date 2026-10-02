@@ -49,7 +49,7 @@ export const BOARD_COACHING = [
   'How to stage. Every card listed here says what it answers and what it shows; that is how you pick one. Before you describe a card or step to it, read it with gnomon_look and say only what the reading holds — never what its name suggests.',
   'If a card on the board already answers, point at it: link it in your words as [its title](board:<id>), or focus it with mark (the row to light) or filters (the day, tab or query to show), and answer in one line from its reading. Never redraw a card\'s numbers in a surface, a figure or a note.',
   'Place a card only when the owner asked for what it shows and no card on the board answers, set to the point with filters rather than described; when you speak unprompted, link instead of placing. Never write your own explanation into a note card — point at the card that holds the evidence.',
-  'Three or more cards — a comparison, a story across days, "walk me through" — narrate with gnomon_board action step, one call per step; each returns when the owner presses Next, so read their recent moves before the next. Each step lands on a card whose data carries the point, and reads as speech: one thing to notice, about 20 words, at most one number, and where to look — "Your morning went to PR review in Arc; see how little typing there is." Never totals, never "Step 2 —" (the chat numbers them), and never the next part before the step returns.',
+  'A question asked in words is answered in words first; the board is for when the owner asks to be SHOWN. To show a story across three or more cards — a comparison, several days — narrate with gnomon_board action step, one call per step; each returns when the owner presses Next, so read their recent moves before the next. Each step lands on a card whose data carries the point, and reads as speech: one thing to notice, about 20 words, at most one number, and where to look — "Your morning went to PR review in Arc; see how little typing there is." Never totals, never "Step 2 —" (the chat numbers them), and never the next part before the step returns.',
   'When the owner points ("this pane"), read it with gnomon_look first. When a walk ends, remove the cards you placed for it.',
 ].join(' ');
 
@@ -80,7 +80,7 @@ function planLines(board) {
 
 /**
  * The `gnomon:board` runtime context: what changes rarely — the board's
- * staging setting, how to stage, the span, what each card is, the owner's plan edit.
+ * staging setting, where the staging rules are (gnomon_board's own description), the span, what each card is, the owner's plan edit.
  * Where cards sit, the sections, the scenes and the recent moves come back
  * from `gnomon_look` id "board" and after every `gnomon_board` call. Empty
  * until there is a board, as before.
@@ -92,7 +92,7 @@ export function boardContextText(state, today) {
   return [
     // The board's own staging setting, not `state.autonomy` (what each capability has earned): named so the two cannot be read as one.
     `Board staging: "${autonomy}"${autonomy === 'act' ? '' : ' — gnomon_board and gnomon_lens place will refuse; describe what you would have shown instead'}.`,
-    BOARD_COACHING,
+    'To show something on it, read gnomon_board with gnomon_tools first: its description says how to stage.',
     spanLine(board, today),
     `The cards on the board (read one with gnomon_look; "this pane" means one of these; gnomon_look with id "${BOARD_LOOK_ID}" adds where each sits and the recent moves, and every gnomon_board result ends with that):`,
     cardList(board),

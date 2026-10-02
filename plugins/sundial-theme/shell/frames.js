@@ -151,6 +151,56 @@ function deliverableFrame(data) {
 }
 
 /**
+ * The quiet lines: what dsh did around a turn that is neither Gnomon's words
+ * nor a tool — a compaction, a provider retry, a slash command, a workflow, a
+ * goal. One `mark` frame is one line, `label · status`. Frames sharing a `key`
+ * are ONE line: a later frame updates the status (and label, when it has one),
+ * so "running…" becomes the outcome and five retries of one step read as the
+ * last one. That is what lets this stay a per-event function for the live
+ * stream, which sees one event at a time.
+ */
+const GOAL_WORDS = { create: 'set', complete: 'done', pause: 'paused', resume: 'resumed', clear: 'cleared' }
+export function markFrame(event) {
+  const data = event?.data ?? {}
+  const str = (v) => (typeof v === 'string' ? v : '')
+  switch (event?.type) {
+    case 'compaction/start':
+      // A /compact already draws its own line; a second one for the same work says nothing new.
+      return data.sourceCommandId === undefined ? { type: 'mark', key: `compact:${data.compactionId}`, label: 'Compacting the conversation', status: 'running…' } : null
+    case 'compaction/summary': {
+      const tokens = Number(data.shadowedTokenCount)
+      return { type: 'mark', key: `compact:${data.compactionId}`, label: 'Conversation compacted', status: Number.isFinite(tokens) && tokens > 0 ? `${(tokens / 1000).toFixed(1)}k tokens folded into a summary` : 'folded into a summary' }
+    }
+    case 'compaction/end': {
+      // dsh logs the error as a plain string.
+      if (data.error === undefined) return null
+      const why = str(data.error) || str(data.error?.message)
+      return { type: 'mark', key: `compact:${data.compactionId}`, label: 'Compaction', status: why === '' ? 'failed' : `failed: ${why}`, failed: true }
+    }
+    case 'llm/retry':
+      return { type: 'mark', key: `retry:${data.turn}:${data.step}`, label: 'Model call retried', status: `${data.retry} of ${data.maxRetries}${str(data.failure?.code) ? ` · ${data.failure.code.toLowerCase()}` : ''}` }
+    case 'command/run':
+      if (str(data.name) === '' || data.name === 'compact') return null
+      return { type: 'mark', key: `cmd:${data.commandId}`, label: `/${data.name}`, status: 'running…' }
+    case 'command/done':
+      return { type: 'mark', key: `cmd:${data.commandId}`, status: str(data.text) || str(data.kind), failed: data.kind !== 'success' }
+    case 'tool-workflow/run-start':
+      return { type: 'mark', key: `wf:${data.runId}`, label: `Workflow ${str(data.name)}`.trim(), status: 'running…' }
+    case 'tool-workflow/run-end':
+      return { type: 'mark', key: `wf:${data.runId}`, status: str(data.stopReason) || 'ended', failed: data.stopReason !== 'completed' }
+    case 'goal/change': {
+      const word = GOAL_WORDS[data.operation]
+      return word === undefined ? null : { type: 'mark', label: `Goal ${word}`, status: str(data.goal?.objective) }
+    }
+    default:
+      return null
+  }
+}
+
+/** A past approval, as the log recorded it: the live card is gone, the answer is not. */
+const APPROVAL_WORDS = { 'allowed-once': 'allowed once', rejected: 'refused', cancelled: 'withdrawn', unavailable: 'nobody could answer' }
+
+/**
  * Whether a `user/message` is something the OWNER typed.
  *
  * `source.kind` tells a human prompt apart from an injected context block — a
@@ -215,7 +265,8 @@ export function liveFrames(event) {
   if (type === 'todo/write') return [todoFrame(data)]
   if (type === 'deliverables/presented') return [deliverableFrame(data)]
   if (type === 'turn/end') return [doneFrame(data)]
-  return []
+  const mark = markFrame(event)
+  return mark === null ? [] : [mark]
 }
 
 /**
@@ -276,6 +327,8 @@ function followupFrame(data, event) {
 
 export function replayFrames(events) {
   const frames = []
+  // Replay only: live, the shell draws its own approval card and answers it.
+  const asked = new Map()
   for (const event of events ?? []) {
     const data = event?.data ?? {}
     switch (event?.type) {
@@ -315,8 +368,27 @@ export function replayFrames(events) {
       case 'deliverables/presented':
         frames.push(deliverableFrame(data))
         break
-      default:
+      case 'approval/asked':
+        asked.set(data.id, data)
         break
+      case 'approval/decided': {
+        const question = asked.get(data.id)
+        if (question === undefined) break
+        asked.delete(data.id)
+        frames.push({
+          type: 'mark',
+          label: `Asked to run ${question.toolName ?? 'a tool'}`,
+          status: APPROVAL_WORDS[data.outcome] ?? String(data.outcome),
+          failed: data.outcome !== 'allowed-once',
+          title: typeof question.reason === 'string' ? question.reason : null,
+        })
+        break
+      }
+      default: {
+        const mark = markFrame(event)
+        if (mark !== null) frames.push(mark)
+        break
+      }
     }
   }
   return frames

@@ -1,6 +1,6 @@
 ---
 name: research-brief
-description: How to research a topic the owner asked about, cite what you used, and leave a short brief on the shelf. Load for an owner-requested job (gnomon_start_job) whose result belongs on the shelf. A question the owner is waiting on in the conversation goes to a subagent helper instead.
+description: How to research a topic the owner asked about, cite what you used, and leave a short brief on the shelf. Load for an owner-requested job (gnomon_start_job) whose result belongs on the shelf.
 ---
 
 # Research brief

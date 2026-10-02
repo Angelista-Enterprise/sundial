@@ -14,7 +14,7 @@ import { renderResultText, MAX_RESULT_BYTES } from './render.js';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 /**
- * Extract the `persona: |-` literal block from cordis.patch.yml without a
+ * Extract the `personaPrefix: |-` literal block from cordis.patch.yml without a
  * YAML dependency: take every line after the marker that is blank or indented
  * by the block's 6 spaces, strip the indent, and chomp the trailing newline
  * (the `|-` strip indicator).
@@ -22,7 +22,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 function personaFromPatchYml() {
   const text = fs.readFileSync(path.join(HERE, 'cordis.patch.yml'), 'utf8');
   const lines = text.split('\n');
-  const start = lines.findIndex((line) => line.trimEnd() === '    persona: |-');
+  const start = lines.findIndex((line) => line.trimEnd() === '    personaPrefix: |-');
   expect(start).toBeGreaterThan(-1);
 
   const block = [];
@@ -42,9 +42,8 @@ describe('GNOMON_PERSONA', () => {
   it('is the ported ASK_SYSTEM_PROMPT plus the harness note', () => {
     expect(GNOMON_PERSONA).toBe(`${ASK_SYSTEM_PROMPT}\n\n${HARNESS_NOTE}`);
     expect(GNOMON_PERSONA).toContain('You are Gnomon');
-    // The dsh system-prompt placeholders survive verbatim.
+    // The dsh system-prompt placeholder survives verbatim.
     expect(GNOMON_PERSONA).toContain('{{model}}');
-    expect(GNOMON_PERSONA).toContain('{{cwd}}');
   });
 
   it('matches the persona restated in cordis.patch.yml exactly (no drift)', () => {

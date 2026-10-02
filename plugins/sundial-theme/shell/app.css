@@ -385,6 +385,14 @@ button, textarea { font: inherit; letter-spacing: inherit; color: inherit; }
 .tool[data-failed] .tool-gist { color: var(--ink-muted); }
 .tool-main:hover, .tool-main[aria-expanded='true'] { color: var(--ink); }
 .tool-main:focus-visible { outline: 1px solid var(--border-strong); outline-offset: 2px; }
+/* What dsh did around the turn (a compaction, a retry, a /command, a past
+   approval): one line, quieter than a tool row, the status after a dot. */
+.log-line { display: flex; align-items: baseline; gap: 4px; min-width: 0; padding: 3px 0; font-size: 12px; color: var(--ink-faint); }
+.log-line-label { flex: none; color: var(--ink-subtle); }
+.log-line-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-line-status:empty { display: none; }
+.log-line-status::before { content: '· '; }
+.log-line[data-failed] .log-line-status { color: var(--ink-muted); }
 /* Stop ends this one call. Quiet until needed: it appears only once a call is slow. */
 .tool-stop { flex: none; height: 22px; padding: 0 9px; border: 1px solid var(--border-strong); background: transparent; font: inherit; font-size: 12px; color: var(--ink); cursor: pointer; }
 .tool-stop:hover { background: var(--wash); }
@@ -456,6 +464,9 @@ button, textarea { font: inherit; letter-spacing: inherit; color: inherit; }
 .plan-step[data-status='in_progress']::before { background: var(--ochre); animation: breath 1.6s ease-in-out infinite; }
 .plan-step[data-status='completed'] { color: var(--ink-faint); text-decoration: line-through; text-decoration-color: var(--border-strong); }
 .plan-step[data-status='completed']::before { background: var(--ink-faint); }
+.turn[data-ended] .plan-step:not([data-status='completed']) { color: var(--ink-faint); }
+.turn[data-ended] .plan-step:not([data-status='completed'])::before { background: none; border: 1px solid var(--border-strong); box-sizing: border-box; animation: none; }
+.turn[data-ended] .plan-step:not([data-status='completed'])::after { content: ' · not marked done'; }
 
 /* ── Approvals ───────────────────────────────────────────────────────────
    Drawn in the canvas, in the turn it belongs to, rather than as a modal. The
@@ -597,9 +608,8 @@ button, textarea { font: inherit; letter-spacing: inherit; color: inherit; }
 .surface-fail { font-size: 13px; color: var(--ink-faint); padding: 6px 0; }
 /* A surface the tool refused. It stays on the record — the model tried, and
    hiding the attempt would make a turn that took two goes look like one — but
-   it recedes, because nothing was drawn and there is nothing here to read. */
-.surface[data-refused] { border-color: var(--divider); }
-.surface[data-refused] .surface-title, .surface[data-refused] .surface-because { color: var(--ink-faint); }
+   as one faint line, because nothing was drawn and there is nothing here to read. */
+.surface-refused { font-size: 12px; color: var(--ink-faint); padding: 2px 0; }
 .axis { display: flex; font-size: 12px; color: var(--ink-faint); padding-top: 6px; }
 .axis span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .legend { display: flex; flex-wrap: wrap; gap: 8px 26px; padding-top: 14px; font-size: 12px; color: var(--ink-muted); align-items: center; }

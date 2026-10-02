@@ -28,6 +28,8 @@ import { CARDS, MENU, cardOf, heirOf } from './cards.js'
 import { checkSignedIn, onReading, markStale, rereadAll } from './read.js'
 import { status } from './status.js'
 import { postVerdict, verdictActs } from './verdicts.js'
+import { drawLogLine } from './log-line.js'
+import { deliverableCard } from './deliverable.js'
 
 const $ = (id) => document.getElementById(id)
 const canvas = $('canvas')
@@ -161,7 +163,7 @@ document.addEventListener('gnomon:card', async (event) => {
   // its facts now, set to the same view (an old Trust link opens the Engine room on Trust).
   const heir = heirOf(String(event.detail ?? ''))
   if (heir?.filters) await setFilters(heir.id, heir.filters)
-  const id = heir?.id ?? String(event.detail ?? '')
+  const id = sameCard(heir?.id ?? String(event.detail ?? ''))
   if (id === '') return fitAll()
   // A lens whose card was thrown away is put back from the shelf, through the
   // record, so it lands exactly as Gnomon's own placement did — and the board
@@ -189,6 +191,10 @@ mount({ board: $('board'), world: $('world'), tools: $('board-tools'), parked: $
 $('thread-picker').append($('rail'))
 // A board saved while Threads was a card still names one; it has nothing to draw.
 onChange(({ cards }) => cards.includes('threads') && dismissPane('threads'))
+// The model lowercases a name: a link to `entity:mira bakker` opens the `entity:Mira Bakker` card already up.
+let boardIds = []
+onChange(({ cards }) => (boardIds = cards))
+const sameCard = (id) => (has(id) ? id : boardIds.find((k) => k.toLowerCase() === id.toLowerCase()) ?? id)
 
 // The conversation is a card (it was the ghost, a panel over the board's
 // right edge, until 2026-09-23). `#ghost` keeps its id so every seam that
@@ -285,6 +291,8 @@ const state = {
   surfaces: new Map(),
   /** approval id → its card, so an outcome can settle the card that asked. */
   approvals: new Map(),
+  /** mark key → its line, so a later frame of the same compaction, retry or command updates it. */
+  marks: new Map(),
   running: false,
   /** Text is arriving: the gnomon speaks rather than thinks. */
   speaking: false,
@@ -353,6 +361,7 @@ function clearCanvas() {
   state.tools.clear()
   state.surfaces.clear()
   state.approvals.clear()
+  state.marks.clear()
 }
 
 /**
@@ -422,7 +431,7 @@ async function showToday() {
  * there and usually says "0" is furniture.
  */
 function updateLens() {
-  const count = stack().querySelectorAll('.surface:not([data-refused])').length
+  const count = stack().querySelectorAll('.surface').length
   let lens = canvas.querySelector('.lens')
   if (count === 0) {
     lens?.remove()
@@ -1059,41 +1068,6 @@ function drawApproval(frame) {
   follow(true)
 }
 
-// ── Deliverables ──────────────────────────────────────────────────────────
-// A file Gnomon is handing over, drawn where it was handed over. This is the
-// whole point of the `present` tool: a path in a sentence is not a delivery —
-// the owner has to read it, remember it, and go somewhere else to open it.
-//
-// dsh copies nothing, so this card is a POINTER, not an attachment. The label
-// says so, because "download" would promise a snapshot that does not exist:
-// clicking tomorrow gives tomorrow's contents, and a file since deleted gives
-// an honest 404 from the route rather than a stale copy.
-function drawDeliverable(frame) {
-  if (frame.files.length === 0) return
-  const card = el('div', { class: 'deliverable' }, [
-    el('div', { class: 'deliverable-head', text: frame.files.length === 1 ? 'Gnomon made you a file' : `Gnomon made you ${frame.files.length} files` }),
-    ...frame.files.map((file) =>
-      el('div', { class: 'deliverable-file' }, [
-        el('a', {
-          class: 'deliverable-name',
-          // The session is part of the request because the session log IS the
-          // server's allowlist — the route will not serve a path this session
-          // never presented.
-          href: `/gnomon/api/deliverable?session=${encodeURIComponent(state.sessionId ?? '')}&path=${encodeURIComponent(file.path)}`,
-          download: file.name,
-          // The full path, because on this machine that is how the owner finds
-          // it in a terminal or a Finder window.
-          title: file.path,
-          text: file.name,
-        }),
-        file.description ? el('p', { class: 'deliverable-why', text: file.description }) : null,
-      ]),
-    ),
-  ])
-  turn().append(card)
-  follow(true)
-}
-
 const OUTCOME_WORDS = {
   'allowed-once': 'Allowed, once.',
   rejected: 'Refused.',
@@ -1152,8 +1126,10 @@ const idsOf = (value) => {
 /** The cards a line points at, each a door that brings it back into view. */
 function cardLinks(ids) {
   if (ids.length === 0) return null
-  return el('span', { class: 'point-cards' }, ids.map((id) => el('button', { type: 'button', class: 'point-card', 'data-id': id, text: cardName(id), onclick: (event) => (event.stopPropagation(), pointAt([id])) })))
+  return el('span', { class: 'point-cards' }, ids.map((id) => el('button', { type: 'button', class: 'point-card', 'data-id': id, text: cardName(id), hidden: !isCard(id), onclick: (event) => (event.stopPropagation(), pointAt([id])) })))
 }
+/** Whether an id names a card at all. A model sometimes points at a moment or a row id instead; a door to nothing printed that raw id. */
+const isCard = (id) => has(id) || CARD_NAME.has(id)
 function pointLine({ kind, label = null, text, ids }) {
   const node = el('div', { class: 'point', 'data-kind': kind, tabindex: ids.length ? '0' : null }, [
     label ? el('span', { class: 'point-n', text: label }) : null,
@@ -1171,7 +1147,10 @@ const cardName = (id) => {
   return title !== id ? title : CARD_NAME.get(id) ?? (id.startsWith('lens:') ? 'the lens' : id.replace(/^[a-z]+:/, ''))
 }
 onChange(() => {
-  for (const link of document.querySelectorAll('.point-card[data-id]')) link.textContent = cardName(link.dataset.id)
+  for (const link of document.querySelectorAll('.point-card[data-id]')) {
+    link.textContent = cardName(link.dataset.id)
+    link.hidden = !isCard(link.dataset.id)
+  }
 })
 function pointNode(frame) {
   const a = frame.args ?? {}
@@ -1569,7 +1548,11 @@ function apply(frame) {
 
     case 'tool': {
       dropLiveLine()
-      const row = frame.name === SHELL_TOOL ? shellBlock(frame) : frame.name === 'ask_user_question' ? questionNode(frame) : isPointing(frame) ? pointNode(frame) : toolChip(frame)
+      // A cold tool called through the menu (`gnomon_call {name, args}`) points like the tool
+      // itself: a walk's step called that way drew as a plain chip, with no Next, and the
+      // turn waited ten minutes on a press that could not happen.
+      const called = frame.name === 'gnomon_call' && typeof frame.args?.name === 'string' ? { ...frame, name: frame.args.name, args: typeof frame.args.args === 'string' ? parseResult(frame.args.args).value : frame.args.args } : frame
+      const row = frame.name === SHELL_TOOL ? shellBlock(frame) : frame.name === 'ask_user_question' ? questionNode(frame) : isPointing(called) ? pointNode(called) : toolChip(frame)
       // Remembered on the row rather than in a second map: the row is already
       // the thing keyed by call id, and a parallel map is one more thing that
       // can disagree with it.
@@ -1590,11 +1573,16 @@ function apply(frame) {
       state.prose = null
       break
 
-    case 'deliverable':
-      drawDeliverable(frame)
+    case 'deliverable': {
+      const card = deliverableCard(frame, state.sessionId)
+      if (card !== null) {
+        turn().append(card)
+        follow(true)
+      }
       // A handover closes the paragraph that led to it, the way a tool call does.
       state.prose = null
       break
+    }
 
     case 'tool-done': {
       // A surface is drawn from its CALL, before the tool has said whether it
@@ -1610,10 +1598,9 @@ function apply(frame) {
         if (frame.failed || /^Not drawn:/.test(frame.text ?? '')) {
           // A refusal is not a figure: whatever took the stage comes back down.
           if (!state.replaying) dismissPane(`surface:${frame.callId}`)
-          surface.setAttribute('data-refused', '')
-          surface
-            .querySelector('.surface-body')
-            .replaceChildren(el('div', { class: 'surface-fail', text: (frame.text ?? '').replace(/^Not drawn:\s*/, '') || 'This surface was refused.' }))
+          // One faint line, not a card: an untitled frame around an error read as content.
+          const why = (frame.text ?? '').replace(/^Not drawn:\s*/, '').replace(/^Error:\s*/, '') || 'refused'
+          surface.replaceWith(el('div', { class: 'surface-refused', text: `A surface was not drawn: ${why}` }))
           updateLens()
         }
         break
@@ -1669,6 +1656,10 @@ function apply(frame) {
       drawApproval(frame)
       break
 
+    case 'mark':
+      drawLogLine(frame, state.marks, turn)
+      break
+
     case 'question-open':
       ;[...canvas.querySelectorAll('.question[data-answered]')].filter((q) => q.querySelector('[data-chosen], .question-said') === null).pop()?._unlock?.()
       break
@@ -1685,6 +1676,8 @@ function apply(frame) {
     case 'done':
       dropLiveLine()
       state.speaking = false
+      // The plan stops being live: a step the model never ticked must not keep breathing.
+      state.turn?.setAttribute('data-ended', '')
       if (wk.block) wk.block.open = false
       wk.node?.querySelector('.work-ask')?.remove()
       // A turn that ended for any reason other than finishing says so. Before
