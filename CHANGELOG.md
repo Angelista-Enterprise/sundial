@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.1 — 2026-10-02
+
+### Fixed
+- Background model calls keep up: a delayed call waits before it takes a route slot, so a replay or a busy day is no longer capped at about 20 calls a minute.
+- A short network outage no longer drops queued model calls: a refused call waits once past the breaker, then runs.
+- Moment classification reads a choice answered without its `probabilities` wrapper, which some models send; about half of those answers were dropped.
+- A walk-through on the board called through the tool menu shows its Back and Next buttons instead of hanging for ten minutes.
+- A board link may name a card with a space in its id, in any case.
+- A promise heard as a deed ("send the deck") reads as one in the question, the line and the brief.
+
 ## 0.1.0 — unreleased
 
 The first public version. What changed from the private build:
