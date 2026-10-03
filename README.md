@@ -10,19 +10,7 @@ and, if you opt in, mail subjects) and folds it into one SQLite file on your own
 speaks first when it notices something. An MCP server lets Claude Code or any other
 agent ask the same questions.
 
-
-
-
-
 https://github.com/user-attachments/assets/1c495afa-6e27-4635-9cbe-1b2b27628c97
-
-
-
-
-https://github.com/user-attachments/assets/a155502b-ebc6-4680-bb01-2e1d87177bec
-
-
-
 
 *One Thursday morning on a made-up week: the morning card, what is still owed before
 a client demo, a research brief with its sources, a rule tested on the record before
@@ -57,6 +45,22 @@ SUNDIAL_LLM_MODEL=qwen3:8b
 Any OpenAI-compatible endpoint works (set `SUNDIAL_LLM_API_KEY` for a hosted one).
 Then `node bin/sundial restart`. More providers can be added on `/setup`; you
 pick one per conversation in the chat's model picker.
+
+## Ask it from Claude Code
+
+https://github.com/user-attachments/assets/a155502b-ebc6-4680-bb01-2e1d87177bec
+
+*The same made-up week, asked from outside: Claude Code, with only Sundial's
+read-only MCP tools, tells the story of the week and what is still owed. Then the
+release call it mentioned, opened down to the raw capture.*
+
+`sundial install` asks to add Sundial to Claude Code at the end. To do it by hand:
+
+```bash
+claude mcp add sundial --scope user -e SUNDIAL_HOME="$HOME/.sundial" -- node "$PWD/packages/mcp/bin/sundial-mcp.js"
+```
+
+Any other MCP client works the same way: the server is `sundial mcp`, over stdio.
 
 ## The privacy promise
 
@@ -99,12 +103,6 @@ To type just `sundial`, add `alias sundial="node /path/to/sundial/bin/sundial"` 
 
 `SUNDIAL_HOME` moves the data folder; `SUNDIAL_WEB_PORT` (3080) and
 `SUNDIAL_PHONE_PORT` (8767) move the ports.
-
-Use Sundial from Claude Code. `sundial install` asks to add it for you at the end; to do it by hand:
-
-```bash
-claude mcp add sundial --scope user -e SUNDIAL_HOME="$HOME/.sundial" -- node "$PWD/packages/mcp/bin/sundial-mcp.js"
-```
 
 ## How it works
 
