@@ -1,10 +1,22 @@
 # Sundial
 
-**Sundial is a local-first context engine for your Mac: it watches what you work on — apps, windows, git, calendar, shell — and folds it into a private, searchable record on your own disk.**
+**A local memory of your work, for you and your coding agent.**
 
-**Gnomon is the assistant that lives inside it:** it reads that record, answers from what really happened, and speaks first when it notices something.
+Sundial is a macOS daemon. It watches what you work on (the focused window, git,
+your shell, the calendar, your coding agent's sessions, notes in an Obsidian vault
+and, if you opt in, mail subjects) and folds it into one SQLite file on your own disk.
 
-![The setup page: each macOS permission in plain words, with its live state](.github/setup.png)
+**Gnomon is the assistant inside it.** It answers from what really happened, and
+speaks first when it notices something. An MCP server lets Claude Code or any other
+agent ask the same questions.
+
+<!-- VIDEO: morning-readme.mp4 -->
+
+*One Thursday morning on a made-up week: the morning card, what is still owed before
+a client demo, a research brief with its sources, a rule tested on the record before
+you keep it, a typed correction that becomes your fact, and the Ledger of every model
+call. Nothing in it is real data. Each step is explained in [Use cases](docs/use-cases.md),
+with where Sundial is going next.*
 
 ## Quickstart
 
@@ -19,6 +31,8 @@ Sundial at login. `open` signs your browser in and shows the setup page, which
 walks you through the macOS permissions. The first observations arrive within a
 minute. Measured on a clean clone: about 30 seconds with warm caches; plan on a
 few minutes for the first dependency download.
+
+![The setup page: each macOS permission in plain words, with its live state](.github/setup.png)
 
 Gnomon needs a model to talk. Without one, Sundial still records and the Today
 screen still shows your day. Choose one on the `/setup` page (Ollama on this Mac,
