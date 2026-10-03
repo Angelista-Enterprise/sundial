@@ -23,7 +23,8 @@ https://github.com/user-attachments/assets/1c495afa-6e27-4635-9cbe-1b2b27628c97
 *One Thursday morning on a made-up week: the morning card, what is still owed before
 a client demo, a research brief with its sources, a rule tested on the record before
 you keep it, a typed correction that becomes your fact, and the Ledger of every model
-call. Nothing in it is real data.*
+call. Nothing in it is real data. Each step is explained in [Use cases](docs/use-cases.md),
+with where Sundial is going next.*
 
 ## Quickstart
 

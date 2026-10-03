@@ -6,6 +6,7 @@ record and talks to you.
 
 ## Use it
 
+- [Use cases](use-cases.md): what the demo videos show, step by step, and where Sundial is going.
 - [Getting started](getting-started.md): install, sign in, the setup page, your history.
 - [Permissions](permissions.md): what each macOS permission lets Sundial see, and how to grant or reset it.
 - [Models](models.md): give Gnomon a model, local or hosted, and what leaves your Mac.
