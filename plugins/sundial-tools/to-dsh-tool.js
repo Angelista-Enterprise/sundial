@@ -29,7 +29,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 import { executeTool, toolDefinitions } from '@sundial/kernel/tools/registry.js';
 import { toolEnv } from '@sundial/kernel/tool-env.js';
 import { toParameterSchemaSpec } from './schema.js';
-import { renderResultText } from './render.js';
+import { renderResultText, withLocalTimes } from './render.js';
 
 /** The one tool whose result is also rendered, not just read (ask.ts's FIGURE_TOOL_NAME). */
 export const FIGURE_TOOL_NAME = 'gnomon_compose_figure';
@@ -94,7 +94,8 @@ export function toDshTool(gnomonTool, deps = {}) {
     timeoutMs: TOOL_TIMEOUT_MS,
     output: {
       schema: { type: 'json' },
-      render: (_args, value) => [{ type: 'text', text: renderResultText(value) }],
+      // On the owner's clock: the canonical value keeps UTC, the model reads local time with its offset.
+      render: (_args, value) => [{ type: 'text', text: renderResultText(withLocalTimes(value, deps.timeZone?.() ?? Intl.DateTimeFormat().resolvedOptions().timeZone)) }],
     },
     // `readOnly` was declared on every gnomon tool exactly so a loop can tell
     // a query from an action mechanically; dsh's parallel-dispatch gate is

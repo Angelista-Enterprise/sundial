@@ -9,6 +9,7 @@ import { getDb, resetDb, insertMoment, insertSnapshot, insertEmbedding } from '@
 import { computeLocalEmbedding, LOCAL_EMBEDDING_MODEL } from '@sundial/memory/index.js';
 import { ASK_TOOL_REGISTRY } from '@sundial/kernel/tools/index.js';
 import { toDshTool } from './to-dsh-tool.js';
+import { withLocalTimes } from './render.js';
 import { createHandleCache } from './handles.js';
 
 // Pin the embedding backend to the deterministic hash fallback, same as
@@ -139,14 +140,15 @@ describe('execute path over the in-memory record', () => {
       expect(value.date).toBe(DAY);
     });
 
-    it('renders as the same JSON text the old tool loop showed the model', async () => {
+    it('renders as the JSON text the old tool loop showed the model, its times on the owner\'s clock', async () => {
       await momentAt('m1', '10:00', '10:30', 'Code');
       const definition = dshTool('gnomon_today_summary');
       const value = await definition.execute({ date: DAY }, undefined);
       const blocks = definition.output.render({ date: DAY }, value);
       expect(blocks).toHaveLength(1);
       expect(blocks[0].type).toBe('text');
-      expect(blocks[0].text).toBe(JSON.stringify(value));
+      expect(blocks[0].text).toBe(JSON.stringify(withLocalTimes(value, Intl.DateTimeFormat().resolvedOptions().timeZone)));
+      expect(blocks[0].text).not.toMatch(/T\d\d:\d\d:\d\d(\.\d+)?Z"/);
     });
   });
 

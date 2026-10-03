@@ -80,7 +80,14 @@ function markerPath(home) {
 }
 
 /** Find-or-create the one worker agent — the same three tiers the companion and the Ask agent use. */
-export async function ensureWorkAgent(ctx, { home, cwd }) {
+export async function ensureWorkAgent(ctx, opts) {
+  // Two jobs starting in the same tick both found no agent and both created one; the second failed
+  // with "session gnomon-work already exists". One creation at a time, shared by whoever waits.
+  if (creating === null) creating = ensureWorkAgentOnce(ctx, opts).finally(() => (creating = null))
+  return creating
+}
+let creating = null
+async function ensureWorkAgentOnce(ctx, { home, cwd }) {
   const sessionId = SessionId(WORK_SESSION_ID)
   const live = ctx.agents.get(sessionId)
   if (live !== undefined) return { agent: live, resumed: true }
@@ -327,6 +334,10 @@ export function installWorkLoop(ctx, { home, cwd, isDisposed = () => false, onSh
   async function run(job, reserve) {
     if (isDisposed()) throw new Error('the work loop is shutting down')
     if (!job || typeof job !== 'object' || typeof job.id !== 'string' || typeof job.kind !== 'string') throw new Error('a work job with no id or kind')
+    // A brief for a meeting that has already started is not worth a model call: the fold asked for it
+    // in event time (a replay, a back-fill), and the worker runs on the wall clock.
+    const meetingStart = Date.parse(job.detail?.start ?? '')
+    if (job.kind === 'meeting-brief' && Number.isFinite(meetingStart) && Date.now() > meetingStart) throw new Error('not run: the meeting had already started')
     if (claudePath) return runOnClaude(job, reserve)
     if (worker === null || worker.status === 'disposed') {
       const { agent, resumed } = await ensureWorkAgent(ctx, { home, cwd })

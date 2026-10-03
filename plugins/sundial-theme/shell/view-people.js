@@ -205,7 +205,7 @@ export function peopleSection(data) {
   // ONE bucket, not eight rows at the top of the list. They are the same
   // question asked eight times, and the meeting they were in is the only clue
   // the record can offer — which turns out to be a good one: "Pitch prep",
-  // "Lichtinstallatie Event Space bedenken met Djuna". A hash with a meeting
+  // "Lantern install for the atrium — plan it with Noor". A hash with a meeting
   // title beside it is a question the owner can actually answer.
   const ghosts = () => {
     const list = el('div', { class: 'person-ghosts' })

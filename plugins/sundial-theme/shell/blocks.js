@@ -84,6 +84,9 @@ const PREDICATE_VERBS = {
   prefers: 'prefers',
   targetDate: 'is aimed at',
   why: 'exists because',
+  // Noun predicates a model picks when the owner states a fact ("Daan is the SRE lead"): "Daan role SRE lead" is
+  // the storage wearing a sentence; "Daan's role is SRE lead" is what was said.
+  ...Object.fromEntries(['role', 'title', 'team', 'company', 'employer', 'email', 'phone', 'location', 'timezone', 'manager', 'birthday', 'pronouns'].map((noun) => [noun, (subject, object) => `${subject}'s ${noun} is ${object}`])),
 }
 
 /** `usesTool` → `uses tool`. */
@@ -135,7 +138,8 @@ export function factEvidence(fact) {
   else if (provenance === 'conversation') out.push('from a conversation')
   else if (seen >= 1) out.push(`seen ${seen} time${seen === 1 ? '' : 's'}`)
   else out.push('inferred')
-  if (provenance !== 'inference' && seen >= 1) out.push(`seen ${seen} time${seen === 1 ? '' : 's'}`)
+  // An assertion's alpha is the weight the owner's word carries, not a count of sightings: "seen 39 times" for a fact typed once reads as a lie.
+  if (provenance !== 'inference' && provenance !== 'assertion' && seen >= 1) out.push(`seen ${seen} time${seen === 1 ? '' : 's'}`)
   if (typeof fact?.confidence === 'number') out.push(`${Math.round(fact.confidence)}% sure`)
   // How the belief has done against what the owner then did — the server's
   // line ("right 12 of 13", "right 3 of 4, gathering" under twenty outcomes),

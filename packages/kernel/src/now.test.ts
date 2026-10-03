@@ -89,6 +89,21 @@ describe('nowSnapshot', () => {
     expect(nowSnapshot(state({ ...utc, owner: owner(ago(1)) }), NOW).self!.pFlow).toBeCloseTo(0.75, 6)
   })
 
+  it('ends a focus span the keyboard has been quiet on, with or without an idle event', () => {
+    const quiet = (min: number) => state({ lifeEvent: { flow: { processName: 'Code', startedAt: ago(16 * 60) }, idle: { isIdle: false, lastActiveAt: ago(min) }, recentSwitches: [] } });
+    expect(nowSnapshot(quiet(2), NOW).flowMin).toBe(16 * 60);
+    expect(nowSnapshot(quiet(11), NOW).flowMin).toBeNull();
+    // An older snapshot has no lastActiveAt: its span stands, as before.
+    expect(nowSnapshot(state(), NOW).flowMin).toBe(18);
+  });
+
+  it('names no app once the moment closed into a gap (idle, asleep), whatever window was last active', () => {
+    const snap = nowSnapshot({ ...state(), moment: null }, NOW);
+    expect(snap.app).toBeNull();
+    expect(snap.momentMin).toBeNull();
+    expect(snap.idle).toBe(true);
+  });
+
   it('is honest about nothing being observed', () => {
     const snap = nowSnapshot({}, NOW);
     expect(snap.app).toBeNull();

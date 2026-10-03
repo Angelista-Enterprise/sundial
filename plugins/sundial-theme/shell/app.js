@@ -1169,11 +1169,16 @@ function pointNode(frame) {
         event.stopPropagation()
         next.disabled = true
         next.textContent = 'Gnomon continues…'
+        state.walkOpen = false
+        updateBarMode()
         walkContinue()
       },
     })
     if (prev) acts.append(el('button', { type: 'button', class: 'act', text: 'Back', onclick: (event) => (event.stopPropagation(), prev.click()) }))
     acts.append(next)
+    // A step waiting on Next is the owner's pause (see walkSay): the composer must not call it slow.
+    state.walkOpen = true
+    updateBarMode()
     // Every step waits for Next: the owner reads at their own pace. Only their
     // own setting (Settings → auto-advance) moves a walk on by itself.
     const dwell = SETTINGS.autoAdvanceMs ?? 0
@@ -1221,8 +1226,13 @@ function walkSay(frame) {
       } else if (state.running) {
         next.disabled = true
         next.textContent = 'Gnomon continues…'
+        state.walkOpen = false
+        updateBarMode()
         walkContinue()
-      } else acts.remove()
+      } else {
+        state.walkOpen = false
+        acts.remove()
+      }
     },
   })
   const acts = el('div', { class: 'point-acts' }, [back, next])
@@ -1235,6 +1245,13 @@ function walkSay(frame) {
     if (!next.disabled) next.textContent = i === steps.length - 1 ? (state.running ? 'Next' : 'Done') : 'Next'
   }
   const node = el('div', { class: 'walk-say', 'data-kind': 'walk' }, [...items, state.replaying ? null : acts])
+  // A live walk waits on the owner's Next: the composer must not call that pause slow. Kept in `state`, not read
+  // from the DOM — the transcript is a fold over frames and this node is replaced between them, and the chat card
+  // may be re-seated while the walk is up, so a selector would see no button at exactly the wrong moment.
+  if (!state.replaying) {
+    state.walkOpen = true
+    updateBarMode()
+  }
   draw()
   turn().append(node)
   state.prose = null
@@ -1263,9 +1280,16 @@ function questionNode(frame) {
   const own = new Map()
   const node = el('div', { class: 'question', 'data-kind': 'question' })
   const send = el('button', { type: 'button', class: 'act point-next', text: 'Send', hidden: true })
+  // A question waiting on the owner is their pause, like a walk's Next: the composer must not call it slow.
+  if (!state.replaying) {
+    state.walkOpen = true
+    updateBarMode()
+  }
   const answer = async () => {
     const answers = questions.map((q) => ({ id: String(q.id), selected: [...picked.get(String(q.id))], custom: own.get(String(q.id))?.value ?? '' }))
     lock()
+    state.walkOpen = false
+    updateBarMode()
     try {
       const response = await fetch('/gnomon/api/question', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId, answers }) })
       if (!response.ok) node.append(el('div', { class: 'fail', text: 'That question is no longer waiting.' }))
@@ -2251,8 +2275,15 @@ async function newSession() {
 
 // ── Saying something ──────────────────────────────────────────────────────
 
+let slowTurn = 0
 function setRunning(running) {
   state.running = running
+  // "Taking too long?" is a question for a turn that IS taking long, not the first word on every one: it
+  // reads as Gnomon doubting itself a second in. Twenty seconds of thinking first.
+  clearTimeout(slowTurn)
+  state.slow = false
+  if (!running) state.walkOpen = false
+  if (running) slowTurn = setTimeout(() => { state.slow = true; updateBarMode() }, 20_000)
   markTalking()
   // The board reads this: a walk's last Next means "continue" while a turn runs.
   document.body.dataset.running = String(running)
@@ -3424,7 +3455,7 @@ function openLive() {
       case 'ask':
         // The open question rides the live channel now; the poll is a fallback.
         if ((frame.open === null) !== (openAsk === null) || (frame.open !== null && frame.open.askId !== openAsk?.askId)) {
-          openAsk = frame.open
+          openAsk = shown(frame.open)
           drawOpenAsk()
           drawWorkAsk(frame.open)
         }
@@ -3469,11 +3500,15 @@ function openLive() {
 
 const ASK_POLL_MS = 20_000
 let openAsk = null
+// "Later": the question leaves the seat until a different one opens. It stays
+// open in the record and expires on its own.
+const laterAsks = new Set()
+const shown = (ask) => (ask && laterAsks.has(ask.askId) ? null : ask)
 
 async function loadOpenAsk() {
   let next = null
   try {
-    next = (await (await fetch('/gnomon/ask/open', { headers: { accept: 'application/json' } })).json())?.open ?? null
+    next = shown((await (await fetch('/gnomon/ask/open', { headers: { accept: 'application/json' } })).json())?.open ?? null)
   } catch {
     // A failed poll is not an answered question. Hold what is on screen.
     return
@@ -3614,6 +3649,7 @@ function drawOpenAsk() {
               updateBarMode()
             },
           }),
+          el('button', { type: 'button', class: 'choice-own', text: 'Later', title: 'Hide this question for now. It stays open, and expires on its own.', onclick: () => (laterAsks.add(openAsk.askId), (openAsk = null), drawOpenAsk()) }),
         ],
       ),
       openAsk.reason ? el('p', { class: 'ask-why', text: openAsk.reason }) : null,
@@ -3625,7 +3661,9 @@ function drawOpenAsk() {
 /** Answering and asking are different acts, so the composer says which it is. */
 function updateBarMode() {
   const answering = answeringNow()
-  input.placeholder = state.running ? 'Taking too long? Say why, then Stop…' : answering ? 'Your answer…' : 'Talk to Gnomon…'
+  // A walk waiting on Next is the owner's pause, not Gnomon's: the composer does not call it slow.
+  const walking = state.running && state.walkOpen === true
+  input.placeholder = state.running && !walking ? (state.slow ? 'Taking too long? Say why, then Stop…' : 'Thinking…') : answering ? 'Your answer…' : 'Talk to Gnomon…'
   send.textContent = state.running ? 'Stop' : answering ? 'Answer' : 'Say'
   send.title = state.running ? 'Stop this turn. Anything you have typed goes with it, so Gnomon knows what you wanted instead.' : ''
   const mode = $('bar-mode')

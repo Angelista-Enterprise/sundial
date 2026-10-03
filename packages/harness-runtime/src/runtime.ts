@@ -1000,17 +1000,15 @@ export class KernelRuntime {
    */
   async dispatchJudge(effect: JudgeEffect, deferred = false, retried = false): Promise<void> {
     if (!this.state) return;
-    if (systemOneBackend() === 'off') {
-      await this.markDegraded('off', true);
-      return;
-    }
+    if (systemOneBackend() === 'off') return this.markDegraded('off', true);
 
     // W5: while Jev's breaker is open, a judgement starts on the text-model fallback.
     const jevOpen = this.routeOf(effect.purpose) === 'jev' && heldUntil(this.state, 'jev', 'openUntil') !== null;
     const route = jevOpen ? (getLlmConfig(effect.purpose)?.route ?? DEFAULT_PROVIDER) : this.routeOf(effect.purpose);
     if (!deferred && (effect.delayMs > 0 || this.slots.busy(route, this.state))) return this.defer(() => void this.dispatchJudge({ ...effect, delayMs: 0 }, true), effect.delayMs);
     const callId = await this.reserveLlmCall(effect.purpose, { caller: 'Judge', inLane: !deferred, route });
-    if (!callId) return retried ? undefined : this.deferPastBreaker(route, () => this.dispatchJudge(effect, true, true));
+    // Unreserved (a spent budget, or still past an open breaker): what waited on the answer falls back instead of hanging.
+    if (!callId) return retried || heldUntil(this.state, route, 'openUntil') === null ? this.defer(() => void this.retryIngestEvent(toDaemonEvent('judgement:failed', { purpose: effect.purpose, questionSetId: effect.questionSetId, momentId: effect.momentId, errorClass: 'unreserved', ...(effect.metadata ? { metadata: effect.metadata } : {}) })), 0) : this.deferPastBreaker(route, () => this.dispatchJudge(effect, true, true));
     this.defer(() => void this.performJudgement(effect, jevOpen ? RETRY_MAX_ATTEMPTS : 0, null, callId), effect.delayMs);
   }
 

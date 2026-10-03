@@ -2,6 +2,7 @@ import type { KernelState, ResumeLine, ResumePieces } from './types.js';
 import { localHour } from '@sundial/helpers/local-day.js';
 import { isMeetingRoom } from '@sundial/helpers/person-name.js';
 import { openAsk } from '@sundial/helpers/loops.js';
+import { liveFlow } from './now.js';
 
 /**
  * S1 — what is true right now, in one object (docs/jarvis/09).
@@ -158,7 +159,7 @@ export function buildSituation(state: KernelState, extras: SituationExtras = {},
   const dayEnd = nowMs + 24 * 3_600_000;
   const todayAllDay = [...new Set(upcoming.filter((e) => e.isAllDay && Date.parse(e.start) <= nowMs && nowMs < Date.parse(e.end) && Date.parse(e.start) < dayEnd).map((e) => e.title))];
 
-  const flow = state.lifeEvent?.flow ?? null;
+  const flow = liveFlow(state.lifeEvent, nowMs);
   const flowMin = flow ? minutesBetween(flow.startedAt, nowMs) : null;
   const you: YouAre = state.av?.call ? 'in-a-call' : inMeeting ? 'in-a-meeting' : state.lifeEvent?.idle?.isIdle ? 'away' : flowMin !== null && flowMin >= DEEP_AFTER_MIN ? 'deep' : 'working';
 

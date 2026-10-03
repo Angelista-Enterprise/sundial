@@ -45,3 +45,32 @@ export function renderResultText(value, maxBytes = MAX_RESULT_BYTES) {
     preview: full.slice(0, Math.floor(maxBytes * 0.6)),
   });
 }
+
+const ISO_Z = /^\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d(\.\d+)?)?Z$/;
+
+/**
+ * A UTC instant on the owner's wall clock, offset included:
+ * "2026-09-30T19:00:00.000Z" in Amsterdam is "2026-09-30T21:00:00+02:00".
+ * Tool rows carry UTC; a model told the timezone still read "due 19:00" as
+ * the local hour (seen 2026-10-02). The offset keeps the instant exact.
+ */
+export function localIso(ts, timeZone) {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', { timeZone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      .formatToParts(d)
+      .map((x) => [x.type, x.value]),
+  );
+  const off = Math.round((Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second) - Math.floor(d.getTime() / 1000) * 1000) / 60_000);
+  const hm = (n) => String(n).padStart(2, '0');
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}${off < 0 ? '-' : '+'}${hm(Math.floor(Math.abs(off) / 60))}:${hm(Math.abs(off) % 60)}`;
+}
+
+/** Every UTC timestamp string in a result, at any depth, as `localIso` writes it. */
+export function withLocalTimes(value, timeZone) {
+  if (typeof value === 'string') return ISO_Z.test(value) ? localIso(value, timeZone) : value;
+  if (Array.isArray(value)) return value.map((v) => withLocalTimes(v, timeZone));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, withLocalTimes(v, timeZone)]));
+  return value;
+}

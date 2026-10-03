@@ -43,6 +43,7 @@ import { LENS_AGGS, LENS_OPS, LENS_SHOWS, lensProblem, runLens } from '../sundia
 import { CARDS, checkFilters, describeCard } from '../sundial-theme/shell/cards.js';
 import { showSurfaceTool, SURFACE_TOOL_NAME } from './show-surface.js';
 import { watchTools } from './watch-tools.js';
+import { coerceArgs } from './coerce-args.js';
 
 export { toDshTool, FIGURE_TOOL_NAME } from './to-dsh-tool.js';
 export { toValueSchemaSpec, toParameterSchemaSpec } from './schema.js';
@@ -81,6 +82,7 @@ export function apply(ctx) {
     memory: ctx.gnomonMemory,
     handles,
     today: () => localDate(new Date().toISOString(), loadSundialConfig().timezone),
+    timeZone: () => loadSundialConfig().timezone,
     // PHASE5: onFigure — the UI projection hook (see to-dsh-tool.js).
   };
 
@@ -99,6 +101,16 @@ export function apply(ctx) {
   ctx.tools.register(discover);
   ctx.tools.register(dispatch);
   hideColdTools(ctx);
+
+  // Every call, dsh's own tools included: a "2" where the schema says integer is
+  // made a 2 before dsh validates it, instead of failing the step (coerce-args.js).
+  ctx.effect(() =>
+    ctx.on('tools/execute', (exec, next) => {
+      const fixed = coerceArgs(ctx.tools.get(exec.name, exec.agent)?.parameters, exec.arguments);
+      if (fixed !== exec.arguments) exec.arguments = fixed;
+      return next();
+    }),
+  );
 
   // A handle says "the full result is still above". Compaction rewrites the
   // history and can remove the message it is talking about, so every handle for
