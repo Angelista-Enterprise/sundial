@@ -62,7 +62,7 @@ describe('rejectEntityName — the names current producers actually emit', () =>
     // shape, and a hyphen or apostrophe is part of plenty of real names.
     ['person', 'Jean-Luc Picard'],
     ['person', "Sinéad O'Connor"],
-    ['person', 'Mira van der Berg'],
+    ['person', 'Mira van der Zee'],
   ];
 
   for (const [kind, name] of legitimate) {

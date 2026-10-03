@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.2.2 — 2026-10-03
+
+### Fixed
+- Thread titles and compaction on a reasoning model that cannot stop reasoning: the adapter asks once more without the flag instead of failing every call.
+- The turn brief writes promise due times on the owner's clock, so a 09:30 standup no longer reads "07:30 UTC" in an answer.
+- The chat reads every tool timestamp on the owner's clock.
+- A fact the owner stated reads "you told me", never a sighting count; a noun predicate ("role") reads as a sentence.
+- The composer says "Thinking…" first and asks "Taking too long?" only after twenty seconds; a walk waiting on Next or an open question is the owner's pause, not a slow turn.
+- The board's tool strip fits the window at 1512 px.
+- A compaction checkpoint no longer counts as the turn's opener, so the owner's own answer to a question does not stop for a second nod.
+- A shell command asks first under the default preset.
+- A focus span ends after ten quiet minutes instead of running overnight.
+- A day summary knows leisure, and leisure is not focus.
+- Tool arguments arrive as the model sends them: "2" for 2, a quoted list for a list.
+- A judgement nobody can pay for says so instead of being dropped silently.
+- gnomon_tickets no longer claims PR states it does not hold.
+- Kanban: a promise reads as a person and a due date; a promise owed to the owner waits rather than sitting under Doing.
+- A place the owner called leisure is not untracked time to file; no open moment means Away.
+- One work agent is created at a time; a brief for a meeting that already started is refused with that reason.
+- A host that stops resolving keeps its last good address, so a flaky DNS server does not count as three failed model calls.
+
+### Added
+- Later on the question seat: an open question can be set aside for now.
+- Docs name dsh, what Gnomon does unasked, and every permission; a QA catalog of every card, route, tool and flow.
+
 ## 0.2.1 — 2026-10-02
 
 ### Fixed

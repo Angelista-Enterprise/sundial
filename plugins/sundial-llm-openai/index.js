@@ -421,6 +421,15 @@ const RETRY_STATUSES = new Set([429, 500, 502, 503, 504])
 const RETRY_STATUS_ATTEMPTS = 3
 const RETRY_BASE_MS = 700
 
+/** Does this 400 say the model cannot switch its reasoning off? Reads a clone; the body stays for the error path. */
+async function refusesReasoningOff(response) {
+  try {
+    return /thinking|reasoning/i.test(String((await response.clone().json())?.error?.message ?? ''))
+  } catch {
+    return false
+  }
+}
+
 function httpErrorCode(status) {
   if (status === 401 || status === 403) return 'AUTH'
   if (status === 429) return 'RATE_LIMIT'
@@ -571,6 +580,15 @@ export class OpenAICompatAdapter extends LlmAdapter {
         throw new LlmError(`${this.label} API request to ${this.facts.baseUrl} failed`, 'TRANSPORT', {
           cause: error,
         })
+      }
+      // A reasoning model that cannot stop reasoning answers 400 "Disabling
+      // thinking is not supported." to `reasoning_effort: "none"` (qwen3.8-2.4t
+      // on TensorX, 2026-10-01: every thread title failed on it). Once, drop the
+      // field and ask again: a quiet purpose would rather pay for thinking than
+      // get nothing.
+      if (response.status === 400 && 'reasoning_effort' in body && (await refusesReasoningOff(response))) {
+        delete body.reasoning_effort
+        continue
       }
       if (response.ok || attempt >= RETRY_STATUS_ATTEMPTS - 1 || !RETRY_STATUSES.has(response.status)) break
       await new Promise((resolve) => setTimeout(resolve, RETRY_BASE_MS * (attempt + 1)))

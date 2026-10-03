@@ -45,7 +45,8 @@ The whole folder is created 0700 and every process runs under `umask 077`.
   cannot write to your services or run commands; a web page Gnomon links on the
   board loads only when you click it; Gnomon's web tools cannot reach this Mac or
   your local network; under the default permission preset, every write Gnomon
-  wants to make outside its own record asks you first and shows its arguments.
+  wants to make outside its own record, and every shell command, asks you first
+  and shows its arguments. A background job cannot run a shell command at all.
 
 **Out of scope:**
 
@@ -68,7 +69,8 @@ Nothing, until you configure it. Then only:
 | A request for the pull request of the branch you are on | GitHub, with your own `gh` login | Every 5 minutes, only if `gh` is installed and signed in and a repository is on a non-default branch |
 | Tool calls to a service you connected | That service (for example your notes app's MCP server) | Only for services you list under `integrations` in `config.json` |
 | Questions for the hosted judge | api.typesafe.ai | Only if you set `TYPESAFE_API_KEY` |
-| Web pages Gnomon fetches for you | the site you asked about | Only when you ask |
+| Web searches and page reads | the search server and the site | When you ask, or when a background job researches something you have open (its brief asks for two searches and three pages at most). Every request is in the log as `web:search` / `web:fetch` |
+| A request for the update feed (no data sent) | GitHub, this repository's releases | Once a day, only in the release app. A source install has no feed |
 | A background job's prompt, and whatever Claude reads from your record over Sundial's read-only MCP server | Anthropic, through your own Claude Code login | Only if you set `hands.claude` in `config.json`. Every job is a row in the Ledger (purpose `hand`) |
 
 If you connect Sundial to another agent over MCP (for example Claude Code), what
@@ -96,7 +98,9 @@ them. The `/setup` page explains each one and shows its state.
 | Input Monitoring | Counts of key presses and clicks per minute — never which keys |
 | Calendars, Contacts | Event times, titles and attendee names |
 | Screen Recording | Only for the optional screen-text reader (off by default) |
-| Microphone | Only for optional hearing (off by default); audio is transcribed on the Mac and never written to disk |
+| Microphone, System Audio Recording | Only for optional hearing (off by default); audio is transcribed on the Mac and never written to disk |
+| Full Disk Access | Only if you add it (off by default): Mail and Messages senders and subjects, and your Focus mode. Never message bodies |
+| Notifications | Only if you turn banners on |
 | Automation (browser) | The site and path of the front browser tab, never query strings. Private windows are skipped in Chrome, Brave, Edge and Vivaldi; Safari and Arc do not tell a private window apart, so their private tabs are read too |
 
 The sidecars are ad-hoc signed. Rebuilding them changes their signature, so macOS
@@ -114,6 +118,11 @@ drops the grants and asks again.
 - **Deleting a period** of the record has no command yet: `uninstall` deletes
   everything. Heard speech is pruned on `audio.retentionDays` when that is
   shorter than `retentionDays`.
+- **A page read is a way out.** Gnomon reads web pages without asking, because a
+  background job could not answer a prompt. Text that steers Gnomon could put
+  something it read into the address of a page it fetches. Each fetch is in the
+  log as `web:fetch`. To turn the web tools off, take `web-browser` out of
+  `PLUGINS` in `bin/sundial` and run `sundial install` again.
 - **DNS rebinding against Gnomon's web tools**: a public name that resolves to a
   private address is not caught by the fetch filter.
 - **Person aliases** (`person-<hash>`) are an unsalted hash of an e-mail address

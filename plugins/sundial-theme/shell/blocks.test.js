@@ -39,6 +39,7 @@ describe('factSentence', () => {
     expect(factSentence({ predicate: 'worksOn', object: 'hub' }, 'Noah')).toBe('Noah works on hub.')
     expect(factSentence({ predicate: 'knownAs', object: 'Noah' }, 'person-32d7')).toBe('Person-32d7 is also known as Noah.')
     expect(factSentence({ predicate: 'status', object: 'open' }, 'Sleep rhythm')).toBe('Sleep rhythm is open.')
+    expect(factSentence({ predicate: 'role', object: 'SRE lead at Northwind' }, 'Daan')).toBe("Daan's role is SRE lead at Northwind.")
   })
 
   it('says what a wrongly-named predicate MEASURED, not what it is called', () => {
@@ -74,7 +75,8 @@ describe('factEvidence', () => {
   // around them rather than pinning a format this machine happens to use.
   it('leads with where it came from, then what backs it', () => {
     const owner = factEvidence({ provenance: 'assertion', alpha: 4, confidence: 97, validFrom: '2026-09-12T00:00:00.000Z' })
-    expect(owner.slice(0, 3)).toEqual(['you told me', 'seen 3 times', '97% sure'])
+    // The owner's word is the evidence; its alpha is weight, not sightings, so no count follows it.
+    expect(owner.slice(0, 2)).toEqual(['you told me', '97% sure'])
     expect(owner.at(-1)).toMatch(/^since .*Sep/)
 
     const inferred = factEvidence({ provenance: 'inference', alpha: 18, confidence: 89, validFrom: '2026-08-16T00:00:00.000Z' })
@@ -144,5 +146,13 @@ describe('ownerFirst', () => {
       { predicate: 'usesTool', object: 'Code', provenance: 'inference', validFrom: '2026-09-10' },
     ]
     expect(ownerFirst(facts).map((f) => f.object)).toEqual(['pause and resume', 'Code', 'Photo Booth', 'Gone'])
+  })
+})
+
+describe('factEvidence on the owner\'s word', () => {
+  it('says "you told me" and never a sighting count for an assertion', () => {
+    const line = factEvidence({ provenance: 'assertion', alpha: 40, beta: 1, confidence: 100, validFrom: '2026-10-01T07:10:00.000Z' })
+    expect(line[0]).toBe('you told me')
+    expect(line.join(' · ')).not.toMatch(/seen \d+ time/)
   })
 })

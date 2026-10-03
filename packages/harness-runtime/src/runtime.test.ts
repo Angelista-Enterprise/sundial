@@ -319,6 +319,26 @@ describe('Judge → judgement:result (docs/jarvis/02, one effect, one event)', (
     await runtime.shutdown();
   });
 
+  it('a judgement the budget cannot pay for lands as judgement:failed, so what waited on it falls back', async () => {
+    const calls: unknown[] = [];
+    const runtime = new KernelRuntime({ deviceId: 'test-device', config: { ...loadSundialConfig(), budgets: { classify: 1 } }, judge: async (options) => (calls.push(options), answer) });
+    await runtime.boot();
+    // Room for exactly one more call, whatever earlier tests spent today.
+    const spent = runtime.getState()?.budgets.byPurpose.classify.callsToday ?? 0;
+    await runtime.appendSignal('config:changed', { source: 'owner', diff: [{ path: 'budgets', was: { classify: 1 }, now: { classify: spent + 1 } }], restart: [] });
+    const before = (await getSignalsAfter(null)).length;
+
+    await runtime.dispatchJudge(effect);
+    await new Promise((r) => setTimeout(r, 50));
+    await runtime.dispatchJudge({ ...effect, momentId: 'm-2', metadata: { kind: 'second' } });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(calls).toHaveLength(1);
+    const failed = (await getSignalsAfter(null)).slice(before).filter((s) => s.signalType === 'judgement' && s.eventType === 'failed');
+    expect(failed.map((s) => s.data)).toEqual([{ purpose: 'classify', questionSetId: 'moment-fanout', momentId: 'm-2', errorClass: 'unreserved', metadata: { kind: 'second' } }]);
+    await runtime.shutdown();
+  });
+
   it('a replay of a log that holds the dispatch and the answer never calls the network', async () => {
     const calls: unknown[] = [];
     const judge = async (options: unknown) => {

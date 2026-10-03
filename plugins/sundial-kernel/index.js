@@ -22,6 +22,7 @@
 import { randomUUID } from 'node:crypto'
 import { KernelRuntime, openLlmAudit, gatherAmbientInput, loadOrGenerateDeviceId, presentLine, renderBrief, shownPayload, turnBrief } from '@sundial/harness-runtime/index.js'
 import { existingDefaultRoots, lastBackfill, planBackfill, runBackfill } from '@sundial/harness-runtime/backfill.js'
+import { installLastGoodLookup } from '@sundial/helpers/dns-last-good.js'
 import { loadSundialEnv } from '@sundial/helpers/sundial-env.js'
 
 export const name = 'sundial-kernel'
@@ -54,6 +55,8 @@ export async function apply(ctx, config = {}) {
   // effect executor's purpose calls via @sundial/llm). Existing process.env
   // values win; values are never logged.
   loadSundialEnv()
+  // Process-wide: every plugin's model call, the chat's included, rides out a DNS failure on the last good address.
+  installLastGoodLookup()
 
   const deviceId = loadOrGenerateDeviceId()
   const runtime = new KernelRuntime({
