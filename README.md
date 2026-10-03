@@ -19,6 +19,10 @@ https://github.com/user-attachments/assets/1c495afa-6e27-4635-9cbe-1b2b27628c97
 
 
 
+https://github.com/user-attachments/assets/a155502b-ebc6-4680-bb01-2e1d87177bec
+
+
+
 
 *One Thursday morning on a made-up week: the morning card, what is still owed before
 a client demo, a research brief with its sources, a rule tested on the record before
