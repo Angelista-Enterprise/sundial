@@ -65,3 +65,23 @@ describe('stream retries', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('a model that cannot stop reasoning', () => {
+  const refusal = () => new Response(JSON.stringify({ error: { message: 'Disabling thinking is not supported.' } }), { status: 400 })
+
+  it('asks once more without reasoning_effort, and only for that refusal', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(refusal()).mockResolvedValueOnce(sse())
+    vi.stubGlobal('fetch', fetchMock)
+    await drain(adapter().stream({ messages: [], purpose: 'session-title' }))
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).reasoning_effort).toBe('none')
+    expect('reasoning_effort' in JSON.parse(fetchMock.mock.calls[1][1].body)).toBe(false)
+  })
+
+  it('does not loop when the second answer is also a 400', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(refusal())
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(drain(adapter().stream({ messages: [], purpose: 'session-title' }))).rejects.toThrow(/thinking/)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+})

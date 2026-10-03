@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { composeAmbientContext, selectOwnerFacts, type AmbientInput } from './ambient-context.js';
+import { composeAmbientContext, dueClock, selectOwnerFacts, type AmbientInput } from './ambient-context.js';
 
 const NOW = '2026-09-04T10:00:00.000Z';
 
@@ -128,5 +128,24 @@ describe('composeAmbientContext', () => {
     expect(quiet).toBe('');
     const loud = composeAmbientContext({ ...empty(), assistant: { acceptedCount: 8, rejectedCount: 4 } });
     expect(loud).toContain('8 of 12 proposals accepted (67%)');
+  });
+});
+
+describe('promise due times', () => {
+  it('writes a due instant on the owner\'s clock', () => {
+    expect(dueClock('2026-10-01T07:30:00.000Z', 'Europe/Amsterdam')).toBe('2026-10-01 09:30');
+    expect(dueClock('2026-10-01T23:30:00.000Z', 'Europe/Amsterdam')).toBe('2026-10-02 01:30');
+  });
+
+  it('names the zone once over the list and never says UTC for a local time', () => {
+    const text = composeAmbientContext({
+      ...empty(),
+      now: '2026-10-01T07:05:00.000Z',
+      promises: [{ line: 'prototype offscreen canvas renderer for the client', due: dueClock('2026-10-01T07:30:00.000Z', 'Europe/Amsterdam'), confirmed: false }],
+      timeZone: 'Europe/Amsterdam',
+    });
+    expect(text).toContain('times in Europe/Amsterdam');
+    expect(text).toContain('due 2026-10-01 09:30 (heard, not confirmed)');
+    expect(text).not.toMatch(/07:30|UTC\b(?!\))/);
   });
 });

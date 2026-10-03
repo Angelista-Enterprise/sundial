@@ -37,7 +37,7 @@ import {
   getKnowledgeEntriesSince,
   getMomentsForDate,
 } from '@sundial/db/index.js';
-import { localDate } from '@sundial/helpers/local-day.js';
+import { formatClock, localDate } from '@sundial/helpers/local-day.js';
 import { openAsk, wakeupsOf } from '@sundial/helpers/loops.js';
 import type { KernelState } from './types.js';
 import { promisePhrase } from './promise-words.js';
@@ -67,8 +67,10 @@ export interface AmbientInput {
   goals: { name: string; facts: { predicate: string; object: string }[] }[];
   today: { sessions: number; minutes: number; activeMinutes?: number; mostRecentProcess: string; topProjects?: { name: string; minutes: number }[] } | null;
   commitments: { name: string; projectName: string | null; activeDays: number; lastTouchedAt: string }[];
-  /** UC1: open promises, in the owner's words, with when they are due. */
+  /** UC1: open promises, in the owner's words, with when they are due — `due` already on the owner's clock (`dueClock`). */
   promises?: { line: string; due: string | null; confirmed: boolean }[];
+  /** The zone the promise due times are written in; named once over the list. */
+  timeZone?: string;
   wakeups: { at: string; reason: string }[];
   ownerAsk: { question: string; askId?: string } | null;
   /** Gnomon's own open research question, if one is open. */
@@ -129,6 +131,11 @@ export function selectOwnerFacts(facts: AmbientOwnerFact[], max = MAX_OWNER_FACT
 }
 
 /** The prompt text. Empty string when there is nothing to say, which dsh treats as "contributes nothing". */
+/** A UTC due instant as the owner reads it: "2026-10-01 09:30" in Europe/Amsterdam for 07:30Z. */
+export function dueClock(dueIso: string, timeZone: string): string {
+  return `${localDate(dueIso, timeZone)} ${formatClock(dueIso, timeZone)}`;
+}
+
 export function composeAmbientContext(input: AmbientInput): string {
   const blocks: string[] = [];
 
@@ -170,8 +177,10 @@ export function composeAmbientContext(input: AmbientInput): string {
   if (promises.length > 0) {
     blocks.push(
       [
-        `Open promises (${input.promises!.length}; closed by themselves when the mail, commit or file shows up — gnomon_open_commitments has the terms):`,
-        ...promises.map((p) => `- ${p.line}${p.due ? `, due ${p.due.slice(0, 16).replace('T', ' ')} UTC` : ''}${p.confirmed ? '' : ' (heard, not confirmed)'}`),
+        // Due times on the owner's clock, zone named once. They were written as UTC until 2026-10-02: the model
+        // repeated "due 07:30 UTC" for a 09:30 standup, and an answer with a time nobody keeps is a wrong answer.
+        `Open promises (${input.promises!.length}; times in ${input.timeZone ?? 'UTC'}; closed by themselves when the mail, commit or file shows up — gnomon_open_commitments has the terms):`,
+        ...promises.map((p) => `- ${p.line}${p.due ? `, due ${p.due}` : ''}${p.confirmed ? '' : ' (heard, not confirmed)'}`),
       ].join('\n'),
     );
   }
@@ -319,8 +328,9 @@ export async function gatherAmbientInput(options: GatherAmbientOptions): Promise
       const who = p?.counterparty ? (state?.memory.aliasNames?.[p.counterparty] ?? p.counterparty) : null;
       const named = who && !/^person-[0-9a-f]{10}$/.test(who) ? who : null;
       const line = p ? promisePhrase(p.direction, p.deliverable, named) : c.name;
-      return { line, due: p?.due ?? null, confirmed: p?.confirmed === true };
+      return { line, due: p?.due ? dueClock(p.due, timeZone) : null, confirmed: p?.confirmed === true };
     }),
+    timeZone,
     commitments: (state?.commitments.open ?? []).map((commitment) => ({
       name: commitment.name,
       projectName: commitment.projectName,

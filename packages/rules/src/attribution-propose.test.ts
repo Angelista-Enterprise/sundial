@@ -144,6 +144,14 @@ describe('attributionPropose', () => {
     expect(s.attributionProposals.candidates['app:Notion']!.seconds).toBe(40);
   });
 
+  it('a place the owner called leisure is not untracked work: not timed', () => {
+    const s = createInitialState('d1');
+    const leisure = { ...s, config: { ...s.config, leisureRules: { ...s.config.leisureRules, processes: { personal: ['Balatro'] }, domainOverrides: { personal: ['*netflix.com'] } } } };
+    expect(candidateFor(leisure, { processName: 'Balatro', windowTitle: 'Balatro', documentPath: null })).toBeNull();
+    expect(candidateFor(leisure, { processName: 'Arc', windowTitle: 'Netflix', documentPath: 'https://www.netflix.com/watch/1' })).toBeNull();
+    expect(candidateFor(s, { processName: 'Balatro', windowTitle: 'Balatro', documentPath: null })?.key).toBe('app:Balatro');
+  });
+
   it('a browser between pages is nowhere: not timed', () => {
     const s = createInitialState('d1');
     expect(candidateFor(s, { processName: 'Google Chrome', windowTitle: 'New Tab - Google Chrome', documentPath: 'chrome://newtab/' })).toBeNull();

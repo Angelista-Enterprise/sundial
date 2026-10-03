@@ -2103,7 +2103,7 @@ button.link:hover { text-decoration: underline; }
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
 }
-.board-hint { margin-right: 6px; padding: 4px 6px; font-size: 11px; letter-spacing: 0.04em; color: var(--ink-faint); font-variant-numeric: tabular-nums; pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.board-hint { flex: 1 1 auto; min-width: 0; margin-right: 6px; padding: 4px 6px; font-size: 11px; letter-spacing: 0.04em; color: var(--ink-faint); font-variant-numeric: tabular-nums; pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .board-act {
   border: 0;
   background: transparent;
@@ -3348,7 +3348,9 @@ a.set-opt { text-decoration: none; }
 /* Signed out: the one line that says why nothing on the page reads any more. */
 .foot-out { flex: none; margin-right: 10px; font-size: 12px; color: var(--ochre-text); white-space: nowrap; }
 .foot-out code { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 12px; color: var(--ink); }
-.board-foot .board-tools { position: static; left: auto; bottom: auto; margin-left: auto; border: 0; padding: 0; background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; }
+/* In the foot the toolbar is a flex item: it must be allowed to shrink (min-width: 0), or its hint text
+   pushes LOAD past the window's right edge, as it did at 1512 px. The hint inside ellipsizes. */
+.board-foot .board-tools { position: static; left: auto; bottom: auto; margin-left: auto; flex: 0 1 auto; min-width: 0; max-width: none; border: 0; padding: 0; background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; }
 /* WHEN the board is looking. One control, so it reads as one thing: four
    presets and a ruler for a single day, sharing a rule and a gap. */
 .span { display: flex; align-items: center; gap: 2px; flex: none; margin-left: 14px; }

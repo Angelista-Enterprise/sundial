@@ -280,6 +280,9 @@ export function openedByOwner(events) {
     if (event?.type !== 'user/message') continue
     const source = event.data?.source
     if (source?.form !== undefined) continue
+    // dsh's compaction checkpoint condenses a turn; it does not open one. Read past it, or the owner's
+    // own message vanishes behind it and their yes to a question stops for a second nod.
+    if (source?.plugin === 'compact') continue
     return source?.kind === 'user'
   }
   return undefined
@@ -353,6 +356,14 @@ export function decideAction({ toolName, args, preset, approvalOverride, actions
   // `bash`, to which gnomon adds its destructive-command refusal.
   if (gnomon === undefined) {
     if (toolName === 'bash' && facts.destructive !== null) return { kind: 'deny', reason: facts.destructive }
+    // A shell can send anything Gnomon read (mail subjects, pages, screen text)
+    // anywhere, so it rides the outward ladder: refused under read-only and in a
+    // job nobody can answer, asked under the default preset, free under Auto.
+    if (toolName === 'bash') {
+      const policy = presetPolicy('outward', preset, approvalOverride)
+      if (policy === 'off') return { kind: 'deny', reason: `Gnomon: the '${preset ?? 'current'}' permission preset does not run shell commands.` }
+      if (policy === 'ask') return { kind: 'ask', reason: `Gnomon: a shell command runs behind your approval (the '${preset ?? 'current'}' preset asks first).` }
+    }
     return { kind: 'allow' }
   }
 

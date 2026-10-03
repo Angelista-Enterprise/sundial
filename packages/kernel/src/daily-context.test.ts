@@ -128,6 +128,14 @@ describe('buildDailyContext', () => {
     expect(ctx.deepWorkBlocks[0].durationMin).toBe(120);
   });
 
+  it('counts a long game as leisure, never as deep focus or a deep-work block', async () => {
+    await moment('19:45', '21:10', 'Hades II', { focusScore: 0.95, focusQuality: 'deep', kind: 'leisure' });
+    const ctx = await buildDailyContext(DAY);
+    expect(ctx.phaseMix.leisure).toBe(85);
+    expect(ctx.focus.deepMin).toBe(0);
+    expect(ctx.deepWorkBlocks).toEqual([]);
+  });
+
   it('does not count a short high-focus moment as a deep-work block', async () => {
     await moment('09:00', '09:10', 'Claude', { focusScore: 0.9, focusQuality: 'deep' });
     const ctx = await buildDailyContext(DAY);

@@ -42,15 +42,21 @@ async function kanbanNode(onAsk) {
   const explore = (goals?.goals ?? [])
     .filter((g) => g.state === 'open' || g.status === 'open')
     .map((g) => item(g.goal, `since ${day(g.since)} · ${g.saidBy === 'owner' ? 'you said' : 'noted'}`, toCard('play')))
-  const doing = open
+  // A promise is one line about a person and a date, never "1 sessions"; one
+  // someone else owes the owner (`awaiting`) is theirs to do, so it waits.
+  const promiseSub = (c) => [c.promise.counterparty, c.promise.due ? `due ${day(c.promise.due)}` : null, c.promise.confirmed ? null : 'heard'].filter(Boolean).join(' · ')
+  const branchSub = (c) => `${c.project ?? ''} · ${c.touches ?? 0} session${c.touches === 1 ? '' : 's'}`
+  const mine = open.filter((c) => c.promise?.direction !== 'awaiting')
+  const doing = mine
     .filter((c) => (c.quietDays ?? 0) <= 1)
     .sort((a, b) => String(b.lastTouchedAt).localeCompare(String(a.lastTouchedAt)))
-    .map((c) => item(c.name, `${c.project ?? ''} · ${c.touches ?? 0} sessions`, toCard('play')))
-  const quiet = open
+    .map((c) => item(c.name, c.promise ? promiseSub(c) : branchSub(c), toCard('play')))
+  const quiet = mine
     .filter((c) => (c.quietDays ?? 0) >= 2)
     .sort((a, b) => (a.quietDays ?? 0) - (b.quietDays ?? 0))
-    .map((c) => item(c.name, `${c.project ?? ''} · ${c.quietDays}d quiet`, toCard('play')))
+    .map((c) => item(c.name, c.promise ? promiseSub(c) : `${c.project ?? ''} · ${c.quietDays}d quiet`, toCard('play')))
   const waiting = [
+    ...open.filter((c) => c.promise?.direction === 'awaiting').map((c) => item(c.name, `${c.promise.counterparty ?? 'someone'} owes you${c.promise.due ? ` · ${day(c.promise.due)}` : ''}`, toCard('play'))),
     ...(proposals?.proposals ?? []).map((p) => item(p.label ?? p.place ?? 'Untracked time', `${hm(p.minutes)} · where did this go?`, toCard('shelf'))),
     // A suggestion's words are its `summary`; the old code read `title`, which it never has, and printed "A proposal" three times.
     ...(suggested?.proposals ?? []).map((p) => item(p.summary ?? p.title ?? p.text ?? 'A suggestion', 'Gnomon suggests', toCard('shelf'))),

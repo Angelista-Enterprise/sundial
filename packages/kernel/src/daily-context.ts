@@ -222,7 +222,7 @@ function bool(v: unknown): boolean {
   return v === true;
 }
 
-const KINDS: MomentKind[] = ['setup', 'focus', 'meeting', 'switch', 'browse'];
+const KINDS: MomentKind[] = ['setup', 'focus', 'meeting', 'switch', 'browse', 'leisure'];
 function asKind(v: unknown): MomentKind {
   return typeof v === 'string' && (KINDS as string[]).includes(v) ? (v as MomentKind) : 'setup';
 }
@@ -311,6 +311,8 @@ export function buildPhaseMix(views: MomentView[]): Record<MomentKind, number> {
 export function buildFocus(views: MomentView[]): { deepMin: number; steadyMin: number; shallowMin: number } {
   const f = { deepMin: 0, steadyMin: 0, shallowMin: 0 };
   for (const v of views) {
+    // A game or a book scores as unbroken focus on duration alone; it is leisure, counted in the phase mix.
+    if (v.kind === 'leisure') continue;
     const m = minutes(v.durationMs);
     if (v.focusQuality === 'deep') f.deepMin += m;
     else if (v.focusQuality === 'steady') f.steadyMin += m;
@@ -354,7 +356,7 @@ function buildDeepWorkBlocks(views: MomentView[], projectNames: Map<string, stri
   };
 
   for (const v of views) {
-    const isDeep = v.focusScore >= DEEP_FOCUS;
+    const isDeep = v.focusScore >= DEEP_FOCUS && v.kind !== 'leisure';
     if (!isDeep) {
       flush();
       continue;

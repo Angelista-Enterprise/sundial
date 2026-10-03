@@ -19,6 +19,20 @@ import { localDate } from '@sundial/helpers/local-day.js'
 
 const MINUTE = 60_000
 
+/**
+ * A focus span is over once the keyboard has been quiet this long, whether or
+ * not an idle event came to close it. Without this a span with no later input
+ * (the sensors stopped, a replayed record) stayed "in focus" for 16 hours.
+ */
+export const FLOW_QUIET_MS = 10 * MINUTE
+
+/** The focus span still under way at `now`, or null. An older snapshot without `lastActiveAt` keeps its span. */
+export function liveFlow(life: any, now: number) {
+  const flow = life?.flow ?? null
+  const last = Date.parse(life?.idle?.lastActiveAt ?? '')
+  return flow && Number.isFinite(last) && now - last > FLOW_QUIET_MS ? null : flow
+}
+
 /** `~/Projects/acme/puzzlebox-studio` → `puzzlebox-studio`. A path is a fact; a name is what the owner calls it. */
 export function projectName(projectId: unknown): string | null {
   if (typeof projectId !== 'string' || projectId === '') return null
@@ -74,7 +88,7 @@ export function nowSnapshot(state: any, now = Date.now()) {
   const moment = state?.moment ?? null
   const life = state?.lifeEvent ?? {}
   const window = state?.window?.active ?? null
-  const flow = life.flow ?? null
+  const flow = liveFlow(life, now)
   const hourAgo = now - 60 * MINUTE
 
   const switchesLastHour = Array.isArray(life.recentSwitches)
@@ -105,7 +119,8 @@ export function nowSnapshot(state: any, now = Date.now()) {
 
   return {
     at: new Date(now).toISOString(),
-    app: window?.processName ?? moment?.processName ?? null,
+    // No open moment means the owner is not at a window — idle, asleep, or not yet back — so the last app is not where they are.
+    app: moment ? (window?.processName ?? moment.processName ?? null) : null,
     project: projectName(moment?.projectId),
     /** Minutes into the open moment. */
     momentMin: moment ? minutesSince(moment.startTime, now) : null,
@@ -115,7 +130,8 @@ export function nowSnapshot(state: any, now = Date.now()) {
     commits: moment?.rollup?.gitCommitCount ?? 0,
     /** Minutes of unbroken same-process typing, when a focus span is under way. */
     flowMin: flow ? minutesSince(flow.startedAt, now) : null,
-    idle: life.idle?.isIdle === true,
+    // Idle by the input sensor, or away: the moment closed into a gap (idle, sleep) while a window was last seen.
+    idle: life.idle?.isIdle === true || (moment === null && window !== null),
     switchesLastHour,
     /** The app the owner usually opens next from here, when a learned routine says so. */
     nextStep: forecast === null ? null : { process: forecast.expectedProcess, support: forecast.routine.support, reliability: formatParam(param(state, 'routine.next')) },

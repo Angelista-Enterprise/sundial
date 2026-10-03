@@ -31,7 +31,7 @@ function ratchet(actual, recorded, { ceiling = false } = {}) {
 // that frees lines leaves room under it, and the number is lowered when a split lands.
 const MAX_LINES = 1200
 const OVER = {
-  'plugins/sundial-theme/shell/app.js': 3710,
+  'plugins/sundial-theme/shell/app.js': 3741, // 2026-10-03: the composer's slow-turn timer and the walk/question pause (31 lines)
   'packages/harness-runtime/src/runtime.ts': 2199,
   'plugins/sundial-theme/shell/stage.js': 1696,
 }
@@ -60,7 +60,7 @@ const HOST_STATE = {
   'plugins/sundial-proactive/delivery.js': 1,
   'plugins/sundial-proactive/index.js': 2,
   'plugins/sundial-proactive/night-shift.js': 1,
-  'plugins/sundial-proactive/work.js': 3,
+  'plugins/sundial-proactive/work.js': 4, // 2026-10-03: one in-flight promise so two jobs in a tick create one work agent
   'plugins/sundial-theme/host/api-config.js': 1,
   'plugins/sundial-theme/host/api-sessions.js': 1,
   'plugins/sundial-theme/host/signin-log.js': 3,

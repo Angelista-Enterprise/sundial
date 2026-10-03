@@ -48,10 +48,15 @@ describe('dsh built-in tools are no longer gated by gnomon', () => {
 })
 
 describe('bash — the one dsh built-in gnomon adds a layer to', () => {
-  it('allows an ordinary bash command under every preset', () => {
-    for (const preset of ['read-only', 'workspace-write', 'danger-full-access', undefined]) {
-      expect(decide({ toolName: 'bash', args: { command: 'ls -la' }, preset })).toEqual({ kind: 'allow' })
-    }
+  it('runs an ordinary bash command on the outward ladder: off, ask, auto', () => {
+    expect(decide({ toolName: 'bash', args: { command: 'ls -la' }, preset: 'read-only' }).kind).toBe('deny')
+    expect(decide({ toolName: 'bash', args: { command: 'ls -la' }, preset: 'workspace-write' }).kind).toBe('ask')
+    expect(decide({ toolName: 'bash', args: { command: 'ls -la' }, preset: 'custom' }).kind).toBe('ask')
+    expect(decide({ toolName: 'bash', args: { command: 'ls -la' }, preset: 'danger-full-access' })).toEqual({ kind: 'allow' })
+  })
+
+  it('refuses bash in a job nobody can answer, the way it refuses an outward write', () => {
+    expect(decide({ toolName: 'bash', args: { command: 'curl https://x' }, preset: undefined, approvalOverride: 'never' }).kind).toBe('deny')
   })
 
   it('DENIES a destructive bash command regardless of preset — even danger-full-access', () => {
@@ -243,9 +248,10 @@ describe('auto mode', () => {
   });
 
   it('W5 step 10: at "act", a command Gnomon starts unasked still stops until actions have earned acting alone', () => {
-    const d = decide({ toolName: 'bash', args: { command: 'npm test' }, preset: undefined, autonomy: 'earning' })
+    const d = decide({ toolName: 'gnomon_run_shell', args: { command: 'npm test' }, preset: undefined, autonomy: 'earning' })
     expect(d.kind).toBe('ask')
-    expect(d.reason).toContain('earned acting alone')
+    // bash asks on the outward ladder before autonomy is reached at all.
+    expect(decide({ toolName: 'bash', args: { command: 'npm test' }, preset: undefined, autonomy: 'earning' }).kind).toBe('ask')
     expect(autonomyOf({ settings: { autonomy: 'act' } })).toBe('earning')
     expect(autonomyOf({ settings: { autonomy: 'act' }, autonomy: { levels: { actions: { level: 'act' } } } })).toBe('act')
     expect(autonomyOf({ settings: { autonomy: 'notice' } })).toBe('notice')
@@ -263,8 +269,9 @@ describe('auto mode', () => {
           }
     expect(n).toBe(72)
     expect(decide({ toolName: 'gnomon_run_shell', args: { command: 'npm test' }, preset: 'danger-full-access', autonomy: 'earning' }).kind).toBe('allow')
-    // A thread on dsh's own default ('custom' since 0.1.5) that the owner opened: their yes too.
-    expect(decide({ toolName: 'bash', args: { command: 'npm test' }, preset: 'custom', autonomy: 'earning', ownerTurn: true }).kind).toBe('allow')
+    // A thread on dsh's own default ('custom' since 0.1.5): the owner opening the turn is not a yes
+    // to a shell command the model chose, since it can carry what Gnomon read anywhere.
+    expect(decide({ toolName: 'bash', args: { command: 'npm test' }, preset: 'custom', autonomy: 'earning', ownerTurn: true }).kind).toBe('ask')
     expect(decide({ toolName: 'bash', args: { command: 'npm test' }, preset: 'custom', autonomy: 'earning', ownerTurn: false }).kind).toBe('ask')
   })
 
@@ -341,6 +348,10 @@ describe('S10 — a turn the owner did not open', () => {
     expect(openedByOwner([owner, notice])).toBe(true)
     // The owner answering inside a notice turn is the owner speaking.
     expect(openedByOwner([notice, wake, owner])).toBe(true)
+    // A compaction checkpoint lands after the owner's message mid-turn; it is not a new opener.
+    const checkpoint = msg({ kind: 'plugin', plugin: 'compact', compactionId: 'c1' })
+    expect(openedByOwner([owner, checkpoint])).toBe(true)
+    expect(openedByOwner([wake, checkpoint])).toBe(false)
     expect(openedByOwner([notice])).toBeUndefined()
     expect(openedByOwner(undefined)).toBeUndefined()
   })

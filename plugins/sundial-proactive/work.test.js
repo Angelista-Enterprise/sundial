@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { briefSubagent, installWorkLoop, WORK_SESSION_ID } from './work.js'
+import { briefSubagent, ensureWorkAgent, installWorkLoop, WORK_SESSION_ID } from './work.js'
 
 /**
  * A job used to be a `followup` on the one persistent `gnomon-work` agent, so
@@ -282,5 +282,18 @@ describe('a helper the model starts is briefed once (W5)', () => {
     expect(own.child.inject).not.toHaveBeenCalled()
     const remote = setup('session-7f')
     expect(await briefSubagent(remote.ctx, { id: 'child-1', local: false })).toBe(false)
+  })
+})
+
+describe('ensureWorkAgent', () => {
+  it('creates the work session once when two jobs start in the same tick', async () => {
+    const agent = { id: WORK_SESSION_ID, status: 'idle' }
+    const create = vi.fn(async () => { await new Promise((r) => setTimeout(r, 5)); return { agent } })
+    const ctx = { agents: { get: () => undefined, create, resume: vi.fn() }, agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm' }) }, gnomonKernel: { getState: () => ({ config: { llm: {} } }) }, get: () => undefined }
+    const home = mkdtempSync(join(tmpdir(), 'work-'))
+    const [a, b] = await Promise.all([ensureWorkAgent(ctx, { home, cwd: home }), ensureWorkAgent(ctx, { home, cwd: home })])
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(a.agent).toBe(agent)
+    expect(b.agent).toBe(agent)
   })
 })

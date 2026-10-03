@@ -1,6 +1,7 @@
 // `hostOf` comes from helpers, beside `isConferencingHost`: the rule matcher
 // and this proposer must agree on what a host is, or a rule fails to fire on
 // the very windows the proposer offered it for.
+import { classifyActivity } from '@sundial/helpers/window-classification.js';
 import { cleanWindowTitle, hostOf, isBrowser, isConferencingSurface, isSystemProcess, hostFromTitle } from '@sundial/helpers/window-classification.js';
 import { localDate } from '@sundial/helpers/local-day.js';
 import { sanitizeProjectRule } from '@sundial/helpers/sundial-config.js';
@@ -124,6 +125,8 @@ export function candidateFor(state: KernelState, p: Payload): PlaceCandidate | n
   if (processName === '' || isSystemProcess(processName)) return null;
   const doc = typeof p.documentPath === 'string' ? p.documentPath : '';
   const title = typeof p.windowTitle === 'string' ? p.windowTitle : '';
+  // A place the owner already called leisure (`leisureRules`) is not untracked work: a game is not time to file.
+  if (classifyActivity(processName, /^https?:/i.test(doc) ? `${title} ${doc}` : title, state.config.leisureRules) === 'personal') return null;
   const host = (doc !== '' ? hostOf(doc) : null) ?? (isBrowser(processName) && usable(title) ? hostFromTitle(title) : null);
   const clean = usable(title) ? cleanWindowTitle(title, processName) : '';
   // A CALL is timed by the meeting the calendar says is running in it, whatever

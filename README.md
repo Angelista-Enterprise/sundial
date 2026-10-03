@@ -38,7 +38,8 @@ pick one per conversation in the chat's model picker.
 ## The privacy promise
 
 - **Your record stays on your Mac.** One SQLite file, `~/.sundial/sundial.db`,
-  private to your user (0600). No account, no cloud, no telemetry.
+  private to your user (0600). No account, no cloud, no telemetry. (The release
+  app checks this repository's update feed once a day; a source install does not.)
 - **Nothing leaves until you choose a model.** Then only sanitized text goes to
   the endpoint *you* set — point it at a local model and nothing leaves at all.
   Every model call is listed in the Ledger.
@@ -53,7 +54,7 @@ Details, the threat model, and what exactly can leave: [SECURITY.md](SECURITY.md
 
 ## Requirements
 
-- macOS 14 or newer (Apple silicon or Intel)
+- macOS 14 or newer. From source: Apple silicon or Intel. The release zip: Apple silicon only.
 - Node.js 22+ and [pnpm](https://pnpm.io)
 - Xcode Command Line Tools (`xcode-select --install`) — the sensors are native Swift
 - Optional: [Ollama](https://ollama.com) for a local model
@@ -97,6 +98,18 @@ input counts, notification badges, focus mode, screen text) write small JSON fil
 that the Node process reads; the calendar and browser helpers run on demand. Only
 these signed helpers touch the permission-gated APIs, never Node itself. The log is the truth: everything
 you see is derived from it, so it can be replayed.
+
+**Built on dsh.** Sundial runs inside [dsh](https://www.npmjs.com/package/@deepseek-ai/dsh),
+an open-source (MIT) agent harness that DeepSeek publishes on npm. dsh gives the chat its
+sessions, tool calls, approvals and model routing; Sundial is a set of dsh plugins
+(`plugins/sundial-*`). dsh does not choose your model: Gnomon talks only to the endpoint
+you set, and dsh's optional telemetry exporter is switched off (`DSH_TELEMETRY_DISABLED=1`).
+The pinned version is a release candidate (`0.1.5-rc.1`).
+
+**What Gnomon may do without asking.** Read the record, write to its own record, search
+the web and read pages. A shell command asks you first under the default preset and is
+refused in background jobs; anything that writes to your services asks first. The
+**Auto** chip lifts the asks for one conversation. Details: [SECURITY.md](SECURITY.md).
 
 ## Uninstall
 
