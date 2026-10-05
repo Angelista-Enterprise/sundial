@@ -20,7 +20,7 @@ export const MAX_TICKETS = 100;
 export const TICKET_HORIZON_DAYS = 30;
 const MAX_DAYS = 30;
 /** The rows `ticketTrack` reads, for a rebuild from the log. */
-export const TICKET_SOURCE_TYPES = ['window:changed', 'browser:tab', 'screen:ocr', 'page:text', 'shell:command', 'audio:transcript', 'calendar:context-event', 'git:status', 'git:commit', 'git:pr-status', 'agent:session', 'agent:fleet'] as const;
+export const TICKET_SOURCE_TYPES = ['window:changed', 'browser:tab', 'screen:ocr', 'page:text', 'shell:command', 'audio:transcript', 'calendar:context-event', 'git:status', 'git:commit', 'git:pr-status', 'agent:session', 'agent:fleet', 'agent:turn'] as const;
 
 /**
  * Strict: an uppercase project key and a number, as trackers write them in
@@ -81,6 +81,8 @@ function sightings(type: string, p: Record<string, unknown>): Sighting[] {
       return [{ source: 'shell', keys: ticketKeys(str(p.command)) }];
     case 'audio:transcript':
       return [{ source: 'speech', keys: ticketKeys(str(p.spokenText)) }];
+    case 'agent:turn':
+      return focusOrList('agent', str(p.text));
     case 'calendar:context-event':
       return [{ source: 'calendar', keys: ticketKeys(str((p.event as Record<string, unknown> | undefined)?.title)) }];
     default:

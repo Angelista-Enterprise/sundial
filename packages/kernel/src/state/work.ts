@@ -262,6 +262,8 @@ export interface AgentFleetEntry {
   origin?: 'desktop' | 'cli' | 'sdk' | 'bg' | 'other';
   title?: string;
   lastPrompt?: string;
+  /** The agent's last finished reply, capped; since 2026-10-05. */
+  lastReply?: string;
   costUsd?: number;
   lines?: { added: number; removed: number };
   pr?: { number: number; url: string };

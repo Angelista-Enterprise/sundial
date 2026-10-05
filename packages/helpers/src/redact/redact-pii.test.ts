@@ -14,6 +14,8 @@ describe('redactPii', () => {
     ['iban NL91 ABNA 0417 1643 00 please', 'iban [iban] please'],
     ['IBAN NL91ABNA0417164300', 'IBAN [iban]'],
     ['mijn BSN is 111222333', 'mijn BSN is [bsn]'],
+    ["Here's your verification code 482913 - Mail", "Here's your verification code [code] - Mail"],
+    ['Je inlogcode is: 5521', 'Je inlogcode is: [code]'],
     ['psql postgres://admin:hunter2@db.local:5432/app', 'psql postgres://[credentials]@db.local:5432/app'],
     ['-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY----- done', '[private-key] done'], // gitleaks:allow — a stub, not a key
     ['-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk (cut off by OCR', '[private-key]'],
@@ -33,6 +35,7 @@ describe('redactPii', () => {
     'bump to v1.23.4567',
     'commit 354114bc50dc259a93bf76b869260fd2d404590c',
     'port 127.0.0.1:3080',
+    'code review of PR 4780', // the number is not right after the keyword
     'diff +1234 -56',
     'moved 4111 1111 1111 1112 rows', // fails Luhn
     'https://example.com/path?x=1',

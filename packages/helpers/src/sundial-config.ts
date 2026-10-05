@@ -1,5 +1,5 @@
 import { hostTimeZone } from './local-day.js';
-import { type LlmProvider, parseProviders, parseUse } from './llm-providers.js';
+import { type LlmProvider, parseContextWindows, parseProviders, parseUse } from './llm-providers.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getSundialConfigPath, getSundialHome } from './config.js';
@@ -114,6 +114,8 @@ export interface SundialConfigFile {
     mail?: boolean;
     /** `true` reads Messages (`chat.db`) senders and chats. Its own switch, off by default: the owner declined Messages on 2026-09-28, and it used to ride on `mail`. */
     messages?: boolean;
+    /** `false` stops reading coding agents' transcripts (prompts, final replies, rejections). Default on: the owner asked for it on 2026-10-05. */
+    agentTranscripts?: boolean;
   };
   /** Per-purpose daily LLM call cap overrides, e.g. `{ "intent": 300 }` — merged over `@sundial/kernel`'s `DEFAULT_DAILY_CAPS`, not typed against `LlmPurpose` here since `@sundial/helpers` sits below `@sundial/kernel` in the dependency graph. */
   budgets?: Partial<Record<string, number>>;
@@ -205,6 +207,8 @@ export interface SundialConfigFile {
     providers?: { id: string; label?: string; baseUrl: string; model: string }[];
     /** Which provider does what: `default` for every background purpose, or one purpose (`journal`, `intent`…) by name. A value is `openai` (the `.env` model) or a provider id. Unset: the `.env` model. */
     use?: Record<string, string>;
+    /** The context window a model declares, by model id: compaction starts at 80% of it. Unset: 64k (`DEFAULT_CONTEXT_WINDOW` in plugins/sundial-llm-openai). */
+    contextWindows?: Record<string, number>;
   };
   /** See `LeisureRules`. Merged over the built-in process defaults, never replacing them. */
   leisureRules?: {
@@ -444,6 +448,8 @@ export interface ResolvedSundialConfig {
     mail: boolean;
     /** The Messages reader (`chat.db` senders and chats, never text). Off by default and separate from `mail`: the owner declined Messages on 2026-09-28. */
     messages: boolean;
+    /** The coding-agent transcript reader (`agent:turn`). On unless `privacy.agentTranscripts` is `false`. */
+    agentTranscripts: boolean;
   };
   /** J3.4 — the browser helper also reads the page's text (`page:text`), when the browser allows JavaScript from Apple Events. */
   browser: { pageText: boolean };
@@ -463,7 +469,7 @@ export interface ResolvedSundialConfig {
   /** See `SundialConfigFile.vault`; null = off. */
   vault: string | null;
   /** See `SundialConfigFile.llm`; entries that fail the shape check are dropped. */
-  llm: { providers: LlmProvider[]; use: Record<string, string> };
+  llm: { providers: LlmProvider[]; use: Record<string, string>; contextWindows?: Record<string, number> };
   ownerAliases: string[];
   leisureRules: LeisureRules;
   ocr: OcrConfig;
@@ -701,7 +707,7 @@ function resolveLeisureRules(value: unknown): LeisureRules {
 }
 
 export const DEFAULT_SUNDIAL_CONFIG: ResolvedSundialConfig = {
-  privacy: { redactionTier: 2, extraSensitiveApps: [], extraHiddenApps: [], extraShellRedactPatterns: [], mail: false, messages: false },
+  privacy: { redactionTier: 2, extraSensitiveApps: [], extraHiddenApps: [], extraShellRedactPatterns: [], mail: false, messages: false, agentTranscripts: true },
   browser: { pageText: false },
   budgets: {},
   projectRules: [],
@@ -718,7 +724,7 @@ export const DEFAULT_SUNDIAL_CONFIG: ResolvedSundialConfig = {
   refutationEnabled: true,
   experiments: { ownerStateInGateCost: false, forecasting: false, gateFeatures: false, presence: false },
   vault: null,
-  llm: { providers: [], use: {} },
+  llm: { providers: [], use: {}, contextWindows: {} },
   ownerAliases: [],
   leisureRules: { ...DEFAULT_LEISURE_RULES },
   ocr: { ...DEFAULT_OCR_CONFIG },
@@ -1087,6 +1093,7 @@ export function resolveSundialConfig(parsed: SundialConfigFile): ResolvedSundial
       extraShellRedactPatterns: stringArrayOrEmpty(parsed.privacy?.shellRedactPatterns, 'shellRedactPatterns'),
       mail: (parsed.privacy as { mail?: unknown } | undefined)?.mail === true,
       messages: (parsed.privacy as { messages?: unknown } | undefined)?.messages === true,
+      agentTranscripts: (parsed.privacy as { agentTranscripts?: unknown } | undefined)?.agentTranscripts !== false,
     },
     browser: { pageText: (parsed as { browser?: { pageText?: unknown } }).browser?.pageText === true },
     budgets: isPlainObject(parsed.budgets) ? (parsed.budgets as Partial<Record<string, number>>) : {},
@@ -1107,7 +1114,7 @@ export function resolveSundialConfig(parsed: SundialConfigFile): ResolvedSundial
       presence: parsed.experiments?.presence === true,
     },
     vault: typeof parsed.vault === 'string' && parsed.vault.trim() !== '' ? parsed.vault.trim() : null,
-    llm: { providers: parseProviders(parsed.llm?.providers), use: parseUse(parsed.llm?.use) },
+    llm: { providers: parseProviders(parsed.llm?.providers), use: parseUse(parsed.llm?.use), contextWindows: parseContextWindows(parsed.llm?.contextWindows) },
     ownerAliases: stringArrayOrEmpty(parsed.ownerAliases, 'ownerAliases'),
     leisureRules: resolveLeisureRules(parsed.leisureRules),
     ocr: resolveOcr(parsed.ocr),

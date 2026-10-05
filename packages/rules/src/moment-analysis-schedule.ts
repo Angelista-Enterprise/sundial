@@ -1,11 +1,10 @@
-import { isRedactedPlaceholder } from '@sundial/helpers/redact/redact-policy.js';
 import { withPersona } from '@sundial/kernel/persona.js';
 import type { Commitment, KernelState, MomentRollup, Rule } from '@sundial/kernel/types.js';
 import { namesDeliverable, samePerson } from './promise-terms.js';
 import { isMarked } from './ingest-anomaly.js';
 import { notesEditedToday } from './vault-track.js';
 import { recentMailSubjects } from './mail-track.js';
-import { closingMomentRow } from './moment-close.js';
+import { closingMomentRow, noIntentReason } from './moment-close.js';
 import { goalLabel, openGoals } from './goal-checkin.js';
 import { clip } from './questions/index.js';
 import { MAX_GOAL_SLOTS, MAX_PROMISE_SLOTS, momentFanout } from './questions/moment-fanout.js';
@@ -150,21 +149,12 @@ export const momentAnalysisSchedule: Rule = (state, event) => {
   // J3.7: a title the anomaly check marked as a claim or an instruction never
   // reaches the judge or the text model. It stays in the log and on the row.
   const closing = { ...state.moment, rollup: { ...state.moment.rollup, windowTitles: state.moment.rollup.windowTitles.filter((t) => !isMarked(state, t)), pageExcerpt: state.moment.rollup.pageExcerpt && !isMarked(state, state.moment.rollup.pageExcerpt) ? state.moment.rollup.pageExcerpt : null } };
-  if (closing.rollup.windowTitles.length === 0) return { state, effects: [] };
-
-  // A closing moment with only one window title identical to the process
-  // name (or empty) is too thin to analyze — a single instantaneous window
-  // flick, not real content.
+  // A closing moment with no title but the process name is too thin to analyze — a single
+  // instantaneous window flick, not real content. E3 (fixes A§6.3): one whose every title
+  // `sanitizeAtIngest` blanked to `[private]`/`[hidden]` has nothing left to analyze either;
+  // the prompt would be pure noise. `noIntentReason` is the one test, shared with the close.
+  if (noIntentReason(closing.processName, closing.rollup.windowTitles) !== null) return { state, effects: [] };
   const titles = closing.rollup.windowTitles.filter((t) => t && t !== closing.processName);
-  if (titles.length === 0) return { state, effects: [] };
-
-  // E3 (docs/audit/production-proposal-and-enhancements.md, fixes A§6.3) —
-  // a sensitive/hidden process's titles are already blanked to `[private]`/
-  // `[hidden]` by `sanitizeAtIngest`; if every title is a placeholder,
-  // there is nothing left to analyze, and the prompt would just be
-  // "Window titles seen, in order: [private] -> [private]" — pure noise,
-  // spent budget for zero information.
-  if (titles.every((t) => isRedactedPlaceholder(t))) return { state, effects: [] };
 
   const newProcessName = event.type === 'window:changed' && typeof (event.payload as WindowChangedPayload).processName === 'string' ? (event.payload as WindowChangedPayload).processName! : null;
 

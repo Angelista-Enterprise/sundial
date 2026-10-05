@@ -20,7 +20,7 @@
 //
 // Named exports only — a default export drops `inject`.
 import { randomUUID } from 'node:crypto'
-import { KernelRuntime, openLlmAudit, gatherAmbientInput, loadOrGenerateDeviceId, presentLine, renderBrief, shownPayload, turnBrief } from '@sundial/harness-runtime/index.js'
+import { KernelRuntime, briefParts, openLlmAudit, gatherAmbientInput, loadOrGenerateDeviceId, presentLine, renderBrief, shownPayload, turnBrief } from '@sundial/harness-runtime/index.js'
 import { existingDefaultRoots, lastBackfill, planBackfill, runBackfill } from '@sundial/harness-runtime/backfill.js'
 import { installLastGoodLookup } from '@sundial/helpers/dns-last-good.js'
 import { loadSundialEnv } from '@sundial/helpers/sundial-env.js'
@@ -37,17 +37,30 @@ const CLOCK_TICK_INTERVAL_MS = 60_000
  * The ambient memory is read here, once per turn (W1 step 5: no timer, no cache);
  * `sections` are the other plugins' blocks (the board), read from the same state.
  * `recorded` settles once `chat:shown` has folded, for a caller that reads the cause back.
+ *
+ * A chat is told each unchanged part of its brief once: `given` remembers, per
+ * session, the parts already in that session's history. Compaction rewrites the
+ * history, so `forget()` (on `compaction/end`) makes the next brief whole again;
+ * so does a restart. A work brief is not remembered: a job can hand its brief
+ * to a helper in another session, and the work session never sees it.
  */
 export function briefFor(runtime, { now = Date.now, gather = (state) => gatherAmbientInput({ state }), sections = () => [] } = {}) {
   const warn = (what) => (error) => console.warn(`[sundial-kernel] ${what}: ${error instanceof Error ? error.message : String(error)}`)
-  return async (input) => {
+  const given = new Map()
+  const brief = async (input) => {
     const state = runtime.getState()
     const memory = await Promise.resolve().then(() => gather(state)).catch((error) => (warn('ambient memory not read')(error), null))
-    const brief = turnBrief(state, memory, input, now())
+    const shown = turnBrief(state, memory, input, now())
     const briefId = `brief-${randomUUID()}`
-    const recorded = Promise.resolve(runtime.appendSignal('chat:shown', shownPayload(brief, briefId))).catch(warn('chat:shown not recorded'))
-    return { briefId, text: renderBrief(brief, sections(state)), present: presentLine(brief), recorded }
+    const recorded = Promise.resolve(runtime.appendSignal('chat:shown', shownPayload(shown, briefId))).catch(warn('chat:shown not recorded'))
+    const parts = sections(state)
+    const remembered = shown.cause.kind === 'work' ? null : (given.get(input.sessionId) ?? given.set(input.sessionId, new Set()).get(input.sessionId))
+    const text = renderBrief(shown, parts, remembered ?? undefined)
+    for (const part of remembered ? briefParts(shown, parts) : []) remembered.add(part)
+    return { briefId, text, present: presentLine(shown), recorded }
   }
+  brief.forget = () => given.clear()
+  return brief
 }
 
 export async function apply(ctx, config = {}) {
@@ -99,6 +112,10 @@ export async function apply(ctx, config = {}) {
   const sections = new Set()
   const briefSections = (state) => [...sections].map((fn) => { try { return fn(state) } catch { return '' } }).filter((text) => typeof text === 'string' && text !== '')
 
+  const brief = briefFor(runtime, { sections: briefSections })
+  // Compaction rewrote some session's history: every chat is briefed whole on its next turn.
+  ctx.on('compaction/end', () => brief.forget())
+
   ctx.provide('gnomonKernel', {
     /** Append one signal: sanitize → signals log → reduce(RULE_MANIFEST) → effects. Serialized. */
     appendSignal: (type, payload, ts) => runtime.appendSignal(type, payload, ts),
@@ -127,7 +144,7 @@ export async function apply(ctx, config = {}) {
      * `input`: { sessionId, cause?, place?, answering?, text? }. Async: it reads
      * the ambient memory. `recorded` settles when `chat:shown` has folded.
      */
-    brief: briefFor(runtime, { sections: briefSections }),
+    brief,
     /** W1: add a block to every brief, `(state) => text`; returns its removal. */
     briefSection: (fn) => (sections.add(fn), () => sections.delete(fn)),
     /** The first-run back-fill on /setup: defaults, a dry count, the run, and the last run. */

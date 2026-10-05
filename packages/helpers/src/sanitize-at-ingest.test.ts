@@ -375,4 +375,34 @@ describe('every sensor text field gets the secret pass (release audit)', () => {
       privacyConfig.hiddenApps.pop();
     }
   });
+  it('scrubs the secrets people paste into a coding agent before an agent:turn is stored', () => {
+    const text = [
+      'AWS_SECRET_ACCESS_KEY=abcdEFGHijklMNOPqrstUVWXyz0123456789abcd',
+      'try postgres://mira:s3cretpass@db:5432/app',
+      'key AIza' + 'A'.repeat(35),
+      'stripe sk_live_' + '1'.repeat(24),
+      'see https://bucket.s3.test/f.zip?X-Amz-Signature=deadbeefcafe&x=1',
+    ].join('\n');
+    const out = sanitizeAtIngest({ id: 'e1', type: 'agent:turn', ts: '2026-10-05T09:00:00.000Z', payload: { agent: 'claude', role: 'prompt', cwd: '/Users/mira/p', text } });
+    const said = String(out.payload.text);
+    for (const secret of ['abcdEFGH', 's3cretpass', 'AIzaAAAA', 'sk_live_1111', 'deadbeefcafe']) expect(said).not.toContain(secret);
+    expect(said).toContain('@db:5432');
+    expect(out.payload.cwd).toBe('~/p');
+  });
+});
+
+describe('gaps found by the 2026-10-05 audit of the live record', () => {
+  const clean = (payload: Record<string, unknown>) => sanitizeAtIngest({ id: 'x', type: 'window:changed', ts: '', payload }).payload;
+
+  it('a window title gets the personal-data pass', () => {
+    expect(clean({ processName: 'Arc', windowTitle: 'Inbox - mira.bakker@example.com - Mail' }).windowTitle).toBe('Inbox - [email] - Mail');
+  });
+
+  it('a title URL with a port loses its query', () => {
+    expect(clean({ processName: 'Google Chrome', windowTitle: '127.0.0.1:3080/?token=abcDEF123456 - Google Chrome' }).windowTitle).toBe('127.0.0.1:3080/ - Google Chrome'); // gitleaks:allow — a made-up sign-in token, the shape the test is about
+  });
+
+  it('a web URL in documentPath loses its query', () => {
+    expect(clean({ processName: 'Google Chrome', documentPath: 'https://box.example.com/cb?token=abc&apiKey=xyz' }).documentPath).toBe('https://box.example.com/cb');
+  });
 });

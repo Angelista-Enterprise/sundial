@@ -170,6 +170,13 @@ describe('parseCompanionInsight', () => {
     expect(parseCompanionInsight('{"body": "B"}')).toBeNull();
   });
 
+  it('R1: a write-up cut off mid-stream (a route failing at 50%) is dropped whole, never half-written', () => {
+    // The notice itself is the rule's own sentence, sent by the gate's Notify before any model call
+    // (notice-gate.test.ts: Notify, then ScheduleLLM); only this note rides the route, and a partial one is no note.
+    expect(parseCompanionInsight('{"title": "T", "body": "B')).toBeNull();
+    expect(parseCompanionInsight('{"title": "T", "bo')).toBeNull();
+  });
+
   it('returns null for unparseable text instead of throwing', () => {
     expect(parseCompanionInsight('definitely not json')).toBeNull();
   });

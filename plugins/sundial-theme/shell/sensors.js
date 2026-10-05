@@ -73,7 +73,7 @@ export const SENSORS = [
   { name: 'input activity', package: 'input-activity', events: ['input:activity'], speech: 'heartbeat', does: 'counts keys and clicks, never what was typed' },
   { name: 'window', package: 'window', events: ['window:changed'], speech: 'state', does: 'which app and window is in front' },
   { name: 'project', package: 'project', events: ['project:detected', 'project:switched'], speech: 'state', does: 'which repository the work is in' },
-  { name: 'agent session', package: 'agent-session', events: ['agent:session', 'agent:fleet', 'agent:hook'], speech: 'state', does: 'where each coding agent works and what it waits on' },
+  { name: 'agent session', package: 'agent-session', events: ['agent:session', 'agent:fleet', 'agent:hook', 'agent:turn'], speech: 'state', does: 'where each coding agent works, what it waits on, and what you asked it' },
   { name: 'focus mode', package: 'focus-mode', events: ['focus-mode:changed'], speech: 'state', does: 'whether Do Not Disturb is on' },
   { name: 'audio and camera', package: 'audio-context', events: ['media:state'], speech: 'state', does: 'whether the mic or camera is live' },
   { name: 'network', package: 'location-network', events: ['location:network'], speech: 'state', does: 'which network you are on, as a fingerprint' },

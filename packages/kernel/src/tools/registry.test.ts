@@ -36,6 +36,8 @@ describe('the tool registry', () => {
       // What Gnomon's own thinking costs, and what its failures cost — the
       // ledger along one axis at a time, so a lens can card any of them.
       'gnomon_llm_ledger',
+      // Every coding-agent session in one call, so an audit never reads raw transcripts with the shell (2026-10-05).
+      'gnomon_agent_sessions',
       'gnomon_anomalies',
       // The roster, so "who do I work with" is answerable without the owner
       // naming anyone first. Before it, 18 of this record's 39 people were

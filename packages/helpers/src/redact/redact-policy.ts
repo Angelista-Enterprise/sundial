@@ -38,11 +38,13 @@ export function isHiddenProcess(processName: string): boolean {
 
 /**
  * `[private]` for sensitive apps; otherwise the title with any embedded
- * `http(s)://…` URL query strings stripped per the redaction tier.
+ * URL query strings stripped per the redaction tier, then the secret and
+ * personal-data pass: a webmail tab's title carries the account's address,
+ * and that reached the log and the model until 2026-10-05.
  */
 export function windowTitleForEgress(processName: string, windowTitle: string): string {
   if (isSensitiveProcess(processName)) return '[private]';
-  return stripEmbeddedUrlQueries(windowTitle);
+  return redactWithPolicy(stripEmbeddedUrlQueries(windowTitle));
 }
 
 /**

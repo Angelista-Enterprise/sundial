@@ -29,7 +29,7 @@ const MAX_SIGNAL_FIELD_CHARS = 200;
  * clause of each utterance. Never in the default set, where they would crowd
  * out every other kind of evidence on a day.
  */
-const TEXT_SIGNAL_TYPES = new Set(['audio', 'screen', 'page']);
+const TEXT_SIGNAL_TYPES = new Set(['audio', 'screen', 'page', 'agent:turn']);
 const TEXT_FIELD_CHARS = 1200;
 
 /**
@@ -275,7 +275,7 @@ export const EVIDENCE_TOOLS: GnomonTool[] = [
   {
     name: 'gnomon_signals',
     description:
-      'Raw sensor events for one day, the lowest-level record there is — shell commands actually run, window titles actually focused, git status changes, clipboard and calendar activity, and, when asked for by type, what was SAID near the machine (audio: spokenText and language, English and Dutch), what was ON SCREEN (screen: text read off the screen), the text of web pages read (page), browser tabs (browser) and where the owner was (location). Use it when a question needs literal evidence no summary carries, e.g. "did I run any docker commands", "what was the window title at 3pm", "what did Alex say in standup" (signalType audio, from/to the meeting\'s times, contains a name or word). Narrow with from/to (HH:MM, owner time) and contains (words the row must hold). Filter with signalType when you know the kind you want; omitting it returns owner-activity types only, since the pure-telemetry sensors (input ticks, clock ticks) fire whether or not anyone is at the machine and would crowd out everything else. Returns ONE PAGE of a day: `total` is how many rows the day actually holds, and when `nextOffset` is present, call this tool again with that offset for the next page. Do not ask for a large limit to avoid paging — the page is small so the first look is cheap, and the total tells you whether a second one is worth taking.',
+      'Raw sensor events for one day, the lowest-level record there is — shell commands actually run, window titles actually focused, git status changes, clipboard and calendar activity, and, when asked for by type, what was SAID near the machine (audio: spokenText and language, English and Dutch), what was ON SCREEN (screen: text read off the screen), the text of web pages read (page), browser tabs (browser), what the owner asked each coding agent and what it answered (agent:turn: role prompt, reply or rejected, from Claude Code, Codex, Gemini, Copilot, Cursor and opencode, with session and cwd) and where the owner was (location). Use it when a question needs literal evidence no summary carries, e.g. "did I run any docker commands", "what was the window title at 3pm", "what did Alex say in standup" (signalType audio, from/to the meeting\'s times, contains a name or word). Narrow with from/to (HH:MM, owner time) and contains (words the row must hold). Filter with signalType when you know the kind you want; omitting it returns owner-activity types only, since the pure-telemetry sensors (input ticks, clock ticks) fire whether or not anyone is at the machine and would crowd out everything else. Returns ONE PAGE of a day: `total` is how many rows the day actually holds, and when `nextOffset` is present, call this tool again with that offset for the next page. Do not ask for a large limit to avoid paging — the page is small so the first look is cheap, and the total tells you whether a second one is worth taking.',
     schema: {
       date: z.string().optional().describe('YYYY-MM-DD in the owner timezone, defaults to today'),
       signalType: z
@@ -317,7 +317,7 @@ export const EVIDENCE_TOOLS: GnomonTool[] = [
       // size back to the caller, which is the blindness that made a model ask
       // for `limit: 200` on half of these calls.
       const [total, rows] = await Promise.all([countSignalsInRange(start, end, types, needle), getSignalsInRange(start, end, want, types, from, needle)]);
-      const cap = signalType && TEXT_SIGNAL_TYPES.has(String(signalType).split(':')[0]!) ? TEXT_FIELD_CHARS : MAX_SIGNAL_FIELD_CHARS;
+      const cap = signalType && (TEXT_SIGNAL_TYPES.has(String(signalType)) || TEXT_SIGNAL_TYPES.has(String(signalType).split(':')[0]!)) ? TEXT_FIELD_CHARS : MAX_SIGNAL_FIELD_CHARS;
       const wrapper = {
         date: day,
         ...(fromTime || toTime ? { from: (fromTime as string | undefined) ?? '00:00', to: (toTime as string | undefined) ?? '24:00' } : {}),

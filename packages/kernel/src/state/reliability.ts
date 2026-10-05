@@ -37,8 +37,8 @@ export interface SensorHealthState {
 export interface LlmRouteReliability {
   /** Failed calls in a row (a cancelled call counts neither way). */
   streak: number;
-  /** The longest run of failures this route has had (scorecard row 2). Optional: older snapshots. */
-  longest?: number;
+  /** The longest run of failures while the breaker was closed (scorecard row 2): at most `BREAKER_FAILURES` while it works. Replaced `longest`, which also counted the failed probes of an open breaker (a 26 h outage read as 140). Optional: older snapshots. */
+  longestClosed?: number;
   /** When the breaker opened; null while closed. */
   openedAt: string | null;
   /** No call on this route before this, except the one half-open probe after it; null while closed. */

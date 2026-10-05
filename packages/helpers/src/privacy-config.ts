@@ -57,6 +57,12 @@ const DEFAULT_SHELL_REDACT_PATTERNS = [
   '\\bAKIA[0-9A-Z]{16}\\b',
   '\\bxox[abprs]-[A-Za-z0-9-]{10,}',
   '\\beyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}',
+  // Pasted into coding-agent prompts (2026-10-05): env lines, more vendors' key shapes, signed URLs.
+  '(?i)\\b[A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY)[A-Z0-9_]*[ \\t]*[=:][ \\t]*["\']?[^\\s"\']+',
+  '\\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}',
+  '\\bAIza[0-9A-Za-z_-]{35}',
+  '\\b(?:npm_[A-Za-z0-9]{36}|glpat-[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9]{30,})',
+  '(?i)[?&](?:x-amz-signature|x-amz-credential|x-amz-security-token|signature|sig|key|code|access_token)=[^&\\s]+',
 ];
 
 export const privacyConfig: PrivacyConfig = {

@@ -199,6 +199,35 @@ describe('sundial start opens the app without the caller\'s install variables (h
   })
 })
 
+describe('sundial restart waits for the old app to be gone', () => {
+  it('polls the pid, not app.pid, and tries `open` once more when it fails', () => {
+    const home = path.join(root, 'install')
+    const bin = path.join(root, 'bin')
+    const app = path.join(root, 'Sundial.app')
+    fs.mkdirSync(path.join(home, '.daemon'), { recursive: true })
+    fs.mkdirSync(bin)
+    fs.writeFileSync(path.join(home, '.sundial-install.json'), JSON.stringify({ tool: 'sundial', home, mode: 'app', app }))
+    // As Sundial.swift: app.pid goes in applicationWillTerminate, the process a moment later.
+    const pidFile = path.join(home, '.daemon', 'app.pid')
+    // Started through `sh … &` so launchd reaps it, as it does the app: a child
+    // of this blocked test process would linger as a zombie that kill -0 still finds.
+    const script = `const fs = require('fs'); process.on('SIGTERM', () => { fs.rmSync(process.argv[1]); setTimeout(() => process.exit(0), 1000) }); fs.writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000)`
+    spawnSync('/bin/sh', ['-c', `"$0" -e "$1" "$2" >/dev/null 2>&1 &`, process.execPath, script, pidFile])
+    for (let i = 0; i < 100 && !fs.existsSync(pidFile); i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
+    const fake = { pid: Number(fs.readFileSync(pidFile, 'utf8')), kill: (sig) => { try { process.kill(fake.pid, sig) } catch {} } }
+    const seen = path.join(root, 'open.txt')
+    const count = path.join(root, 'count')
+    fs.writeFileSync(path.join(bin, 'open'), `#!/bin/sh\nn=$(( $(cat '${count}' 2>/dev/null || echo 0) + 1 ))\necho $n > '${count}'\nkill -0 ${fake.pid} 2>/dev/null && echo alive >> '${seen}' || echo gone >> '${seen}'\n[ $n -ge 2 ]\n`, { mode: 0o755 })
+    try {
+      const r = sundial(['restart'], { SUNDIAL_HOME: home, PATH: `${bin}:${process.env.PATH}` })
+      expect(r.code, r.out).toBe(0)
+      expect(fs.readFileSync(seen, 'utf8')).toBe('gone\ngone\n')
+    } finally {
+      fake.kill('SIGKILL')
+    }
+  })
+})
+
 // lane H (H7)
 describe('sundial status and doctor on an existing install', () => {
   it('doctor fails when the Node app.env names is gone', () => {

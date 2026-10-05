@@ -76,13 +76,15 @@ describe('calibrate: parameters (W5 step 3)', () => {
 
   it('row 11: actions verified and performed, per tool', () => {
     const s = fold(createInitialState('d1'), [
-      ev('action:verified', at(1), { tool: 'calendar_create', failed: false }),
+      ev('action:verified', at(1), { tool: 'calendar_create', failed: false, outward: true }),
+      ev('action:verified', at(2), { tool: 'calendar_create', failed: true, outward: true }),
+      // R11: a verdict from before the outward-only rule (a read, a no-op, a refusal) is not counted.
       ev('action:verified', at(2), { tool: 'calendar_create', failed: true }),
       ev('action:performed', at(3), { tool: 'run_shell', outcome: 'ok' }),
       ev('action:performed', at(4), { tool: 'run_shell', refused: 'not allowed' }),
       ev('action:performed', at(5), { tool: 'reminder_create', reminderId: 'r1' }),
     ]);
-    expect(s.calibrated.params['action.verified:calendar_create']).toMatchObject({ n: 2, hits: 1 });
+    expect(s.calibrated.params['action.outward:calendar_create']).toMatchObject({ n: 2, hits: 1 });
     expect(s.calibrated.params['action.performed:run_shell']).toMatchObject({ n: 2, hits: 1 });
     expect(s.calibrated.params['action.performed:reminder_create']).toMatchObject({ n: 1, hits: 1 });
   });

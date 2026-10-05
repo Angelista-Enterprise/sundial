@@ -34,7 +34,8 @@ import path from 'node:path';
  * the branch, which tool is pending (AskUserQuestion is a question, ExitPlanMode
  * a plan, anything else a tool, U3-F5), a final API error (U3-F6), the session's
  * cost (`cost-state`, U3-F27) and pull request (`pr-link`). The title and the
- * last prompt are copied too, capped, with the owner's consent: they are free
+ * last prompt are copied too, capped, with the owner's consent, and since
+ * 2026-10-05 the last finished reply: they are free
  * text, and pass the one redaction pass at ingest like every other field.
  * Nothing else from a message is ever copied out.
  */
@@ -65,6 +66,8 @@ export interface AgentFleetSession {
   title?: string;
   /** The owner's last prompt in it. Capped; redacted at ingest. */
   lastPrompt?: string;
+  /** The agent's last finished reply, so a waiting session says what it is waiting with. Capped; redacted at ingest. */
+  lastReply?: string;
   /** List-price estimate from the transcript's `cost-state` record. */
   costUsd?: number;
   lines?: { added: number; removed: number };
@@ -87,6 +90,7 @@ export const MAX_FLEET = 12;
 const TAIL_BYTES = 256 * 1024;
 const TITLE_CHARS = 80;
 const PROMPT_CHARS = 200;
+const REPLY_CHARS = 400;
 
 const cap = (s: unknown, n: number): string | undefined => {
   if (typeof s !== 'string') return undefined;
@@ -99,7 +103,7 @@ function strip<T extends object>(o: T): T {
   return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as T;
 }
 
-type Extras = Pick<AgentFleetSession, 'title' | 'lastPrompt' | 'costUsd' | 'lines' | 'pr' | 'repeats'>;
+type Extras = Pick<AgentFleetSession, 'title' | 'lastPrompt' | 'lastReply' | 'costUsd' | 'lines' | 'pr' | 'repeats'>;
 /** A pending call to one of these is a subagent at work, not a tool waiting on anything (U3-F9). */
 const SUBAGENT_TOOLS = new Set(['Agent', 'Task']);
 /** From this many identical failing calls in a row, the streak is reported. */
@@ -178,6 +182,10 @@ export function summarizeTail(lines: string[]): TailSummary | null {
       streak = failed ? (pendingCall === lastCall ? streak + 1 : 1) : 0;
       lastCall = failed ? pendingCall : null;
       pendingCall = null;
+    }
+    if (r.type === 'assistant' && message.stop_reason === 'end_turn') {
+      const said = content.filter((c) => c?.type === 'text').map((c) => (c as { text?: unknown }).text).filter((t): t is string => typeof t === 'string').join(' ');
+      meta.lastReply = cap(said, REPLY_CHARS) ?? meta.lastReply;
     }
     last = {
       type: r.type,
@@ -329,7 +337,7 @@ export function readAgentFleet(now: number = Date.now(), claudeDir: string = pat
       return null;
     }
   };
-  const extras = (tail: TailSummary | null): Extras => (tail ? strip({ title: tail.title, lastPrompt: tail.lastPrompt, costUsd: tail.costUsd, lines: tail.lines, pr: tail.pr, repeats: tail.repeats }) : {});
+  const extras = (tail: TailSummary | null): Extras => (tail ? strip({ title: tail.title, lastPrompt: tail.lastPrompt, lastReply: tail.lastReply, costUsd: tail.costUsd, lines: tail.lines, pr: tail.pr, repeats: tail.repeats }) : {});
   const out = new Map<string, AgentFleetSession>();
   const ended: EndedSession[] = [];
   const add = (sessionId: string, s: AgentFleetSession) => {

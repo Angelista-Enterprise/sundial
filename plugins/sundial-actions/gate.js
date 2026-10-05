@@ -476,6 +476,18 @@ export function outwardCall(toolName, args, isRead = () => undefined) {
   }
   return OUTWARD_WORDS[toolName] ?? null
 }
+/**
+ * R11 — a call that never ran: the owner said no, stopped it, or dsh aborted it before dispatch.
+ * That is a refusal (`action:decided` has it), not an action to verify. Matched on the error text,
+ * the only mark these results carry.
+ */
+// ponytail: text match on dsh's and server.js's messages; a structured `refused` flag on the result if dsh grows one.
+const NEVER_RAN = /the user rejected tool|tool call aborted before dispatch|the owner stopped this tool call/
+export function neverRan(result) {
+  if (result?.isError !== true) return false
+  const parts = Array.isArray(result.content) ? result.content : Array.isArray(result.value) ? result.value : []
+  return parts.some((p) => typeof p?.text === 'string' && NEVER_RAN.test(p.text))
+}
 const OUTWARD_WORDS = {
   gnomon_calendar_create: 'The calendar event Gnomon made',
   gnomon_reminder_create: 'The reminder Gnomon made',

@@ -58,11 +58,14 @@ describe('bumpCalibration', () => {
 });
 
 describe('hasSkill (Q8)', () => {
-  it('needs 50 resolutions and a Brier under the constant p(1 − p)', () => {
+  it('R8: needs skill >= 0.2 against the constant p(1 − p) over 200 resolutions (row 8)', () => {
     // The live shapes, made up: a tournament base rate that bets its own mean does not beat it.
     expect(hasSkill({ t: { n: 58, hits: 41, brierSum: 14.45 } }, 't')).toBe(false);
-    expect(hasSkill({ t: { n: 49, hits: 10, brierSum: 1 } }, 't')).toBe(false);
-    expect(hasSkill({ t: { n: 742, hits: 193, brierSum: 124.7 } }, 't')).toBe(true);
+    expect(hasSkill({ t: { n: 199, hits: 40, brierSum: 1 } }, 't')).toBe(false); // skilled, too few
+    // p = 0.26, Brier 0.168: skill 0.13, positive but under the bar (project-touched's shape).
+    expect(hasSkill({ t: { n: 742, hits: 193, brierSum: 124.7 } }, 't')).toBe(false);
+    // p = 0.5, Brier 0.05: skill 0.8 (day-ending's shape).
+    expect(hasSkill({ t: { n: 1200, hits: 600, brierSum: 60 } }, 't')).toBe(true);
     expect(hasSkill({ t: { n: 60, hits: 0, brierSum: 0 } }, 't')).toBe(false);
     expect(hasSkill({}, 't')).toBe(false);
   });

@@ -23,11 +23,11 @@ function convertAll() {
   return out;
 }
 
-describe('toParameterSchemaSpec over all 28 real tool schemas', () => {
+describe('toParameterSchemaSpec over all 29 real tool schemas', () => {
   const converted = convertAll();
 
-  it('covers the full ASK_TOOL_REGISTRY (the 28 shared tools; lane D added gnomon_project_handoff, lane C gnomon_drift and gnomon_agent_yield, lane B gnomon_brief, lane A gnomon_did_i, gnomon_timeline and gnomon_what_if, W5 gnomon_reliability)', () => {
-    expect(converted.size).toBe(28);
+  it('covers the full ASK_TOOL_REGISTRY (the 29 shared tools; lane D added gnomon_project_handoff, lane C gnomon_drift and gnomon_agent_yield, lane B gnomon_brief, lane A gnomon_did_i, gnomon_timeline and gnomon_what_if, W5 gnomon_reliability, and gnomon_agent_sessions)', () => {
+    expect(converted.size).toBe(29);
     expect([...converted.keys()]).toContain('gnomon_routines');
   });
 

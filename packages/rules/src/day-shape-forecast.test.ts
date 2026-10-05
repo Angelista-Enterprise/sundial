@@ -90,15 +90,15 @@ describe('dayShapeForecast', () => {
     expect(state.memory.accumulatedImportance).toBe(0);
   });
 
-  it('with skill on 50 or more resolutions, a miss feeds the shared drive, same as anomalyZscore (Q8)', () => {
+  it('with skill >= 0.2 on 200 or more resolutions (R8), a miss feeds the shared drive, same as anomalyZscore (Q8)', () => {
     const base = createInitialState('d1');
-    // 60 resolutions, 3 hits, Brier 0.02: well under the constant's 0.0475.
-    const skilled = { ...base, predictions: { ...base.predictions, calibration: { 'day-ending': { n: 60, hits: 3, brierSum: 1.2 } } } };
+    // 240 resolutions, 12 hits, Brier 0.02 against the constant's 0.0475: skill 0.58.
+    const skilled = { ...base, predictions: { ...base.predictions, calibration: { 'day-ending': { n: 240, hits: 12, brierSum: 4.8 } } } };
     let state = promoteHour(skilled, 2026, 1, 1, 10, 'a');
     state = promoteHour(state, 2026, 1, 1, 11, 'b');
     expect(state.memory.accumulatedImportance).toBeGreaterThan(0);
     // The same record at the constant's Brier: no skill, no say.
-    const flat = { ...base, predictions: { ...base.predictions, calibration: { 'day-ending': { n: 60, hits: 3, brierSum: 2.85 } } } };
+    const flat = { ...base, predictions: { ...base.predictions, calibration: { 'day-ending': { n: 240, hits: 12, brierSum: 11.4 } } } };
     expect(promoteHour(promoteHour(flat, 2026, 1, 1, 10, 'a'), 2026, 1, 1, 11, 'b').memory.accumulatedImportance).toBe(0);
   });
 

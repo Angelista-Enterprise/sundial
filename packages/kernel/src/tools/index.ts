@@ -6,6 +6,7 @@ import { EVIDENCE_TOOLS } from './evidence-tools.js';
 import { FIGURE_TOOLS } from './figure-tools.js';
 // lane D
 import { HANDOFF_TOOLS } from './handoff-tools.js';
+import { AGENT_TOOLS } from './agent-tools.js';
 import { MEMORY_TOOLS } from './memory-tools.js';
 import { TREND_TOOLS } from './trend-tools.js';
 import { RECALL_TOOLS } from './recall-tools.js';
@@ -33,7 +34,7 @@ export { ASK_SYSTEM_PROMPT } from './ask-prompt.js';
  * it belongs at the end of the work.
  */
 // lane D: HANDOFF_TOOLS (#20); lane C: TREND_TOOLS; lane B: BRIEF_TOOLS; lane A: RECALL_TOOLS; W5: RELIABILITY_TOOLS; the figures stay last.
-export const TOOL_REGISTRY: GnomonTool[] = [...EVIDENCE_TOOLS, ...CONTEXT_TOOLS, ...MEMORY_TOOLS, ...HANDOFF_TOOLS, ...TREND_TOOLS, ...BRIEF_TOOLS, ...RECALL_TOOLS, ...RELIABILITY_TOOLS, ...FIGURE_TOOLS];
+export const TOOL_REGISTRY: GnomonTool[] = [...EVIDENCE_TOOLS, ...CONTEXT_TOOLS, ...AGENT_TOOLS, ...MEMORY_TOOLS, ...HANDOFF_TOOLS, ...TREND_TOOLS, ...BRIEF_TOOLS, ...RECALL_TOOLS, ...RELIABILITY_TOOLS, ...FIGURE_TOOLS];
 
 /**
  * What the chat may call. The same list MCP is advertised since

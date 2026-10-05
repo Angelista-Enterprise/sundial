@@ -3,7 +3,7 @@
 // tool-class cell of the table, the bash destructive-deny, and that
 // config.actions can tighten but never loosen.
 import { describe, it, expect } from 'vitest'
-import { callFacts, callRecord, decideAction, decisionRecord, escalate, GNOMON_TOOLS, judgedAction, openedByOwner, outwardCall, parseMcpToolName, shellWrite, unverifiedNotice } from './gate.js'
+import { callFacts, callRecord, decideAction, decisionRecord, escalate, GNOMON_TOOLS, judgedAction, neverRan, openedByOwner, outwardCall, parseMcpToolName, shellWrite, unverifiedNotice } from './gate.js'
 import { resolveActionPolicy } from '@sundial/helpers/sundial-config.js'
 import { autonomyOf } from './index.js'
 
@@ -426,5 +426,19 @@ describe('W3: action:decided refolds to the same verdict', () => {
               n += 1
             }
     expect(n).toBe(calls.length * presets.length * actionsList.length * 5 * 3)
+  })
+})
+
+describe('R11: neverRan — a refusal is not an action to verify', () => {
+  const err = (text) => ({ isError: true, content: [{ type: 'text', text }] })
+  it('the owner said no, stopped it, or dsh aborted it: never ran', () => {
+    expect(neverRan(err('Error: the user rejected tool "mcp__notes__create_file"'))).toBe(true)
+    expect(neverRan({ isError: true, value: [{ type: 'text', text: 'Error: tool call aborted before dispatch' }] })).toBe(true)
+    expect(neverRan(err('Error: the owner stopped this tool call while it was running.'))).toBe(true)
+  })
+  it('a real failure or a success ran', () => {
+    expect(neverRan(err('Error: MCP error -32603: upstream'))).toBe(false)
+    expect(neverRan({ isError: false, content: [{ type: 'text', text: 'the user rejected tool' }] })).toBe(false)
+    expect(neverRan(null)).toBe(false)
   })
 })

@@ -35,7 +35,7 @@ export function mountWrites(ctx, shell) {
    * hands and Gnomon's tool write the same log and every open browser hears
    * the same `gnomon/board`.
    */
-  const BOARD_EVENTS = new Set(['place', 'move', 'remove', 'focus', 'notice', 'walk', 'step', 'continue', 'plan', 'span', 'clear', 'arrange', 'save', 'load', 'section', 'unsection'])
+  const BOARD_EVENTS = new Set(['place', 'move', 'remove', 'focus', 'notice', 'walk', 'step', 'continue', 'plan', 'span', 'clear', 'arrange', 'save', 'load', 'section'])
   api('/gnomon/api/board', async (req, res) => {
     const board = () => ctx.gnomonKernel.getState()?.board ?? null
     if (req.method !== 'POST') return sendJson(res, 200, board() ?? { cards: {}, groups: {}, scenes: {}, focus: null, updatedAt: null })

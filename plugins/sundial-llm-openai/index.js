@@ -37,7 +37,8 @@ const DEFAULT_MODEL = 'qwen/qwen3.8-flash-next'
  * The window this route DECLARES, not the model's: dsh compacts at 80% of it.
  * At 128k compaction began near 102k while a chat call averaged 41.6k prompt
  * tokens, history driving it (measured 2026-09-28). 64k starts it at ~51k.
- * Plugin config `contextWindow` overrides it.
+ * Plugin config `contextWindow` overrides it; config.json
+ * `llm.contextWindows[model]` overrides both, for one model.
  */
 const DEFAULT_CONTEXT_WINDOW = 64_000
 
@@ -506,7 +507,7 @@ export class OpenAICompatAdapter extends LlmAdapter {
       id: model,
       name: model,
       inputModalities: ['text'],
-      context: { contextWindow: this.facts.contextWindow ?? DEFAULT_CONTEXT_WINDOW },
+      context: { contextWindow: this.facts.contextWindows?.[model] ?? this.facts.contextWindow ?? DEFAULT_CONTEXT_WINDOW },
     })
   }
 
@@ -635,6 +636,7 @@ export function apply(ctx, config = {}) {
   // resolving it at call time means this plugin still loads on a profile
   // without it (cordis would otherwise make it a service to WAIT for).
   const readImage = async (ref) => ctx.get?.('attachments')?.readImage(ref)
+  const { contextWindows } = loadSundialConfig().llm
   const keyFor = (apiKeyEnv) => async () => {
     const raw = envValue(fileEnv, apiKeyEnv)
     if (raw !== undefined) return assertUsableApiKey(raw, 'sundial-llm-openai', apiKeyEnv)
@@ -655,7 +657,7 @@ export function apply(ctx, config = {}) {
     const models = Array.isArray(config.models) ? config.models.map((m) => (typeof m === 'string' ? { id: m } : m)) : undefined
     const baseUrl = baseUrlRaw.replace(/\/+$/, '')
     const model = config.model ?? envValue(fileEnv, MODEL_ENV) ?? DEFAULT_MODEL
-    const adapter = new OpenAICompatAdapter({ baseUrl, model, resolveApiKey: keyFor(config.apiKeyEnv ?? DEFAULT_API_KEY_ENV), models, readImage, contextWindow: config.contextWindow })
+    const adapter = new OpenAICompatAdapter({ baseUrl, model, resolveApiKey: keyFor(config.apiKeyEnv ?? DEFAULT_API_KEY_ENV), models, readImage, contextWindow: config.contextWindow, contextWindows })
     ctx.llm.registerAdapter([PROVIDER, LEGACY_PROVIDER], adapter)
   }
 
@@ -663,7 +665,7 @@ export function apply(ctx, config = {}) {
   const providers = config.providers ?? loadSundialConfig().llm.providers
   for (const p of providers) {
     try {
-      const adapter = new OpenAICompatAdapter({ baseUrl: p.baseUrl, model: p.model, label: p.label, resolveApiKey: keyFor(providerKeyEnv(p.id)), readImage })
+      const adapter = new OpenAICompatAdapter({ baseUrl: p.baseUrl, model: p.model, label: p.label, resolveApiKey: keyFor(providerKeyEnv(p.id)), readImage, contextWindows })
       ctx.llm.registerAdapter([p.id], adapter)
     } catch (error) {
       console.warn(`[sundial-llm-openai] provider ${p.id} not registered: ${error instanceof Error ? error.message : String(error)}`)
