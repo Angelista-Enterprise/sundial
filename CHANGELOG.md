@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.3 — 2026-10-05
+
+### Added
+- A coding-agent sensor: the on-disk transcripts of Claude Code, Codex, Gemini CLI, Copilot CLI, Cursor and opencode become `agent:turn` events — each typed prompt, each final reply, each rejected or interrupted step. Never a tool's input or output; text capped at 2,000 characters and cleaned once like everything else. Switch: `privacy.agentTranscripts` (default on).
+- `gnomon_agent_sessions`: one read tool for the fleet — each session's state, its turns, the files its hooks edited, commits on its branch and the dirty count; waiting-on-you first. Live sessions' history is backfilled.
+- A promise can open from what you type to a coding agent: a promise said outright to a named person, or a deadline on the work ("push before standup") once its proof is visible.
+- `llm.contextWindows` in `config.json`: a context window per model; compaction starts at 80% of it, and the context gauge measures against it.
+- A website, with a demo in the browser: angelista-enterprise.github.io/sundial. The demo runs Sundial's own client on a made-up week; the chat uses Chrome's built-in model. A Feedback issue form, so a note left in the demo lands here with its label.
+
+### Fixed
+- Four sanitize gaps found in the live record: window titles get the secret and personal-data pass, a title URL with a port or localhost loses its query, a web URL in `documentPath` loses its query, and a one-time code after its keyword is removed.
+- Copy and paste reach the web view: the app has an Edit menu, so ⌘C and ⌘V work.
+- `sundial restart` waits for the old app process itself, not its pid file, so `open` no longer hits the dying instance.
+- A chat is told each unchanged part of its brief once; later briefs send only what changed. 89 replayed chats: 4 → 2–3 compactions at 128k, 16–23% fewer uncached tokens.
+- A forecaster feeds the noticing gate only at the scorecard's bar (skill ≥ 0.2, n ≥ 200).
+- Reliability rows read what they claim: the breaker's longest closed run (not its failed probes), only outward calls that ran, and only the heartbeat stream, listing quiet streams instead of failing on them.
+
 ## 0.2.2 — 2026-10-03
 
 ### Fixed
