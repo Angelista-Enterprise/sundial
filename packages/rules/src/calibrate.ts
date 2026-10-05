@@ -201,7 +201,7 @@ export const calibrate: Rule = (state, event) => {
   const last = state.notices.lastDelivered;
   if (last?.at === event.ts && (event.type === 'notice:candidate' || event.type === 'clock:tick' || event.type === 'input:activity')) c = deliveries(c, last.items, event.ts, state.config.timezone);
   if (event.type === 'feedback:verdict') c = verdict(state, c, event);
-  else if (event.type === 'action:verified' && typeof event.payload.tool === 'string') c = { ...c, params: observe(c.params, `action.verified:${event.payload.tool}`, event.payload.failed !== true, event.ts) };
+  else if (event.type === 'action:verified' && typeof event.payload.tool === 'string' && event.payload.outward === true) c = { ...c, params: observe(c.params, `action.outward:${event.payload.tool}`, event.payload.failed !== true, event.ts) };
   else if (event.type === 'action:performed' && typeof event.payload.tool === 'string') {
     const outcome = event.payload.outcome ?? (event.payload.refused ? 'refused' : 'ok');
     c = { ...c, params: observe(c.params, `action.performed:${event.payload.tool}`, outcome === 'ok', event.ts) };

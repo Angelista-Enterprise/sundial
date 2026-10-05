@@ -120,6 +120,12 @@ export function parseUse(raw: unknown): Record<string, string> {
   return Object.fromEntries(Object.entries(raw as Record<string, unknown>).filter(([k, v]) => /^[a-z]+$/.test(k) && typeof v === 'string' && /^[a-z][a-z0-9-]{1,30}$/.test(v)) as [string, string][]);
 }
 
+/** Model id → window in tokens; a value outside 8k–2M is dropped, not clamped. */
+export function parseContextWindows(raw: unknown): Record<string, number> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  return Object.fromEntries(Object.entries(raw as Record<string, unknown>).filter(([, v]) => Number.isInteger(v) && (v as number) >= 8_000 && (v as number) <= 2_000_000) as [string, number][]);
+}
+
 /**
  * Set or clear lines in an env file, keeping every other line as it was. An
  * empty value removes the key. Written 0600: the file holds API keys.

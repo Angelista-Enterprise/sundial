@@ -52,7 +52,7 @@ describe('summarizeTail work in progress', () => {
 });
 
 describe('summarizeTail metadata', () => {
-  it('carries title, capped last prompt, cost and PR, and no message text', () => {
+  it('carries title, capped last prompt, the last finished reply, cost and PR, and no other message text', () => {
     const tail = summarizeTail([
       prompt('t1'),
       said('t2', 'end_turn'),
@@ -64,7 +64,9 @@ describe('summarizeTail metadata', () => {
     ]);
     expect(tail).toMatchObject({ title: 'Fix the checkout timeout', costUsd: 1.23, lines: { added: 120, removed: 30 }, pr: { number: 42 } });
     expect(tail!.lastPrompt!.length).toBe(200);
-    expect(JSON.stringify(tail)).not.toContain('secret');
+    const { lastReply, ...rest } = tail!;
+    expect(lastReply).toBe('secret');
+    expect(JSON.stringify(rest)).not.toContain('secret');
   });
 });
 
@@ -99,7 +101,7 @@ describe('readAgentFleet', () => {
     transcript('h', 'hand', [rec('assistant', ago(1), { cwd: '/Users/o/.sundial/.daemon/hands', message: { stop_reason: 'end_turn' } })]);
     // A month-old wait whose file was touched now by an appended cost-state record.
     transcript('o', 'oldold00', [prompt(ago(60 * 24 * 30)), said(ago(60 * 24 * 30), 'end_turn'), JSON.stringify({ type: 'cost-state', totalCostUSD: 1 })]);
-    expect(readAgentFleet(NOW, root)).toEqual({ sessions: [{ id: 'abcdef12', sid: 'abcdef123456', cwd: '/Users/o/p', branch: 'main', state: 'waiting', since: ago(9), source: 'transcript', origin: 'cli' }], truncated: 0 });
+    expect(readAgentFleet(NOW, root)).toEqual({ sessions: [{ id: 'abcdef12', sid: 'abcdef123456', cwd: '/Users/o/p', branch: 'main', state: 'waiting', since: ago(9), source: 'transcript', origin: 'cli', lastReply: 'secret' }], truncated: 0 });
   });
 
   it('the registry decides liveness and state: a dead pid is dropped, waitingFor names the wait (U3-F4)', () => {

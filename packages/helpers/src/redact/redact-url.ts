@@ -88,16 +88,19 @@ export function canonicalProjectRoot(value: string): string {
  * 1. Schemed:        `(https://example.com/path?q=secret&token=xyz)`
  * 2. Scheme-less:    `google.com/search?q=secret`   (Chrome address-bar form)
  *
+ * Either may carry a port (`127.0.0.1:3080/?token=…`), and `localhost` counts
+ * as a host: Sundial's own sign-in link reached the log through a title.
+ *
  * Anything from the first `?` or `#` onward is stripped; host + path are
  * preserved so the narrative value ("what page was open") survives.
  *
  * Tier 1 returns the text untouched. Tier 3 reduces embedded URLs to
  * scheme + host — the path goes too, even without a `?`/`#`.
  */
-const EMBEDDED_URL_RE = /(?:https?:\/\/)?[a-z0-9-]+(?:\.[a-z0-9-]+)+\/[^\s)\]]*[?#][^\s)\]]*/gi;
+const EMBEDDED_URL_RE = /(?:https?:\/\/)?(?:[a-z0-9-]+(?:\.[a-z0-9-]+)+|localhost)(?::\d+)?\/[^\s)\]]*[?#][^\s)\]]*/gi;
 
 /** Tier-3 variant: any embedded URL with a path, query or not. */
-const EMBEDDED_URL_WITH_PATH_RE = /((?:https?:\/\/)?[a-z0-9-]+(?:\.[a-z0-9-]+)+)\/[^\s)\]]*/gi;
+const EMBEDDED_URL_WITH_PATH_RE = /((?:https?:\/\/)?(?:[a-z0-9-]+(?:\.[a-z0-9-]+)+|localhost)(?::\d+)?)\/[^\s)\]]*/gi;
 
 export function stripEmbeddedUrlQueries(text: string, tier: RedactionTier = getRedactionTier()): string {
   if (typeof text !== 'string' || text.length === 0) return text;

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createInitialState } from '@sundial/kernel/initial-state.js';
 import type { KernelState, SanitizedEvent } from '@sundial/kernel/types.js';
-import { momentClose } from './moment-close.js';
+import { momentClose, noIntentReason } from './moment-close.js';
 
 function windowEvent(ts: string, processName: string, windowTitle = 'Some Title', documentPath: string | null = null): SanitizedEvent {
   return { id: `e-${ts}`, type: 'window:changed', ts, payload: { processName, windowTitle, documentPath }, sanitized: true };
@@ -734,5 +734,21 @@ describe('W6 D1: activeMs never exceeds the duration', () => {
     const closed = momentClose(s, windowEvent('2026-09-29T08:03:00.000Z', 'Code'));
     const row = closed.effects.find((e) => e.type === 'WriteDB')?.row as { startTime: string; durationMs: number };
     expect(row).toMatchObject({ startTime: '2026-09-29T08:02:00.000Z', durationMs: 60_000 });
+  });
+});
+
+describe('R10: the close stamps a moment that gets no intent by design', () => {
+  const close = (title: string) => {
+    let state = createInitialState('d1');
+    state = momentClose(state, windowEvent('2026-01-01T00:00:00.000Z', 'Finder', title)).state;
+    const fx = momentClose(state, windowEvent('2026-01-01T00:05:00.000Z', 'Warp')).effects[0] as unknown as { row: { data: Record<string, unknown> } };
+    return fx.row.data.intentSkipped;
+  };
+  it('a flick (no title but the process name) and an all-blanked one are stamped; a real title is not', () => {
+    expect(close('Finder')).toBe('thin');
+    expect(close('[private]')).toBe('private');
+    expect(close('BOX-484 review')).toBeUndefined();
+    expect(noIntentReason('Code', ['', 'Code'])).toBe('thin');
+    expect(noIntentReason('Code', ['[private]', 'notes.md'])).toBeNull();
   });
 });

@@ -38,10 +38,11 @@ const SHELL_PATTERN_FIELDS = ['command', 'commitLine', 'lastCommit', 'query', 't
 /**
  * Free text from the sensors added after the field list above was written —
  * browser page text, mail subjects, message chat names, screen-vision facts,
- * vault note names, shelved work, a coding agent's last prompt — which reached the log (and the page text a
+ * vault note names, shelved work, a coding agent's last prompt and reply (and, as
+ * `text`, every `agent:turn`) — which reached the log (and the page text a
  * remote model) with no secret-pattern pass at all (release audit S13).
  */
-const FREE_TEXT_FIELDS = ['text', 'subject', 'chat', 'body', 'facts', 'notes', 'sources', 'pageExcerpt', 'lastPrompt'];
+const FREE_TEXT_FIELDS = ['text', 'subject', 'chat', 'body', 'facts', 'notes', 'sources', 'pageExcerpt', 'lastPrompt', 'lastReply'];
 
 /**
  * Fields treated as local file paths. `projectRoot`/`fromProjectRoot`/
@@ -200,7 +201,9 @@ function sanitizeStringFieldValue(key: string, value: string, ctx: RedactionCtx)
   if (PERSON_STRING_FIELDS.has(key)) return aliasIfEmail(value);
   if (key === 'remote') return value.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^@/]+@/i, '$1');
   if (URL_FIELDS.has(key)) return ctx.sensitive ? '[private]' : sanitizeLocalFilePath(stripUrlQuery(value));
-  if (LOCAL_PATH_FIELDS.includes(key)) return ctx.sensitive ? '[private]' : sanitizeLocalFilePath(value);
+  // A browser's `documentPath` is the page's web URL, and its query carried
+  // sign-in tokens and keys into the log until 2026-10-05.
+  if (LOCAL_PATH_FIELDS.includes(key)) return ctx.sensitive ? '[private]' : sanitizeLocalFilePath(/^https?:\/\//i.test(value) ? stripUrlQuery(value) : value);
   if (PATTERN_FIELDS.has(key)) return ctx.sensitive ? '[private]' : redactWithPolicy(value);
   return value;
 }

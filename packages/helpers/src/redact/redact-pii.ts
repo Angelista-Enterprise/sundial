@@ -1,5 +1,5 @@
 // Personal data in free text: emails, phone numbers, card numbers, IBANs, BSNs,
-// private-key blocks and credentials inside URLs. Config-free, like the other
+// one-time codes, private-key blocks and credentials inside URLs. Config-free, like the other
 // primitives here; `redactWithPolicy` runs it after the secret patterns, so it
 // applies once, at ingest, to every field that already gets the secret pass.
 //
@@ -82,6 +82,10 @@ const DETECTORS: Detector[] = [
   { label: 'iban', re: /\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]){11,30}\b/g, valid: isIban },
   { label: 'card', re: /\b\d(?:[ -]?\d){11,18}\b/g, valid: isCardNumber },
   { label: 'bsn', re: /\b\d{8,9}\b/g, valid: isBsn, context: /\b(?:bsn|burgerservice|sofi)/i },
+  // A one-time sign-in code: a mail subject or tab title ("your verification
+  // code 482913") sent one to the model on 2026-10-02. The keyword must sit
+  // right before the digits, so a bare number stays.
+  { label: 'code', re: /\b\d{4,8}\b/g, context: /\b(?:code|codes|otp|passcode|pin|verificatiecode|inlogcode)\b\W{0,4}(?:is\W{1,3})?$/i },
   // International (+31 6 1234 5678, +1 (415) 555-0100), Dutch national
   // (06-12345678, 020 123 4567), and North American with separators. A bare
   // run of digits is never a phone number here.

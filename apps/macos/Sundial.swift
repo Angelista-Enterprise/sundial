@@ -455,6 +455,17 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         try? FileManager.default.createDirectory(at: daemonDir, withIntermediateDirectories: true)
         try? "\(getpid())\n".write(to: pidFile, atomically: true, encoding: .utf8)
 
+        // No menu bar shows for this app, but ⌘C, ⌘V and the rest only reach the
+        // web view through an Edit menu's key equivalents: without one, paste does nothing.
+        let edit = NSMenu(title: "Edit")
+        for (title, action, key) in [("Undo", "undo:", "z"), ("Redo", "redo:", "Z"), ("Cut", "cut:", "x"), ("Copy", "copy:", "c"), ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")] {
+            edit.addItem(NSMenuItem(title: title, action: Selector(action), keyEquivalent: key))
+        }
+        let editItem = NSMenuItem()
+        editItem.submenu = edit
+        NSApp.mainMenu = NSMenu()
+        NSApp.mainMenu?.addItem(editItem)
+
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         let menu = NSMenu()
         statusLine = NSMenuItem(title: "Starting…", action: nil, keyEquivalent: "")

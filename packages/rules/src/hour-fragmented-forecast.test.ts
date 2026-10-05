@@ -143,10 +143,10 @@ describe('hourFragmentedForecast', () => {
     expect(second.effects.filter((e) => e.type === 'RecordPrediction')).toHaveLength(1);
   });
 
-  it('feeds the shared surprise drive once it has skill on 50 resolutions, and not before (Q8)', () => {
+  it('feeds the shared surprise drive once it has skill >= 0.2 on 200 resolutions (R8), and not before (Q8)', () => {
     const before = createInitialState('test-device');
     expect(run([...switches('2026-08-03', 9, FRAGMENTED_HOUR_SWITCHES), ...activate('2026-08-03', 10)]).state.memory.accumulatedImportance).toBe(0);
-    const skilled = { ...before, predictions: { ...before.predictions, calibration: { 'hour-fragmented': { n: 100, hits: 20, brierSum: 10 } } } };
+    const skilled = { ...before, predictions: { ...before.predictions, calibration: { 'hour-fragmented': { n: 200, hits: 40, brierSum: 20 } } } };
     const { state } = run([...switches('2026-08-03', 9, FRAGMENTED_HOUR_SWITCHES), ...activate('2026-08-03', 10)], skilled);
     expect(state.memory.accumulatedImportance).toBeGreaterThan(before.memory.accumulatedImportance);
   });

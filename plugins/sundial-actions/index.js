@@ -25,7 +25,7 @@ import { isIntegrationRead, loadSundialConfig, resolveActionPolicy } from '@sund
 import { getCalendarHelperPath } from '@sundial/helpers/sundial-paths.js'
 import { mountIntegrations } from './integrations.js'
 import { calendarCreateTool, reminderCreateTool } from './tools.js'
-import { callFacts, callRecord, decideAction, decisionRecord, escalate, GNOMON_TOOLS, judgedAction, openedByOwner, outwardCall, unverifiedNotice } from './gate.js'
+import { callFacts, callRecord, decideAction, decisionRecord, escalate, GNOMON_TOOLS, judgedAction, neverRan, openedByOwner, outwardCall, unverifiedNotice } from './gate.js'
 import { internalTools } from './tools.js'
 import { runShellTool } from './run-shell.js'
 import { webTools } from './web-tools.js'
@@ -246,11 +246,12 @@ export function apply(ctx, config = {}) {
         const integration = integrations.find((i) => i.name === server)
         return integration === undefined ? undefined : isIntegrationRead(integration, tool)
       })
-      if (what === null) return
+      if (what === null || neverRan(result)) return
       void (async () => {
         const verdict = await ctx.gnomonKernel.verifyAction(exec.name, args, { isError: result?.isError === true, value: result?.value ?? result?.content ?? null }).catch(() => null)
         if (!verdict) return
-        await appendSignal('action:verified', { tool: exec.name, carriedOut: verdict.carriedOut, failed: verdict.failed, isError: result?.isError === true })
+        // `outward` marks a verdict under today's rule: before 2026-09-29 reads, no-ops and refusals were judged too, and row 11 does not count those.
+        await appendSignal('action:verified', { tool: exec.name, carriedOut: verdict.carriedOut, failed: verdict.failed, isError: result?.isError === true, outward: true })
         if (verdict.failed) await appendSignal('notice:candidate', unverifiedNotice(exec.name, what, verdict.carriedOut, new Date().toISOString()))
       })()
     }),

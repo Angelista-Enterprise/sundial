@@ -153,14 +153,22 @@ export function presentLine(brief: TurnBrief): string {
  * `sections` other plugins add (the board), the hints, the present.
  * `REPLY_RULES` stays last: that is where the model listens (benched
  * 2026-09-23). A work job replies to no one, so it gets neither reply line.
+ *
+ * `given` holds the parts (`briefParts`) this conversation already has in its
+ * history; those are left out. Each brief stays in the history, so resending
+ * an unchanged part was most of what a chat filled its window with (measured
+ * 2026-10-05: the memory alone was ~10.8k chars a turn).
  */
-export function renderBrief(brief: TurnBrief, sections: string[] = []): string {
+export function renderBrief(brief: TurnBrief, sections: string[] = [], given: ReadonlySet<string> = new Set()): string {
   const memory = brief.memory ? composeAmbientContext(brief.memory) : '';
+  const [head, ...blocks] = memory === '' ? [] : memory.split('\n\n');
+  const fresh = blocks.filter((block) => !given.has(block));
+  const kept = blocks.length - fresh.length;
   const replying = brief.cause.kind !== 'work';
   return [
     brief.clock,
-    memory !== '' ? memory : null,
-    ...sections,
+    head ? [kept > 0 ? `${head} Parts you were given earlier in this conversation and that have not changed are not repeated; they still hold.` : head, ...fresh].join('\n\n') : null,
+    ...sections.filter((section) => !given.has(section)),
     brief.hints.answering
       ? `The owner is ANSWERING a question Gnomon asked them: "${brief.hints.answering}". Their message is that answer. Keep what is worth keeping from it — decisions, who said what, follow-ups — with the tools you have (gnomon_assert with saidBy: 'owner' for facts — these are their own words), and reply briefly with what you kept. Do not ask the question again.`
       : null,
@@ -175,6 +183,12 @@ export function renderBrief(brief: TurnBrief, sections: string[] = []): string {
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+/** The parts of a brief `renderBrief` can leave out once given: each memory block and each section. */
+export function briefParts(brief: TurnBrief, sections: string[] = []): string[] {
+  const memory = brief.memory ? composeAmbientContext(brief.memory) : '';
+  return [...(memory === '' ? [] : memory.split('\n\n').slice(1)), ...sections];
 }
 
 /** The `chat:shown` payload: what was shown, keyed, without the prose around it. */

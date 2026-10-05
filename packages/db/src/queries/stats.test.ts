@@ -179,8 +179,10 @@ describe('getScorecardCounts (W5 step 9)', () => {
     await db.run(sql`CREATE TABLE predictions (id text PRIMARY KEY NOT NULL, kind text NOT NULL, forecaster text NOT NULL, created_at text NOT NULL, resolved_at text NOT NULL, prior_prob real NOT NULL, features text, outcome integer NOT NULL, surprise real NOT NULL, base_prob real)`);
     await db.run(sql`INSERT INTO predictions (id, kind, forecaster, created_at, resolved_at, prior_prob, outcome, surprise) VALUES ('p1', 'day-ending', 'f', '2026-09-20', '2026-09-20T10:00:00.000Z', 0.9, 1, 0), ('p2', 'day-ending', 'f', '2026-09-20', '2026-09-20T11:00:00.000Z', 0.1, 0, 0)`);
     await db.run(sql`CREATE TABLE owner_asks (id text PRIMARY KEY NOT NULL, question text NOT NULL, reason text, asked_at text NOT NULL, answer text, answered_at text, outcome text NOT NULL, proposals text)`);
+    // R10: a flick the close stamped gets no intent by design.
+    await insertMoment({ id: 'm3', startTime: '2026-09-20T11:00:00.000Z', endTime: '2026-09-20T11:01:00.000Z', durationMs: 60_000, processName: 'Finder', data: { activeMs: 1_000, intentSkipped: 'thin' }, importanceScore: 1, projectId: null });
     const c = await getScorecardCounts('2026-09-01T00:00:00.000Z');
-    expect(c.moments).toEqual({ n: 2, activeOver: 1, withIntent: 1 });
+    expect(c.moments).toEqual({ n: 3, activeOver: 1, withIntent: 1, skipped: 1 });
     expect(c.facts).toEqual({ useful: 1, wrong: 2, ownerUseful: 1, ownerWrong: 0 });
     expect(c.refutations).toEqual({ wrong: 2, closedWithinHour: 1 });
     expect({ busy: c.busyHours, live: c.liveBusyHours }).toEqual({ busy: 2, live: 1 });

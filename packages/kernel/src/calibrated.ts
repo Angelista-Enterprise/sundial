@@ -58,7 +58,7 @@ export const PARAMETERS: ParamSpec[] = [
   { id: 'gate.answered:low', label: 'questions answered within 10 min at a low interruption cost', kind: 'rate', prior: 0.4, priorN: 10, unit: '%' },
   { id: 'gate.returnLag', label: 'minutes back to the app a notice pulled you from', kind: 'mean', prior: 1, priorN: 10, unit: 'min' },
   // Row 11: actions verified, and performed without failing.
-  { id: 'action.verified:', label: 'actions of this tool the judge verified as done', kind: 'rate', prior: 0.9, priorN: 10, unit: '%' },
+  { id: 'action.outward:', label: 'outward calls of this tool the judge verified as done (R11: keyed anew, so the pre-2026-09-29 verdicts on reads and refusals are not carried)', kind: 'rate', prior: 0.9, priorN: 10, unit: '%' },
   { id: 'action.performed:', label: 'calls of this tool that did not fail', kind: 'rate', prior: 0.9, priorN: 10, unit: '%' },
 ];
 
