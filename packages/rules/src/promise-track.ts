@@ -18,6 +18,8 @@ import type { MeetingPromise } from './promise-extract.js';
 import { briefsOf, meetingPrepKey } from '@sundial/kernel/briefs.js';
 import { counterpartyIn, defaultDue, keyNouns, namesDeliverable, parseDue, parseStatedPromise, samePerson } from './promise-terms.js';
 import { openAsk } from '@sundial/helpers/loops.js';
+import { isStandupLike } from '@sundial/kernel/briefs.js';
+import { promisesInTurns } from './conversation-extract.js';
 import { PAST, deliverableShape, promisePhrase } from '@sundial/kernel/promise-words.js';
 
 /** Open promises kept in state. Its own cap: twenty branch threads can no longer evict one (U1-F22). */
@@ -50,11 +52,15 @@ export interface OpenInput {
   projectId?: string | null;
   projectName?: string | null;
   heardIn?: { momentId: string; p: number };
+  /** A due already resolved (the next standup), which wins over `dueText`. */
+  due?: string;
+  proof?: PromiseTerms['proof'];
+  where?: string;
 }
 
 /** The terms of a new promise. A due that was said wins; otherwise the default, until the calendar shows the next meeting with that person (X1). */
 export function termsFor(input: OpenInput, tz: string): PromiseTerms {
-  const said = parseDue(input.dueText, input.saidAt, tz);
+  const said = input.due ?? parseDue(input.dueText, input.saidAt, tz);
   return {
     direction: input.direction,
     counterparty: input.counterparty,
@@ -69,6 +75,7 @@ export function termsFor(input: OpenInput, tz: string): PromiseTerms {
     evidence: [],
     lastMailTo: null,
     confirmed: input.confirmed,
+    ...(input.proof ? { proof: input.proof, ...(input.where ? { where: input.where } : {}) } : {}),
   };
 }
 
@@ -322,6 +329,18 @@ function sightingFor(thread: Commitment, event: SanitizedEvent): Sighting | null
   const owed = terms.direction !== 'awaiting';
   const p = event.payload as Record<string, unknown>;
   const said = (kind: PromiseEvidence['kind'], text: string, strong = true): Sighting => ({ evidence: { kind, at, strong, text: shorten(text) } });
+
+  // Work with a proof is kept by that one event and nothing else.
+  if (terms.proof) {
+    const branch = str(p.branch);
+    if (branch === '' || !terms.deliverable.endsWith(` ${branch}`)) return null;
+    const cwd = str(p.cwd);
+    if (terms.where && cwd !== '' && !terms.where.startsWith(cwd) && !cwd.startsWith(terms.where)) return null;
+    if (terms.proof === 'push') return event.type === 'git:push' ? said('push', `pushed ${branch}`) : null;
+    if (event.type !== 'git:pr-status') return null;
+    if (terms.proof === 'merge' && str(p.state).toLowerCase() !== 'merged') return null;
+    return said('pr', `PR #${String(p.number ?? '?')} ${str(p.state).toLowerCase()}`);
+  }
 
   if (event.type === 'mail:sent' && owed) {
     const subject = str(p.subject);
@@ -810,6 +829,54 @@ function openFromMail(state: KernelState, event: SanitizedEvent): Result {
 }
 
 /**
+ * A promise typed to a coding agent (2026-10-05). The owner's prompts to every
+ * agent are `agent:turn` rows; two shapes open a promise, both without a model,
+ * because 30 days of prompts held 2,967 typed turns and not one promise a
+ * nightly model pass would have been worth paying for:
+ *
+ * - A promise to a person, said outright and naming them ("I told Mira I'd send
+ *   the deck Friday"): the same words the nightly chat pass reads.
+ * - A deadline on the work itself ("push before standup", "merge this by
+ *   Friday"): opened only when its proof can be seen — a push of the session's
+ *   branch, its PR merged, or a PR at all — and only with a due that was said,
+ *   or the next standup. "Deploy by Friday" has no proof Sundial sees, so it is
+ *   not opened: a promise that can never be kept by evidence only ever asks.
+ */
+// Present or imperative only: "pushed on Friday" is a report, not a promise.
+const WORK = /\b(push|merge|land|open (?:a |the )?(?:pr|pull request)|(?:a |the )?(?:pr|pull request) (?:up|open))\b/i;
+const NOT = /\b(don'?t|do not|never|no need|niet|geen|nog niet)\b/i;
+const BEFORE_STANDUP = /\b(?:before|voor) (?:the |my |de |mijn )?(?:stand-?up|daily)\b/i;
+
+function openFromAgent(state: KernelState, event: SanitizedEvent): Result {
+  const p = event.payload as Record<string, unknown>;
+  if (p.role !== 'prompt') return { state, effects: [] };
+  const text = str(p.text);
+  if (text === '') return { state, effects: [] };
+  const tz = state.config.timezone;
+  const id = (kind: string, i: number) => `commitment:promise:${deriveId(event.ts, event.id, kind, i)}`;
+  let out: Result = { state, effects: [] };
+  promisesInTurns([{ sessionId: str(p.session), at: event.ts, text }], tz).forEach((found, i) => {
+    out = chain(out, (s) => openPromise(s, event.ts, { id: id('agent-promise', i), source: 'agent', direction: 'owner', counterparty: found.counterparty, deliverable: found.deliverable, quote: found.sentence, dueText: found.dueText, saidAt: event.ts, confirmed: true }));
+  });
+  const branch = str(p.branch);
+  if (branch === '' || branch === 'HEAD') return out;
+  text.split(/(?<=[.!?])\s+|\n+/).forEach((sentence, i) => {
+    const verb = sentence.match(WORK)?.[1]?.toLowerCase();
+    // A question or a "don't" asks or forbids; neither is a promise.
+    if (!verb || sentence.trim().endsWith('?') || NOT.test(sentence)) return;
+    const standup = BEFORE_STANDUP.test(sentence) ? state.schedule.upcoming.find((m) => Date.parse(m.start) > Date.parse(event.ts) && isStandupLike(state, m)) : undefined;
+    const due = standup?.start ?? parseDue(sentence, event.ts, tz);
+    if (!due) return;
+    const proof: NonNullable<PromiseTerms['proof']> = verb.startsWith('push') ? 'push' : /^(merge|land)/.test(verb) ? 'merge' : 'pr';
+    const deliverable = `${proof === 'push' ? 'push' : proof === 'merge' ? 'merge' : 'open a PR for'} ${branch}`;
+    out = chain(out, (s) =>
+      openPromise(s, event.ts, { id: id('agent-deadline', i), source: 'agent', direction: 'owner', counterparty: null, deliverable, quote: sentence.trim(), dueText: null, due, saidAt: event.ts, confirmed: true, proof, ...(str(p.cwd) ? { where: str(p.cwd) } : {}) }),
+    );
+  });
+  return out;
+}
+
+/**
  * A one-time repair, run at boot: a promise heard aloud before `promiseTrack`
  * (J4.4) was opened by `commitmentTrack` as a branch-less thread in
  * `commitments.open`, with no terms. `openPromise` counts `open` as known, so
@@ -855,7 +922,7 @@ export function adoptHeardThreads(state: KernelState): Result & { moved: number 
   return { state: result.state, effects: [...result.effects, ...merged], moved: heard.length };
 }
 
-const EVIDENCE_EVENTS = new Set(['mail:sent', 'mail:received', 'git:commit', 'git:status', 'git:pr-status', 'file:changed', 'browser:tab', 'browser:arc-space', 'document:opened', 'page:text']);
+const EVIDENCE_EVENTS = new Set(['mail:sent', 'mail:received', 'git:commit', 'git:status', 'git:pr-status', 'git:push', 'file:changed', 'browser:tab', 'browser:arc-space', 'document:opened', 'page:text']);
 
 export const promiseTrack: Rule = (state, event) => {
   if (event.type === 'clock:tick') return chain(forgetExpired(state), (s) => (s.commitments.promises.length === 0 ? { state: s, effects: [] } : tickClock(s, event)));
@@ -866,6 +933,7 @@ export const promiseTrack: Rule = (state, event) => {
   if (event.type === 'reminders:snapshot') return state.commitments.promises.length === 0 ? { state, effects: [] } : onReminders(state, event);
   if (event.type === 'calendar:upcoming') return state.commitments.promises.length === 0 ? { state, effects: [] } : onCalendar(state, event);
   if (event.type === 'commitment:heard') return openHeard(state, event);
+  if (event.type === 'agent:turn') return openFromAgent(state, event);
   if (event.type === 'commitment:closed') return closeByOwner(state, event);
   if (event.type === 'ask:owner-opened') return rememberAsk(state, event);
   if (event.type === 'ask:owner-answered') return answerAsk(state, event);

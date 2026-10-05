@@ -23,6 +23,25 @@ describe('gnomonKernel.brief (W1)', () => {
     expect(out.text.split('\n').at(-1)).toMatch(/^How to reply:/)
   })
 
+  it('tells a chat each unchanged part once, until compaction; a work brief is always whole', async () => {
+    const memory = { now: '2026-09-29T12:00:00.000Z', ownerFacts: [], goals: [{ name: 'Ship puzzlebox-studio', facts: [] }], commitments: [], wakeups: [], recentKnowledge: [], today: null }
+    let board = 'The board is looking at today.'
+    const brief = briefFor({ getState: () => ({}), appendSignal: async () => {} }, { gather: async () => memory, sections: () => [board] })
+    const first = (await brief({ sessionId: 's1', cause: { kind: 'owner' } })).text
+    expect(first).toContain('Ship puzzlebox-studio')
+    expect(first).toContain(board)
+    board = 'The board is looking at 2026-09-28.'
+    const second = (await brief({ sessionId: 's1', cause: { kind: 'owner' } })).text
+    expect(second).not.toContain('Ship puzzlebox-studio')
+    expect(second).toContain('not repeated; they still hold')
+    expect(second).toContain(board)
+    expect(second).toMatch(/How to reply:/)
+    expect((await brief({ sessionId: 's2', cause: { kind: 'owner' } })).text).toContain('Ship puzzlebox-studio')
+    expect((await brief({ sessionId: 's1', cause: { kind: 'work' } })).text).toContain('Ship puzzlebox-studio')
+    brief.forget()
+    expect((await brief({ sessionId: 's1', cause: { kind: 'owner' } })).text).toContain('Ship puzzlebox-studio')
+  })
+
   it('a failed memory read still briefs the turn, without the memory', async () => {
     const out = await briefFor({ getState: () => ({}), appendSignal: async () => {} }, { gather: async () => { throw new Error('db gone') } })({ sessionId: 's' })
     expect(out.text).toMatch(/How to reply:/)

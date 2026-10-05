@@ -312,7 +312,6 @@ function appPid() {
   return null;
 }
 
-/** Ask the app to quit (it stops the helpers and the web process itself) and wait for it. */
 /**
  * Start the app. `open` hands the caller's environment to it, and Sundial.swift
  * lets that environment win over app.env, so a shell holding the SUNDIAL_* or
@@ -325,14 +324,31 @@ function openApp() {
   // the live app); this install's own home goes in, so a bundle kept outside
   // its data folder still finds the right app.env instead of ~/.sundial.
   const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(SUNDIAL|DSH)_/.test(key))), SUNDIAL_HOME: HOME };
-  return run('open', [APP], { env });
+  // LaunchServices can still refuse just after a quit: one more try.
+  if (run('open', [APP], { env, check: false }).status === 0) return;
+  sleep(2000);
+  run('open', [APP], { env });
 }
 
+const alive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** Ask the app to quit (it stops the helpers and the web process itself) and wait for it. */
 function stopApp() {
   const pid = appPid();
   if (!pid) return false;
   process.kill(pid, 'SIGTERM');
-  for (let i = 0; i < 60 && appPid(); i++) sleep(250);
+  // Poll the pid, not app.pid: the app deletes that file in
+  // applicationWillTerminate, before its process is gone, and an `open` then
+  // fails against the dying instance (2026-10-04).
+  for (let i = 0; i < 60 && alive(pid); i++) sleep(250);
+  if (alive(pid)) fail(`Sundial (pid ${pid}) did not quit within 15 s. Try again, or: kill ${pid}`);
   return true;
 }
 

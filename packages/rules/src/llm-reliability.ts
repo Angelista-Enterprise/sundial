@@ -59,7 +59,8 @@ export const llmReliability: Rule = (state, event) => {
     const wait = typeof p.retryAfterMs === 'number' && p.retryAfterMs >= 0 ? p.retryAfterMs : Math.min(RATE_LIMIT_MAX_MS, RATE_LIMIT_BASE_MS * 2 ** k);
     r = { ...r, rateLimited: k + 1, cooldownUntil: later(ts, wait), days: count(r, localDate(ts, state.config.timezone), 'failed') };
   } else if (p.errorClass !== 'cancelled') {
-    r = { ...r, streak: r.streak + 1, longest: Math.max(r.longest ?? 0, r.streak + 1), days: count(r, localDate(ts, state.config.timezone), 'failed') };
+    // Row 2 is the run the breaker let through: a failed probe (or a retry still in flight) after it opened is the breaker working, not the run.
+    r = { ...r, streak: r.streak + 1, longestClosed: r.openedAt === null ? Math.max(r.longestClosed ?? 0, r.streak + 1) : (r.longestClosed ?? 0), days: count(r, localDate(ts, state.config.timezone), 'failed') };
     if (r.openedAt !== null) r = { ...r, openUntil: later(ts, BREAKER_PROBE_MS) };
     else if (r.streak >= BREAKER_FAILURES) {
       r = { ...r, openedAt: ts, openUntil: later(ts, BREAKER_PROBE_MS) };

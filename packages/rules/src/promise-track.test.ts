@@ -410,3 +410,55 @@ describe('a promise heard before promiseTrack becomes a promise at boot (Q2)', (
 });
 
 const rowsOf = (effects: Effect[]): CommitmentRow[] => effects.filter((e) => e.type === 'WriteDB' && e.table === 'commitments').map((e) => (e as { row: CommitmentRow }).row);
+
+describe('a promise typed to a coding agent (agent:turn)', () => {
+  const at = '2026-09-29T07:30:00.000Z'; // Tuesday 09:30 in Amsterdam
+  const turn = (text: string, extra: Record<string, unknown> = {}) => ev('agent:turn', at, { timestamp: at, agent: 'claude', session: 'a1b2c3d4', role: 'prompt', cwd: '~/puzzlebox-studio', branch: 'BOX-484-fix', text, ...extra });
+  const withStandup = () => {
+    const s = base();
+    s.schedule.upcoming = [{ title: 'Daily', start: '2026-09-29T08:15:00.000Z', end: '2026-09-29T08:30:00.000Z', attendees: ['pat', 'Mira Bakker'], recurring: true } as never];
+    return s;
+  };
+  const push = (ts: string, extra: Record<string, unknown> = {}) => ev('git:push', ts, { timestamp: ts, cwd: '~/puzzlebox-studio', branch: 'BOX-484-fix', ...extra });
+
+  it('"push before standup" is due at the next standup and kept only by that push', () => {
+    const opened = promiseTrack(withStandup(), turn('looks good. push before standup.'));
+    const p = opened.state.commitments.promises[0]!;
+    expect(p).toMatchObject({ source: 'agent', promise: { deliverable: 'push BOX-484-fix', due: '2026-09-29T08:15:00.000Z', dueKind: 'explicit', proof: 'push', counterparty: null, where: '~/puzzlebox-studio' } });
+    const commit = promiseTrack(opened.state, ev('git:commit', '2026-09-29T07:40:00.000Z', { commitLine: 'BOX-484 fix the timeout', branch: 'BOX-484-fix' }));
+    expect(commit.state.commitments.promises, 'a commit on the branch is not a push').toHaveLength(1);
+    const elsewhere = promiseTrack(opened.state, push('2026-09-29T07:45:00.000Z', { cwd: '~/other-repo' }));
+    expect(elsewhere.state.commitments.promises, 'the same branch name in another repository').toHaveLength(1);
+    const kept = promiseTrack(opened.state, push('2026-09-29T07:50:00.000Z'));
+    expect(kept.state.commitments.promises).toEqual([]);
+    expect(kept.state.commitments.recentClosed[0]).toMatchObject({ closedBecause: 'kept', promise: { evidence: [{ kind: 'push', strong: true }] } });
+  });
+
+  it('"merge it by Friday" waits for the PR to be merged', () => {
+    const opened = promiseTrack(base(), turn('merge it by friday')).state;
+    expect(opened.commitments.promises[0]!.promise).toMatchObject({ deliverable: 'merge BOX-484-fix', proof: 'merge', dueKind: 'explicit' });
+    const open = promiseTrack(opened, ev('git:pr-status', '2026-09-30T10:00:00.000Z', { cwd: '~/puzzlebox-studio', branch: 'BOX-484-fix', number: 7, state: 'OPEN' })).state;
+    expect(open.commitments.promises).toHaveLength(1);
+    const merged = promiseTrack(open, ev('git:pr-status', '2026-09-30T11:00:00.000Z', { cwd: '~/puzzlebox-studio', branch: 'BOX-484-fix', number: 7, state: 'MERGED' })).state;
+    expect(merged.commitments.recentClosed[0]).toMatchObject({ closedBecause: 'kept' });
+  });
+
+  it('opens nothing for a past report, a question, a "don\'t", no date, no branch, or a reply', () => {
+    for (const e of [
+      turn('I pushed it on friday'),
+      turn('should we push before standup?'),
+      turn("don't push before standup"),
+      turn('commit and push'),
+      turn('push before standup', { branch: undefined }),
+      turn('push before standup', { role: 'reply' }),
+      turn('do these 1 by 1'),
+    ])
+      expect(promiseTrack(withStandup(), e).state.commitments.promises, String((e.payload as { text: string }).text)).toEqual([]);
+  });
+
+  it('a promise to a person, said outright to the agent, opens with the person and the date', () => {
+    const out = promiseTrack(base(), turn('I told Mira I would send the deck on Thursday. Draft the slides.')).state;
+    expect(out.commitments.promises[0]).toMatchObject({ source: 'agent', promise: { direction: 'owner', counterparty: 'Mira', dueKind: 'explicit' } });
+    expect(out.commitments.promises[0]!.promise!.proof).toBeUndefined();
+  });
+});

@@ -69,6 +69,12 @@ describe('the gate under autonomy (W5 step 10)', () => {
     expect(channel(gate(createInitialState('d1'), urgent('wakeup')))).toMatchObject({ channel: 'phasic' });
   });
 
+  it('R4: owner-question at 5 of 18 worth hearing (27.8%) goes to the list, even with the owner\'s yes', () => {
+    const s = fold(judged(createInitialState('d1'), 'owner-question', 18, 5), [ev('autonomy:granted', { capability: 'notice:owner-question' }), ev('day:boundary')]);
+    expect(s.autonomy.levels['notice:owner-question']).toMatchObject({ level: 'ask', earned: false });
+    expect(channel(gate(s, urgent('owner-question')))).toMatchObject({ channel: 'tonic', reason: 'autonomy-ask' });
+  });
+
   it('a capability the owner turned off says nothing, recorded as their own quiet', () => {
     const s = createInitialState('d1');
     s.autonomy.lowered.followups = 'off';

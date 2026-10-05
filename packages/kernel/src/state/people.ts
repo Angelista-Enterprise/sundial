@@ -223,7 +223,7 @@ export interface Commitment {
    * typed to Gnomon (`chat`), told in answer to a question (`owner`), a
    * reminder the owner made (`reminder`), or a mail's subject (`mail`).
    */
-  source: 'git-branch' | 'speech' | 'meeting' | 'chat' | 'owner' | 'reminder' | 'mail';
+  source: 'git-branch' | 'speech' | 'meeting' | 'chat' | 'owner' | 'reminder' | 'mail' | 'agent';
   /** UC1: what a promise is, beyond its words. Absent on a branch thread. */
   promise?: PromiseTerms;
   /** J4.4: the moment the promise was heard in, and the noul it cleared. Absent on a branch thread. */
@@ -279,7 +279,7 @@ export interface Commitment {
  * something else).
  */
 export interface PromiseEvidence {
-  kind: 'mail' | 'mail-weak' | 'commit' | 'branch' | 'pr' | 'file' | 'tab' | 'caption' | 'reply' | 'reminder' | 'judge';
+  kind: 'mail' | 'mail-weak' | 'commit' | 'branch' | 'pr' | 'push' | 'file' | 'tab' | 'caption' | 'reply' | 'reminder' | 'judge';
   at: string;
   strong: boolean;
   /** What was seen, short, already sanitized: "mail to Mira Bakker: The draft". */
@@ -317,6 +317,14 @@ export interface PromiseTerms {
   lastMailTo?: { at: string; subject: string } | null;
   /** The owner said it stands (X3), or it was their own words. False: found by a model, not yet confirmed. */
   confirmed: boolean;
+  /**
+   * A deadline on work, typed to a coding agent ("push before standup"): the one
+   * event that keeps it — a push, a merged PR or any PR — of the branch in `keys`.
+   * Nothing else is evidence: a commit on the branch is not a push.
+   */
+  proof?: 'push' | 'merge' | 'pr';
+  /** With `proof`: the folder it was typed in (`~/…`), so a push of the same branch name in another repository does not keep it. */
+  where?: string;
   /** When the fading notice was said, and for which deadline — once per deadline. */
   spokeFor?: string;
   /** When the owner was asked whether it was kept (U1-F32). */

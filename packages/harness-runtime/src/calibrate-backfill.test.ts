@@ -16,12 +16,12 @@ describe('the boot backfill (W5 step 3)', () => {
       { id: 'g1', noticeKey: 'k:1', kind: 'return-from-break', channel: 'tonic', reason: 'admitted', interruptionCost: 0, decidedAt: at(0) },
       { id: 'g2', noticeKey: 'k:2', kind: 'return-from-break', channel: 'suppressed', reason: 'below-threshold', interruptionCost: 0, decidedAt: at(1) },
     ];
-    const rows = [input(at(2)), verdict(at(10), 'k:1', 'useful'), ev('action:verified', at(11), { tool: 't', failed: false })].map((e) => ({ id: e.id, signalType: e.type.split(':')[0]!, eventType: e.type.split(':')[1]!, capturedAt: e.ts, data: e.payload }));
+    const rows = [input(at(2)), verdict(at(10), 'k:1', 'useful'), ev('action:verified', at(11), { tool: 't', failed: false, outward: true })].map((e) => ({ id: e.id, signalType: e.type.split(':')[0]!, eventType: e.type.split(':')[1]!, capturedAt: e.ts, data: e.payload }));
     const out = await rebuildCalibrated(createInitialState('d1'), { gateRows: async () => gate, signals: async (_t, offset) => (offset === 0 ? rows : []) });
     expect(out.deliveries).toBe(1);
     expect(out.calibrated.params['notice.precision:return-from-break']).toMatchObject({ n: 1, hits: 1 });
     expect(out.calibrated.params['notice.seen:return-from-break']).toMatchObject({ n: 1, hits: 1 });
-    expect(out.calibrated.params['action.verified:t']).toMatchObject({ n: 1, hits: 1 });
+    expect(out.calibrated.params['action.outward:t']).toMatchObject({ n: 1, hits: 1 });
     expect(out.calibrated.noticeByKind['return-from-break']!['2026-09-20']).toMatchObject({ delivered: 1, labelled: 1, useful: 1, seen: 1 });
   });
 });

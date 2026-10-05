@@ -42,7 +42,7 @@ describe('llmReliability (W5 step 2)', () => {
     expect(nine.r).toMatchObject({ streak: 9, openedAt: null, openUntil: null });
     expect(nine.said).toEqual([]);
     const { r, said } = run([failed(9 * SEC), failed(10 * SEC), failed(11 * SEC)], nine.state);
-    expect(r).toMatchObject({ streak: 12, openedAt: at(9 * SEC), openUntil: at(11 * SEC + BREAKER_PROBE_MS) });
+    expect(r).toMatchObject({ streak: 12, longestClosed: BREAKER_FAILURES, openedAt: at(9 * SEC), openUntil: at(11 * SEC + BREAKER_PROBE_MS) });
     expect(said).toEqual([`sensor-health:llm-breaker:${ROUTE}`]);
   });
 
@@ -100,6 +100,7 @@ describe('llmReliability (W5 step 2)', () => {
       state = run([ev('llm:dispatched', ms, { purpose: 'intent', callId: `c${i}`, ...(probe ? { probe: true } : {}) }), failed(ms + SEC)], state).state;
     }
     expect(sentAfterOpen).toBe(probes);
+    expect(state.reliability.llm[ROUTE]!).toMatchObject({ streak: BREAKER_FAILURES + probes, longestClosed: BREAKER_FAILURES });
     expect(sentAfterOpen).toBeLessThanOrEqual(Math.ceil((WANTED * 34 * SEC) / BREAKER_PROBE_MS));
     expect(sent).toBe(BREAKER_FAILURES + probes);
     expect(sent).toBeLessThan(WANTED / 2);

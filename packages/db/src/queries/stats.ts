@@ -97,7 +97,8 @@ export async function getEmbeddingHealth(): Promise<EmbeddingHealth> {
 /** W5 step 9: the counts behind the scorecard rows that need history (6, 7, 10, 12). */
 export interface ScorecardCounts {
   /** Row 10: moments started since `since`, those whose `activeMs` exceeds the duration, those with an intent. */
-  moments: { n: number; activeOver: number; withIntent: number };
+  /** `skipped`: moments the close stamped `intentSkipped` (R10: no intent by design), out of `n`. */
+  moments: { n: number; activeOver: number; withIntent: number; skipped: number };
   /** Row 6: the owner's verdicts on facts (useful / wrong), and on facts about the owner. */
   facts: { useful: number; wrong: number; ownerUseful: number; ownerWrong: number };
   /** Row 7: `wrong` verdicts on facts, and how many closed the fact within the hour. */
@@ -113,10 +114,11 @@ export interface ScorecardCounts {
 
 export async function getScorecardCounts(since: string): Promise<ScorecardCounts> {
   const db = getDb();
-  const [m] = await db.all<{ n: number; over: number; intent: number }>(sql`
+  const [m] = await db.all<{ n: number; over: number; intent: number; skipped: number }>(sql`
     SELECT COUNT(*) AS n,
            COALESCE(SUM(CASE WHEN json_extract(${moments.data}, '$.activeMs') > ${moments.durationMs} THEN 1 ELSE 0 END), 0) AS over,
-           COALESCE(SUM(CASE WHEN json_extract(${moments.data}, '$.intent.text') IS NOT NULL AND json_extract(${moments.data}, '$.intent.text') != '' THEN 1 ELSE 0 END), 0) AS intent
+           COALESCE(SUM(CASE WHEN json_extract(${moments.data}, '$.intent.text') IS NOT NULL AND json_extract(${moments.data}, '$.intent.text') != '' THEN 1 ELSE 0 END), 0) AS intent,
+           COALESCE(SUM(CASE WHEN json_extract(${moments.data}, '$.intentSkipped') IS NOT NULL THEN 1 ELSE 0 END), 0) AS skipped
       FROM ${moments} WHERE ${moments.startTime} >= ${since}`);
   const verdicts = await db.all<{ verdict: string; owner: number; n: number; closed: number }>(sql`
     SELECT json_extract(s.data, '$.verdict') AS verdict, (e.kind = 'owner') AS owner, COUNT(*) AS n,
@@ -143,7 +145,7 @@ export async function getScorecardCounts(since: string): Promise<ScorecardCounts
       FROM ${ownerAsks} WHERE ${ownerAsks.answer} IS NOT NULL AND ${ownerAsks.answeredAt} >= ${since}`);
   const sum = (pick: (r: { verdict: string; owner: number }) => boolean, f: 'n' | 'closed' = 'n') => verdicts.filter(pick).reduce((s, r) => s + (r[f] ?? 0), 0);
   return {
-    moments: { n: m?.n ?? 0, activeOver: m?.over ?? 0, withIntent: m?.intent ?? 0 },
+    moments: { n: m?.n ?? 0, activeOver: m?.over ?? 0, withIntent: m?.intent ?? 0, skipped: m?.skipped ?? 0 },
     facts: { useful: sum((r) => r.verdict === 'useful'), wrong: sum((r) => r.verdict === 'wrong'), ownerUseful: sum((r) => r.verdict === 'useful' && r.owner === 1), ownerWrong: sum((r) => r.verdict === 'wrong' && r.owner === 1) },
     refutations: { wrong: sum((r) => r.verdict === 'wrong'), closedWithinHour: sum((r) => r.verdict === 'wrong', 'closed') },
     busyHours: h?.busy ?? 0,

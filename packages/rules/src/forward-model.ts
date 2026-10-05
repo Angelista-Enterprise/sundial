@@ -1,3 +1,4 @@
+import { SKILL_MIN, SKILL_MIN_N } from '@sundial/kernel/read/scorecard.js';
 import type { KernelState } from '@sundial/kernel/types.js';
 
 /** Clamp probabilities away from 0/1 so log-loss stays finite (a miss at p=1 would be infinite surprise). */
@@ -39,18 +40,20 @@ export function pastRate(cal: KernelState['predictions']['calibration'], key: st
 
 /**
  * lane Q (Q8): whether a forecaster has earned a say in the surprise drive.
- * Its log-loss is surprise only if its bets carry information: positive skill
- * against a constant at its target's own base rate (Brier below p(1 − p), the
- * Calibration card's figure) over at least `SKILL_MIN_N` resolutions. A
- * forecaster that bets the base rate adds a near-constant every resolution,
- * which moves mood and reflection on a clock, not on anything observed.
+ * Its log-loss is surprise only if its bets carry information: Brier skill of
+ * at least `SKILL_MIN` against a constant at its target's own base rate
+ * (1 − Brier / p(1 − p), the Calibration card's figure) over at least
+ * `SKILL_MIN_N` resolutions — scorecard row 8's bar (R8: it was any positive
+ * skill at n ≥ 50, which let `project-touched` in at 0.13). A forecaster that
+ * bets the base rate adds a near-constant every resolution, which moves mood
+ * and reflection on a clock, not on anything observed. Row 8 lists which
+ * forecasters meet the bar and which are left out.
  */
-export const SKILL_MIN_N = 50;
 export function hasSkill(cal: KernelState['predictions']['calibration'], key: string): boolean {
   const c = cal[key];
   if (!c || c.n < SKILL_MIN_N) return false;
   const p = c.hits / c.n;
-  return p * (1 - p) > 0 && c.brierSum / c.n < p * (1 - p);
+  return p * (1 - p) > 0 && 1 - c.brierSum / c.n / (p * (1 - p)) >= SKILL_MIN;
 }
 
 export function bumpCalibration(cal: KernelState['predictions']['calibration'], kind: string, outcome: 0 | 1, priorProb: number): KernelState['predictions']['calibration'] {

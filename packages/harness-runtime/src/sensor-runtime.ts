@@ -37,6 +37,7 @@ import { consentedNetworkFingerprint } from '@sundial/rules/presence-track.js';
 import type { KernelState } from '@sundial/kernel/index.js';
 import {
   AgentFleetSensor,
+  AgentTurnSensor,
   ArcTabsSensor,
   AgentSessionSensor,
   ClaudeHookSensor,
@@ -126,6 +127,7 @@ export class SensorRuntime {
   private readonly agentFleetSensor = new AgentFleetSensor();
   private readonly arcTabsSensor = new ArcTabsSensor();
   private readonly claudeHookSensor = new ClaudeHookSensor();
+  private readonly agentTurnSensor: AgentTurnSensor;
   private readonly calendarSensor = new CalendarSensor();
   private readonly focusModeSensor = new FocusModeSensor();
   private readonly inputActivitySensor = new InputActivitySensor();
@@ -166,6 +168,7 @@ export class SensorRuntime {
     // J3.4: the helper reads the page's text too when the owner has not turned it off; the browser must allow JavaScript from Apple Events.
     this.browserSensor = new BrowserSensor({ supervisor: new BrowserHelperSupervisor(undefined, this.config.browser.pageText ? ['--page-text'] : []) });
     this.screenVisionSensor = new ScreenVisionSensor({ enabled: this.config.ocr.enabled && this.config.ocr.vision.enabled, model: this.config.ocr.vision.model, intervalMs: this.config.ocr.vision.intervalMs, openAudit: openLlmAudit, ...(options.reserveLlmCall ? { reserve: (purpose) => options.reserveLlmCall!(purpose, { caller: 'screen-vision' }) } : {}) });
+    this.agentTurnSensor = new AgentTurnSensor({ enabled: this.config.privacy.agentTranscripts });
     this.mailSensor = new MailSensor({ enabled: this.config.privacy.mail, messages: this.config.privacy.messages });
     this.hearingWindowPath = path.join(getSundialHome(), '.daemon', 'audio-listen.json');
     // J3.5: the vault, only when the owner named one. Paths only.
@@ -335,6 +338,10 @@ export class SensorRuntime {
     // Claude Code's report-only hooks, at each line's own time.
     await step('claude-hook', async () => {
       for (const hook of this.claudeHookSensor.poll()) await this.handleSensorEvent(hook.type, hook.payload, hook.ts);
+    });
+    // What the owner asked every coding agent and what it answered, at each turn's own time.
+    await step('agent-turns', async () => {
+      for (const turn of await this.agentTurnSensor.poll()) await this.handleSensorEvent(turn.type, { ...turn.payload }, turn.ts);
     });
 
     await step('focus-mode', () => emit(this.focusModeSensor.poll()));

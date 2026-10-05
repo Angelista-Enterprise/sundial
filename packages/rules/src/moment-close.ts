@@ -1,4 +1,5 @@
 import { deriveId } from '@sundial/helpers/derive-id.js';
+import { isRedactedPlaceholder } from '@sundial/helpers/redact/redact-policy.js';
 import { isSystemProcess } from '@sundial/helpers/window-classification.js';
 import { defaultMomentRollupExtras } from '@sundial/kernel/initial-state.js';
 import type { Effect, KernelState, MomentRollup, MomentRow, Rule, SanitizedEvent, WindowAttribution } from '@sundial/kernel/types.js';
@@ -244,6 +245,19 @@ function dominantDevActivityRoot(byProject: Record<string, number> | undefined):
   return best;
 }
 
+/**
+ * R10: why a moment gets no intent by design, or null when it should get one. `thin`: no title
+ * but the process name (a flick); `private`: every title blanked by `sanitizeAtIngest`. The
+ * close stamps it on the row (`intentSkipped`), so row 10 counts only the moments that should
+ * have one, and `momentAnalysisSchedule` skips the same ones. A title the anomaly check marked
+ * is skipped there too, but needs the state, so it is not stamped (it reads as missing).
+ */
+export function noIntentReason(processName: string, windowTitles: readonly string[]): 'thin' | 'private' | null {
+  const titles = windowTitles.filter((t) => t && t !== processName);
+  if (titles.length === 0) return 'thin';
+  return titles.every((t) => isRedactedPlaceholder(t)) ? 'private' : null;
+}
+
 function closeMoment(
   moment: OpenMoment,
   endTs: string,
@@ -306,7 +320,7 @@ function closeMoment(
           endTime: endTs,
           durationMs,
           processName: moment.processName,
-          data: { ...rollup, location, kind: computeMomentKind(rollup, focusScore, leisureRules), focusScore, focusQuality: focusQuality(focusScore), audioContext: computeAudioContext(rollup) },
+          data: { ...rollup, location, kind: computeMomentKind(rollup, focusScore, leisureRules), focusScore, focusQuality: focusQuality(focusScore), audioContext: computeAudioContext(rollup), ...(noIntentReason(moment.processName, rollup.windowTitles) ? { intentSkipped: noIntentReason(moment.processName, rollup.windowTitles) } : {}) },
           importanceScore: computeMomentImportance(durationMs, rollup),
           projectId,
         },
