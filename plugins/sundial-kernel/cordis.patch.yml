@@ -1,7 +1,0 @@
-# Bundle patch for the sundial-kernel plugin: one insert row.
-# inject: ['gnomonDb', 'gnomonMemory'] makes Cordis hold this back until both
-# services are provided, so row order here is not load-bearing — but keep it
-# after sundial-db and sundial-memory for readability.
-- insert:
-    - id: sundial-kernel
-      name: '@sundial/dsh-kernel'

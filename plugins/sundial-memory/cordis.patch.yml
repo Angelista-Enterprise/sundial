@@ -1,4 +1,0 @@
-# Bundle patch for the sundial-memory plugin: one insert row.
-- insert:
-    - id: sundial-memory
-      name: '@sundial/dsh-memory'

@@ -1,1 +1,0 @@
-ALTER TABLE `applied_effects` ADD `status` text DEFAULT 'completed' NOT NULL;

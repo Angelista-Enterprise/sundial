@@ -1,1 +1,0 @@
-CREATE INDEX `idx_entity_facts_valid_from` ON `entity_facts` (`valid_from`);

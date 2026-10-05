@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="light dark" />
+<title>Sundial — a local memory of your work</title>
+<meta name="description" content="Sundial records what you work on into one SQLite file on your Mac. Gnomon, the assistant inside, answers from it. Here is everything it keeps, and the little that can leave." />
+<meta property="og:title" content="Sundial — a local memory of your work" />
+<meta property="og:description" content="Sundial records what you work on into one SQLite file on your Mac. Gnomon, the assistant inside, answers from it. Here is everything it keeps, and the little that can leave." />
+<meta property="og:type" content="website" />
+<meta property="og:image" content="https://angelista-enterprise.github.io/sundial/card.png" />
+<meta name="twitter:card" content="summary_large_image" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 26V6M16 26l9 3' stroke='%23d98a2b' stroke-width='3' fill='none'/%3E%3C/svg%3E" />
+<link rel="preload" as="font" type="font/ttf" href="demo/font/inter-tight.ttf" crossorigin />
+<link rel="stylesheet" href="site.css" />
+<script>try{var t=localStorage.getItem('sundial-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body data-base="/sundial/" data-repo="Angelista-Enterprise/sundial">
+<header class="top">
+  <a class="wordmark" href="./" aria-label="Sundial home"><svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><path d="M16 26V6M16 26l9 3" stroke="currentColor" stroke-width="3" fill="none"/></svg><span>Sundial</span></a>
+  <nav class="nav" aria-label="Site"><a href="docs/">Docs</a><a href="changelog/">Changelog</a><a href="feedback/">Feedback</a><a href="https://github.com/Angelista-Enterprise/sundial" rel="noopener">GitHub</a></nav>
+  <a class="act act-ink" href="demo/">Try the demo</a>
+</header>
+<main class="main main-wide">
+
+<section class="hero">
+  <h1>A local memory of your work, <span class="nowrap-wide">for you and your coding agent.</span></h1>
+  <p class="deck">Here is everything it keeps on your Mac, and the little that can leave.</p>
+  <p class="hero-acts"><a class="act act-ink" href="demo/">Try the demo</a><a class="act" href="#start">Install in a minute</a></p>
+</section>
+
+<section class="ledger" aria-labelledby="ledger-h">
+  <h2 id="ledger-h" class="visually-hidden">What stays and what leaves</h2>
+  <svg class="ledger-wire" aria-hidden="true"><path class="wire" pathLength="1" d="" /></svg>
+  <div class="col col-stays">
+    <h3>Stays on your Mac</h3><p class="col-note">One file, <code>~/.sundial/sundial.db</code>, readable only by you.</p>
+    <h4 class="col-sub">On from the start</h4>
+    <ul class="rows"><li class="row" tabindex="0" data-name="Front window" data-model data-fields="the app and the window titles"><span class="row-name">Front window</span><span class="row-what">App name, window title, the open document’s path</span><span class="row-reach" aria-hidden="true"></span></li><li class="row" tabindex="0" data-name="Calendar" data-model data-fields="the meeting title and how many attended"><span class="row-name">Calendar</span><span class="row-what">Event titles, times, attendees, organizer</span><span class="row-reach" aria-hidden="true"></span></li><li class="row" tabindex="0" data-name="Browser tab" data-model data-fields="the tab’s title, as a window title"><span class="row-name">Browser tab</span><span class="row-what">Site and path of the front tab, and its title. Never the query string</span><span class="row-reach" aria-hidden="true"></span></li><li class="row" tabindex="0" data-name="Git" data-model data-fields="the branch and the project"><span class="row-name">Git</span><span class="row-what">Branch, last commit subject, changed-file count, commit sizes</span><span class="row-reach" aria-hidden="true"></span></li><li class="row" tabindex="0" data-name="Files and functions"><span class="row-name">Files and functions</span><span class="row-what">Which files change in your projects, and the function names touched</span></li><li class="row" tabindex="0" data-name="Shell" data-model data-fields="the commands you ran"><span class="row-name">Shell</span><span class="row-what">Commands you run; with the hook, also folder, exit code and duration</span><span class="row-reach" aria-hidden="true"></span></li><li class="row" tabindex="0" data-name="Coding agent"><span class="row-name">Coding agent</span><span class="row-what">The folder and branch of your Claude Code sessions. Only those two fields</span></li><li class="row" tabindex="0" data-name="Pull requests"><span class="row-name">Pull requests</span><span class="row-what">Number, title, state, review and check status, via your own gh</span></li><li class="row" tabindex="0" data-name="Input activity"><span class="row-name">Input activity</span><span class="row-what">How many key presses, clicks, moves and scrolls per 10 seconds. Never which keys</span></li><li class="row" tabindex="0" data-name="Focus, sleep, mic and camera"><span class="row-name">Focus, sleep, mic and camera</span><span class="row-what">Which Focus is on; when the Mac slept; whether mic or camera are in use. No sound or image</span></li><li class="row" tabindex="0" data-name="Notifications"><span class="row-name">Notifications</span><span class="row-what">The unread badge count per Dock icon. Never the contents</span></li><li class="row" tabindex="0" data-name="Network and power"><span class="row-name">Network and power</span><span class="row-what">A network fingerprint, the Wi-Fi name, battery or mains, connected headphones</span></li></ul>
+    <h4 class="col-sub">Off until you turn it on</h4>
+    <ul class="rows"><li class="row" tabindex="0" data-name="Mail" data-model data-fields="recent subjects"><span class="row-name">Mail</span><span class="row-what">Sender, recipients and subject. Never a body <code class="row-switch">privacy.mail</code></span><span class="row-reach" aria-hidden="true"></span></li><li class="row" tabindex="0" data-name="Messages"><span class="row-name">Messages</span><span class="row-what">Sender, chat name and time. Never the text <code class="row-switch">privacy.messages</code></span></li><li class="row" tabindex="0" data-name="Screen text"><span class="row-name">Screen text</span><span class="row-what">Text read off the focused window by on-device OCR <code class="row-switch">ocr.enabled</code></span></li><li class="row" tabindex="0" data-name="Screen facts" data-model data-fields="up to three short facts about the screen"><span class="row-name">Screen facts</span><span class="row-what">Up to three short facts about the screen, from a vision model in your local Ollama <code class="row-switch">ocr.vision.enabled</code></span><span class="row-reach" aria-hidden="true"></span></li><li class="row" tabindex="0" data-name="Page text" data-model data-fields="the tab’s own words"><span class="row-name">Page text</span><span class="row-what">The visible text of the front browser tab <code class="row-switch">browser.pageText</code></span><span class="row-reach" aria-hidden="true"></span></li><li class="row" tabindex="0" data-name="Hearing" data-model data-fields="what was said aloud"><span class="row-name">Hearing</span><span class="row-what">Transcripts of speech near the Mac and of the far side of a call, by a local Whisper server, while you press Listen (or, with <code>audio.autoMeetings</code>, during meetings) <code class="row-switch">audio.enabled</code></span><span class="row-reach" aria-hidden="true"></span></li><li class="row" tabindex="0" data-name="Clipboard"><span class="row-name">Clipboard</span><span class="row-what">Only the kind (link, code, text, file) and size of what you copied <code class="row-switch">clipboardEnabled</code></span></li><li class="row" tabindex="0" data-name="Obsidian vault" data-model data-fields="which notes you edited today"><span class="row-name">Obsidian vault</span><span class="row-what">Paths of notes that changed in the one vault you name <code class="row-switch">vault</code></span><span class="row-reach" aria-hidden="true"></span></li><li class="row" tabindex="0" data-name="Devices nearby"><span class="row-name">Devices nearby</span><span class="row-what">A hashed id per device on a network you consented to <code class="row-switch">experiments.presence</code></span></li></ul>
+    <p class="col-foot">Not recorded at all: which keys you press, notification contents, clipboard contents, URL query strings, mail bodies, Messages text, sound. Every event is cleaned once before it is written — secrets, e-mail addresses, phone and card numbers, your user name in paths — and everything downstream reads the cleaned value.</p>
+  </div>
+  <div class="col col-leaves">
+    <h3>Can leave</h3><p class="col-note">Nothing, until you configure it. Then only:</p>
+    <ul class="rows rows-leave"><li class="row row-primary"><span class="row-name">Sanitized text from the record, plus what you type in the chat and images you attach</span><span class="row-what"><span class="row-to">to The model endpoint <em>you</em> chose. Point it at <code>127.0.0.1</code> and no text leaves your Mac</span><span class="row-when">When Gnomon answers or writes</span><span class="row-reads" aria-live="polite" data-rest="Point at or tap a row on the left to see what the model gets from it.">Point at or tap a row on the left to see what the model gets from it.</span></span></li></ul>
+    <details class="rows-fold"><summary>8 more, each behind a setting you have not set</summary><ul class="rows rows-leave"><li class="row"><span class="row-name">The embedding model’s weights — a download, no text is sent</span><span class="row-what"><span class="row-to">to Hugging Face</span><span class="row-when">Once, the first time embeddings run</span></span></li><li class="row"><span class="row-name">A notice’s title and text, and titles of finished work</span><span class="row-what"><span class="row-to">to The ntfy URL you set</span><span class="row-when">Only if <code>notifications.ntfy</code> is set</span></span></li><li class="row"><span class="row-name">A <code>gh pr view</code> request, with your own login</span><span class="row-what"><span class="row-to">to GitHub</span><span class="row-when">Only if <code>gh</code> is installed and signed in</span></span></li><li class="row"><span class="row-name">Web pages Gnomon fetches</span><span class="row-what"><span class="row-to">to The site</span><span class="row-when">When you ask Gnomon to read the web</span></span></li><li class="row"><span class="row-name">Internal scoring questions</span><span class="row-what"><span class="row-to">to api.typesafe.ai</span><span class="row-when">Only if <code>TYPESAFE_API_KEY</code> is set</span></span></li><li class="row"><span class="row-name">Tool calls to your own services</span><span class="row-what"><span class="row-to">to The service</span><span class="row-when">Only for services you list under <code>integrations</code></span></span></li><li class="row"><span class="row-name">A background job’s prompt, and what Claude reads from the record</span><span class="row-what"><span class="row-to">to Anthropic, through your own Claude Code login</span><span class="row-when">Only if <code>hands.claude</code> is set</span></span></li><li class="row"><span class="row-name">Whatever an MCP client reads</span><span class="row-what"><span class="row-to">to That client’s own model provider</span><span class="row-when">Only if you connect Claude Code or another agent</span></span></li></ul></details>
+    <p class="col-foot">The model sees cleaned fields only: app, project, window titles, shell commands, branch, meeting title and attendee count — and page text, mail subjects, screen facts or heard speech only when you turned those sensors on. Every call is listed in the Ledger, with its cost. <a href="docs/privacy/">The full privacy page</a>.</p>
+  </div>
+</section>
+
+<section class="pipe" id="how" aria-labelledby="how-h">
+  <h2 id="how-h">How an observation travels</h2>
+  <p class="pipe-deck">One direction, one pass each. Point at or tap a stage.</p>
+  <ol class="stages">
+    <li class="stage" tabindex="0" data-why="Each sensor is one small reader: the front window, git, the shell, the calendar, your coding agent’s sessions. It turns what it sees into events and nothing more; no sensor decides anything."><span class="stage-n">1</span><span class="stage-name">Sensors</span><span class="stage-what">window, git, shell, calendar, agent</span></li>
+    <li class="stage" tabindex="0" data-why="Every event is cleaned once, before it is written: secrets, e-mail addresses, phone and card numbers, your user name in paths, URL query strings. Everything downstream reads the cleaned value and never re-derives the policy."><span class="stage-n">2</span><span class="stage-name">Cleaned once</span><span class="stage-what">secrets, addresses, paths</span></li>
+    <li class="stage" tabindex="0" data-why="The log is append-only, one SQLite file on your disk. Nothing is edited in place; the record is the events, in order. Older rows are pruned after 180 days by default."><span class="stage-n">3</span><span class="stage-name">The log</span><span class="stage-what">append-only, SQLite, yours</span></li>
+    <li class="stage" tabindex="0" data-why="A fixed, ordered list of rules folds the log into one state: moments, a day, open promises, habits, the board. The same log always folds to the same state, so a fix in a rule re-reads history instead of patching it."><span class="stage-n">4</span><span class="stage-name">The fold</span><span class="stage-what">rules, in order, one state</span></li>
+    <li class="stage stage-model" tabindex="0" data-why="Only here does anything act: a model call, a fact written to memory, an embedding computed on this Mac. Every model call goes through one audited door and lands in the Ledger with its cost. This is the one stage where text can leave, to the endpoint you chose."><span class="stage-n">5</span><span class="stage-name">Effects</span><span class="stage-what">memory, embeddings, the model</span></li>
+    <li class="stage" tabindex="0" data-why="Today, the board, the chat, and the MCP server for Claude Code all read the same state through the same read tools. What you see on a card and what Gnomon can say are one record, read two ways."><span class="stage-n">6</span><span class="stage-name">Answers</span><span class="stage-what">Today, the board, chat, MCP</span></li>
+  </ol>
+  <p class="stage-why" aria-live="polite">An observation moves left to right and never back. The model sits at stage five, behind one audited door, and sees only cleaned values.</p>
+  <p class="pipe-more"><a href="docs/architecture/">The architecture, in full</a> · <a href="docs/why-sundial/">Why it is built this way</a></p>
+</section>
+
+<section class="film" id="film">
+  <div class="film-text">
+    <h2>One Thursday morning</h2>
+    <p>A made-up week. The morning card knows what you did yesterday and where you left off. It lists what you still owe before a client demo, writes a research brief with sources, tests a rule on your record before you keep it, and takes a typed correction as your fact. Every model call lands in the Ledger.</p>
+    <p class="film-note">Nothing in it is real data. The <a href="demo/">demo</a> is this same week, in your browser.</p>
+  </div>
+  <video class="film-video" controls preload="metadata" playsinline aria-label="One Thursday morning in Sundial: the morning card, open promises, a research brief, a rule, a correction, the Ledger" poster="poster-morning.jpg" src="https://github.com/user-attachments/assets/1c495afa-6e27-4635-9cbe-1b2b27628c97"></video>
+</section>
+
+<section class="film film-alt" id="agent">
+  <video class="film-video" controls preload="metadata" playsinline aria-label="Claude Code asking Sundial over MCP about the week" poster="poster-agent.jpg" src="https://github.com/user-attachments/assets/a155502b-ebc6-4680-bb01-2e1d87177bec"></video>
+  <div class="film-text">
+    <h2>Ask it from Claude Code</h2>
+    <p>The same week, asked from outside. Claude Code, with only Sundial’s read-only MCP tools, tells the story of the week and what is still owed — then opens the release call it mentioned, down to the raw capture.</p>
+    <pre class="cmd"><code>claude mcp add sundial --scope user -e SUNDIAL_HOME="$HOME/.sundial" -- node "$PWD/packages/mcp/bin/sundial-mcp.js"</code></pre>
+  </div>
+</section>
+
+<section class="start" id="start">
+  <h2>Install in a minute</h2>
+  <div class="start-grid">
+    <div>
+      <pre class="cmd"><code>git clone https://github.com/Angelista-Enterprise/sundial.git &amp;&amp; cd sundial
+node bin/sundial install
+node bin/sundial open</code></pre>
+      <p><code>install</code> checks your Mac, builds everything, writes <code>~/.sundial/</code> and starts Sundial at login. <code>open</code> signs your browser in and walks you through the macOS permissions. The first observations arrive within a minute.</p>
+    </div>
+    <div>
+      <p>Gnomon needs a model to talk. Without one, Sundial still records and the Today screen still shows your day. Pick one on the setup page, or two lines in <code>~/.sundial/.env</code>:</p>
+      <pre class="cmd"><code># local, nothing leaves your Mac (Ollama)
+SUNDIAL_LLM_BASE_URL=http://127.0.0.1:11434/v1
+SUNDIAL_LLM_MODEL=qwen3:8b</code></pre>
+      <p>Any OpenAI-compatible endpoint works. macOS only, for now: the sensors are native Swift helpers. <a href="docs/getting-started/">Getting started</a> · <a href="docs/models/">Models</a> · <a href="docs/permissions/">Permissions</a></p>
+    </div>
+  </div>
+</section>
+
+</main>
+<footer class="foot">
+  <p>Sundial v0.2.2 · <a href="https://github.com/Angelista-Enterprise/sundial/blob/develop/LICENSE">Licence</a> · <a href="https://github.com/Angelista-Enterprise/sundial/blob/develop/SECURITY.md">Security</a> · <a href="https://github.com/Angelista-Enterprise/sundial/blob/develop/CONTRIBUTING.md">Contributing</a></p>
+  <p class="foot-note"><b>No counting on these pages.</b> Only the <a href="demo/">demo</a> counts, and only what you do in it — a card placed, a question asked, which model answered — with <a href="https://sundial.goatcounter.com" rel="noopener">GoatCounter</a>: never the words you type, no cookies, no personal data. The only thing kept in your browser is a ten-minute cache of GitHub’s answers on the changelog and feedback pages, and your light-or-dark choice. Sundial itself, the app you install, sends nothing to us — see <a href="docs/privacy/">Privacy</a>.</p>
+</footer>
+<script type="module" src="site.js"></script>
+</body>
+</html>

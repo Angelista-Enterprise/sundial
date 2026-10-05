@@ -1,5 +1,0 @@
-# Bundle patch for the sundial-db plugin: one insert row.
-# Must come before sundial-memory and sundial-kernel (they inject its service).
-- insert:
-    - id: sundial-db
-      name: '@sundial/dsh-db'

@@ -1,9 +1,0 @@
-# Bundle patch for the sundial-actions plugin: one insert row.
-#
-# inject: ['tools', 'gnomonKernel'] holds it back until both are up, so row
-# order is not load-bearing — but keep it after sundial-kernel and sundial-tools
-# for readability. The gate composes with any other tools/pre-execute listener:
-# it only ever tightens a decision, never loosens one.
-- insert:
-    - id: sundial-actions
-      name: '@sundial/dsh-actions'

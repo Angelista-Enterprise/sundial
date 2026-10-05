@@ -1,0 +1,74 @@
+/* The demo's two additions, in the app's own words: square paper, hairlines, the ochre dot. */
+.demo-note {
+  position: fixed;
+  z-index: 50;
+  left: 50%;
+  top: calc(env(safe-area-inset-top, 0px) + 10px);
+  transition: opacity 300ms var(--ease), translate 300ms var(--ease);
+  transform: translateX(-50%);
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  max-width: min(760px, calc(100vw - 32px));
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  background: var(--page);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink-subtle);
+}
+.demo-note::before { content: ''; flex: none; width: 6px; height: 6px; background: var(--ochre); align-self: center; }
+.demo-note b { font-weight: 600; color: var(--ink); white-space: nowrap; }
+.demo-note a { flex: none; color: var(--ochre-text); text-underline-offset: 3px; white-space: nowrap; }
+.demo-note a:hover { color: var(--ink); }
+.demo-note-x { flex: none; border: 0; background: none; padding: 0 0 0 4px; color: var(--ink-subtle); font: inherit; font-size: 12px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.demo-note-x:hover { color: var(--ink); }
+
+.demo-asks { flex: 0 0 100%; display: flex; flex-wrap: wrap; gap: 6px; margin: -2px 0 -2px; }
+.demo-asks button {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--ink-muted);
+  cursor: pointer;
+  transition: background 120ms var(--ease), color 120ms var(--ease), border-color 120ms var(--ease);
+}
+.demo-asks button:hover { background: var(--ink); border-color: var(--ink); color: var(--page); }
+.demo-asks button:focus-visible { outline: 2px solid var(--ochre); outline-offset: 1px; }
+
+@media (max-width: 640px) {
+  .demo-note { left: 16px; right: 16px; transform: none; max-width: none; flex-wrap: wrap; }
+  .demo-note span { flex: 1 1 100%; order: 3; }
+}
+.demo-note[data-gone] { opacity: 0; translate: 0 -8px; pointer-events: none; }
+
+/* ── Notes pinned on the cards ─────────────────────────────────────────────── */
+.demo-comment { position: fixed; z-index: 60; right: max(16px, env(safe-area-inset-right)); top: calc(env(safe-area-inset-top, 0px) + 10px); display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px; border: 1px solid var(--border-strong); background: var(--page); color: var(--ink); font: inherit; font-size: 13px; cursor: pointer; transition: background 120ms var(--ease), color 120ms var(--ease); }
+.demo-comment:hover, .demo-comment[data-on] { background: var(--ink); color: var(--page); }
+.demo-comment-dot { width: 7px; height: 7px; background: var(--ochre); }
+.demo-comment[data-count]:not([data-count=''])::after { content: attr(data-count); font-size: 11.5px; color: var(--ink-subtle); padding-left: 2px; }
+.demo-comment[data-on]::after { color: var(--page); }
+body[data-commenting] article.pane { cursor: crosshair; }
+body[data-commenting] .demo-note { display: none; }
+.demo-pin { position: absolute; z-index: 20; width: 20px; height: 20px; margin: -10px 0 0 -10px; display: grid; place-items: center; border: 1px solid var(--ink); background: var(--page); color: var(--ink); font: inherit; font-size: 11px; font-weight: 600; cursor: pointer; transition: background 120ms var(--ease), color 120ms var(--ease), transform 120ms var(--ease); }
+.demo-pin:hover { background: var(--ink); color: var(--page); transform: scale(1.1); }
+.demo-pin-draft { background: var(--ochre); border-color: var(--ochre); }
+.demo-popover { position: fixed; z-index: 70; width: 320px; max-width: calc(100vw - 32px); padding: 12px 14px 14px; border: 1px solid var(--border-strong); background: var(--page); color: var(--ink); font-size: 14px; line-height: 1.45; display: grid; gap: 8px; animation: demo-rise 160ms var(--ease) both; }
+@keyframes demo-rise { from { opacity: 0; translate: 0 4px; } }
+.demo-popover-head { display: flex; align-items: baseline; gap: 10px; }
+.demo-popover-n { width: 20px; height: 20px; display: grid; place-items: center; border: 1px solid var(--ink); font-size: 11px; font-weight: 600; align-self: center; }
+.demo-popover-meta { flex: 1; font-size: 12.5px; color: var(--ink-subtle); }
+.demo-popover-x { border: 0; background: none; padding: 0; font: inherit; font-size: 12.5px; color: var(--ink-subtle); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.demo-popover-x:hover { color: var(--ink); }
+.demo-popover-text { margin: 0; white-space: pre-wrap; }
+.demo-reply { margin: 0; padding-top: 8px; border-top: 1px solid var(--divider); font-size: 13px; color: var(--ink-muted); }
+.demo-reply b { color: var(--ink); font-weight: 500; }
+.demo-popover-input { width: 100%; resize: vertical; padding: 8px 10px; border: 1px solid var(--border-strong); background: var(--page); color: var(--ink); font: inherit; font-size: 14px; }
+.demo-popover-input:focus { outline: 1px solid var(--ink); outline-offset: 1px; }
+.demo-popover-acts { margin: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.demo-popover-acts a { color: var(--ink); text-decoration: underline; text-decoration-color: var(--ochre); text-underline-offset: 3px; }
+.demo-popover-hint { font-size: 12px; color: var(--ink-subtle); flex: 1 1 100%; line-height: 1.4; }
+@media (prefers-reduced-motion: reduce) { .demo-popover { animation: none; } }

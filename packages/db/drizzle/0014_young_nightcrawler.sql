@@ -1,1 +1,0 @@
-ALTER TABLE `entity_facts` ADD `provenance` text DEFAULT 'inference' NOT NULL;

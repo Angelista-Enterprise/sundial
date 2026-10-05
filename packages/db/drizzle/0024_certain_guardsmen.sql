@@ -1,1 +1,0 @@
-CREATE INDEX `idx_signals_stream` ON `signals` (`signal_type`,`event_type`,`captured_at`);

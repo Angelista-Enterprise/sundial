@@ -1,1 +1,0 @@
-ALTER TABLE `knowledge_entries` ADD `structured` text;

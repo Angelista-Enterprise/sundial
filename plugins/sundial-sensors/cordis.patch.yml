@@ -1,7 +1,0 @@
-# Bundle patch for the sundial-sensors plugin: one insert row.
-# inject: ['gnomonKernel', 'gnomonDb'] makes Cordis hold this back until both
-# services are provided, so row order is not load-bearing — but keep it after
-# sundial-kernel for readability.
-- insert:
-    - id: sundial-sensors
-      name: '@sundial/dsh-sensors'

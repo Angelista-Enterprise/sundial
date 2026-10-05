@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en" data-gnomon>
+  <head>
+    <script src="./demo.js"></script>
+    <link rel="stylesheet" href="./demo.css" />
+    <script data-goatcounter="https://sundial.goatcounter.com/count" data-goatcounter-settings='{"no_onload": true}' async src="//gc.zgo.at/count.js"></script>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="view-transition" content="same-origin" />
+    <!-- Applied before the sheet loads, so a dark choice never flashes paper. -->
+    <script>
+      try {
+        var t = localStorage.getItem('sundial-theme');
+        if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+        // First visit: the setup page explains the permissions before the board.
+        if (!localStorage.getItem('sundial-setup-seen')) location.replace('/setup');
+      } catch (e) {}
+    </script>
+    <!-- One copy of the shared words for host and page alike (packages/helpers/src/vocab.ts). -->
+    <script type="importmap">{ "imports": { "@sundial/helpers/vocab.js": "./app/vocab.js", "@sundial/helpers/local-day.js": "./app/local-day.js" } }</script>
+    <title>Sundial — demo</title>
+    <!-- The gnomon itself: a rod on its plate, casting the shadow. Inline, so the tab needs no request. -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 26V6M16 26l9 3' stroke='%23d98a2b' stroke-width='3' fill='none'/%3E%3C/svg%3E" />
+    <link rel="preload" as="font" type="font/ttf" href="./font/inter-tight.ttf" crossorigin />
+    <link rel="stylesheet" href="./app/app.css" />
+  </head>
+  <body>
+    <!-- The shell: a head that never scrolls (what is happening, and the gnomon
+         itself), the board, Gnomon's own question, and the composer. Nothing
+         floats over anything: every persistent thing is a grid row. -->
+    <div class="shell">
+      <!-- No head. What it held is one keystroke away (Find), or in the foot.
+           These stay in the DOM, hidden, because the app still wires them by id. -->
+      <div class="head" hidden>
+        <button type="button" class="summon" id="summon-threads">Threads</button>
+        <button type="button" class="summon" id="summon-explore">Explore</button>
+        <div class="menu-host" id="instruments-host">
+          <button type="button" class="summon" id="summon-instruments" aria-haspopup="menu" aria-expanded="false">Cards</button>
+          <div class="menu" id="instruments-menu" role="menu" aria-label="Instruments" hidden></div>
+        </div>
+        <button type="button" class="summon" id="summon-ledger">Ledger</button>
+        <button type="button" class="summon" id="theme-toggle">Paper <span id="theme-name">Auto</span></button>
+        <button type="button" class="summon" id="summon-settings">Settings</button>
+        <span class="reading-what" id="reading-what" role="status" aria-live="polite" hidden></span>
+      </div>
+      <!-- What the page is reading: a 2px ochre run along the very top while a route is in flight. -->
+      <div class="reading-line" id="reading-line" hidden><span class="reading-run"></span></div>
+
+      <!-- The page: one column you scroll. Cards are panes; the owner and Gnomon
+           both arrange them, through the same events. No pan, no zoom, no chords. -->
+      <main class="floor">
+        <div class="board" id="board" aria-label="The board">
+          <!-- What is happening right now, in one line. It lives INSIDE the Today
+               card when there is one, at the top of the page when there is not. -->
+          <div class="strip-home" id="strip-home"><div class="strip" id="strip" hidden></div></div>
+          <div class="world" id="world"></div>
+        </div>
+        <!-- The foot: the gnomon, Find, the day ruler, and the page's few tools. The only chrome. -->
+        <div class="board-foot" id="foot">
+          <button type="button" class="mascot" id="mascot" data-mood="idle" title="Gnomon — back to the conversation" aria-label="Gnomon: back to the conversation"></button>
+          <!-- The session cookie ran out (30 days): nothing on the page can read until the owner signs in again. -->
+          <span class="foot-out" id="signed-out" role="alert" hidden>Signed out — run <code>sundial open</code></span>
+          <button type="button" class="board-act" id="summon-find" title="Find anything by name (/ or ⌘K)">Find <span class="summon-key">/</span></button>
+          <!-- WHEN the whole board is looking at. The presets set a span; the
+               ruler beside them sets a single day. Both write the same record,
+               and every card obeys it — no card has a picker of its own. -->
+          <div class="span" id="span" role="group" aria-label="When the board is looking"></div>
+          <div class="ruler" id="ruler" title="Which day the page shows"></div>
+          <!-- Where you are: one tick per card, grouped by lane, the one in focus filled. -->
+          <div class="map" id="map" role="navigation" aria-label="Where you are"></div>
+          <div class="board-tools" id="board-tools" role="toolbar" aria-label="Board tools"></div>
+        </div>
+
+        <!-- The ghost: the conversation, over the board's right edge. Not a card
+             — it is always there, translucent, so Gnomon's words stay beside
+             whatever the owner is looking at. The rib folds it away. -->
+        <!-- Folded in the MARKUP, not by a script after first paint. It used to
+             be born open and slide shut on boot, so every reload showed the
+             conversation for a moment and then took it away. -->
+        <aside class="ghost" id="ghost" data-open="false" aria-label="The conversation">
+          <button type="button" class="ghost-toggle" id="ghost-toggle" aria-expanded="false" title="Show or fold the conversation" aria-label="Show or fold the conversation"></button>
+          <!-- Shown only in a side thread: where you are, and the way back into the conversation. -->
+          <!-- Which thread this is, and the list of them (the old Threads card) one click away. -->
+          <div class="thread-bar" id="thread-bar"></div>
+          <div class="thread-picker" id="thread-picker" hidden></div>
+          <div class="canvas" id="canvas" tabindex="-1"></div>
+
+          <!-- Gnomon's own question, when it has one. Above the bar because it
+               is not part of any conversation: a rule asked it. -->
+          <div class="ask" id="ask" hidden></div>
+
+          <form class="bar" id="bar" autocomplete="off">
+            <div class="bar-mode" id="bar-mode" hidden>
+              <span class="bar-mode-dot"></span>
+              <span class="bar-mode-text">Answering Gnomon's question</span>
+              <button type="button" class="link bar-mode-out" id="bar-mode-out">not an answer</button>
+            </div>
+            <div class="attached" id="attached" hidden></div>
+            <textarea id="input" class="input" rows="1" placeholder="Talk to Gnomon…" aria-label="Talk to Gnomon"></textarea>
+            <!-- The composer's own row: what Gnomon thinks with, what you can
+                 hand it, and Say. The model sits here rather than in the rail's
+                 foot because it is a property of the turn you are about to take. -->
+            <div class="bar-acts">
+              <div class="model" id="model">
+                <button type="button" class="model-pick" id="model-pick" aria-haspopup="listbox" aria-expanded="false" aria-label="The model Gnomon thinks with">
+                  <span class="model-provider" id="model-provider"></span>
+                  <span class="model-name" id="model-name">…</span>
+                </button>
+                <div class="model-menu" id="model-menu" role="listbox" aria-label="Models" hidden></div>
+              </div>
+              <!-- How much this turn may do without stopping to ask. Beside the
+                   model for the same reason the model is here: it is a property
+                   of the turn you are about to take, not of the app. -->
+              <button type="button" class="perm" id="perm" aria-pressed="false" hidden>
+                <span class="perm-name" id="perm-name">Ask</span>
+              </button>
+              <span class="bar-spacer"></span>
+              <button type="button" class="bar-act" id="act-attach" title="Attach an image" aria-label="Attach an image">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 4.5 5.9 9.1a1.7 1.7 0 0 0 2.4 2.4l4.9-4.9a3 3 0 0 0-4.2-4.2L4 7.4a4.2 4.2 0 0 0 6 6l4.1-4.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="square"/></svg>
+              </button>
+              <input type="file" id="attach-file" accept="image/*" multiple hidden />
+              <button type="button" class="bar-act" id="act-mic" title="Speak instead of typing — transcribed on this machine" aria-label="Speak" aria-pressed="false">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="6" y="2" width="4" height="7.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3.6 7.6a4.4 4.4 0 0 0 8.8 0M8 12v2.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="square"/></svg>
+              </button>
+              <button type="submit" class="send" id="send" title="Say it (Enter)">Say</button>
+            </div>
+          </form>
+        </aside>
+      </main>
+    </div>
+
+    <!-- Pane bodies that exist from the first frame. The board moves them into
+         a frame when they are summoned; until then they wait here, unrendered. -->
+    <div id="parked" hidden>
+
+      <!-- The threads, and the two settings (paper, model). -->
+      <nav class="rail" id="rail" aria-label="Sessions">
+        <div class="rail-row">
+          <button type="button" class="new" id="new-session">New session</button>
+          <button type="button" class="select" id="select-toggle" aria-pressed="false" title="Select sessions">Select</button>
+        </div>
+        <!-- The conversation, pinned and apart from the list: `gnomon-companion`
+             is the one thread Gnomon speaks into unprompted. -->
+        <button type="button" class="companion" id="companion" aria-current="false">
+          <span class="companion-line">
+            <span class="companion-dot" id="companion-dot" aria-hidden="true"></span>
+            <span class="companion-name">Gnomon</span>
+          </span>
+          <span class="companion-said" id="companion-said">the ongoing conversation</span>
+          <span class="companion-meter" id="companion-meter" hidden>
+            <span class="companion-bar"><span class="companion-fill" id="companion-fill"></span></span>
+            <span class="companion-tokens" id="companion-tokens"></span>
+          </span>
+        </button>
+        <div class="companion-acts">
+          <button type="button" class="foot-act" id="companion-export" title="Save this conversation as JSON">Export</button>
+          <button type="button" class="foot-act" id="companion-compact" title="Summarize the earlier part of this conversation to free up context">Compact</button>
+        </div>
+        <div class="rail-label" id="threads-label">Threads</div>
+        <div class="rail-list" id="sessions" role="list"></div>
+        <div class="rail-actions" id="rail-actions" hidden>
+          <span class="rail-count" id="rail-count"></span>
+          <button type="button" class="foot-act" id="act-archive">Archive</button>
+          <button type="button" class="foot-act foot-act-danger" id="act-delete">Delete</button>
+        </div>
+        <button type="button" class="archived-toggle" id="archived-toggle" aria-pressed="false" hidden></button>
+
+      </nav>
+    </div>
+
+    <script type="module" src="./app/app.js"></script>
+  </body>
+</html>

@@ -1,8 +1,0 @@
-# Bundle patch for the sundial-proactive plugin: one insert row.
-#
-# inject holds this back until the agent registry, the model route, the tool
-# registry and the kernel are all up, so row order is not load-bearing — but
-# keep it after sundial-kernel for readability.
-- insert:
-    - id: sundial-proactive
-      name: '@sundial/dsh-proactive'
