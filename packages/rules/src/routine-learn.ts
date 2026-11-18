@@ -105,6 +105,14 @@ function isAlternation(steps: string[]): boolean {
  * never run.
  */
 export const routineLearn: Rule = (state, event) => {
+  // The owner's `wrong` on a routine (`feedback:verdict`, kind `routine`, id its key) forgets it: it starts again from
+  // nothing if the owner really does it. The sanctioned path for one learned from rows that were not the owner's.
+  if (event.type === 'feedback:verdict') {
+    const { artifactKind, artifactId, verdict } = event.payload as { artifactKind?: unknown; artifactId?: unknown; verdict?: unknown };
+    if (artifactKind !== 'routine' || verdict !== 'wrong' || typeof artifactId !== 'string' || !state.routines.learned[artifactId.trim()]) return { state, effects: [] };
+    const learned = Object.fromEntries(Object.entries(state.routines.learned).filter(([key]) => key !== artifactId.trim()));
+    return { state: { ...state, routines: { ...state.routines, learned } }, effects: [] };
+  }
   if (event.type !== 'window:changed') return { state, effects: [] };
 
   const payload = event.payload as { processName?: unknown; windowTitle?: unknown };

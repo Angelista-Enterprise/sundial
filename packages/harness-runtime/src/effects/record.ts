@@ -102,7 +102,7 @@ export const RECORD = {
       const trimmed = await trimAuditBodies(effect.olderThan);
       console.log(`[sundial-kernel] retention prune: cleared the text of ${trimmed.llmBodiesCleared} llm_audit rows and deleted ${trimmed.effectsDeleted} completed applied_effects rows older than ${effect.olderThan}`);
     } else if (Array.isArray(effect.signalTypes)) {
-      const deleted = await deleteSignalsOlderThan(effect.olderThan, effect.signalTypes, { apps: effect.apps, eventTypes: effect.eventTypes, sessionId: effect.sessionId });
+      const deleted = await deleteSignalsOlderThan(effect.olderThan, effect.signalTypes, { apps: effect.apps, eventTypes: effect.eventTypes, sessionId: effect.sessionId, keepQuestionSets: effect.keepQuestionSets });
       // W1 step 8: a deleted thread's ledger rows go with it.
       const audit = effect.sessionId !== undefined ? await deleteLlmAuditOfSession(effect.sessionId) : 0;
       console.log(`[sundial-kernel] retention prune (${[...effect.signalTypes, ...(effect.eventTypes ?? [])].join(',')}${effect.apps ? ', sensitive apps' : ''}${effect.sessionId ? ', one thread' : ''}): deleted ${deleted} signals older than ${effect.olderThan}${audit ? ` and ${audit} llm_audit rows` : ''}`);

@@ -29,7 +29,7 @@ export const PERMS = {
     optional: true,
   },
   microphone: {
-    what: 'Only for hearing (audio.enabled in config.json): meetings and calls are transcribed on this Mac. Skip this if you do not use it.',
+    what: 'For hearing (audio.enabled in config.json), where meetings and calls are transcribed on this Mac, and for talking to Gnomon by holding the summon key. Skip this if you use neither.',
     pane: 'Privacy_Microphone',
     optional: true,
   },

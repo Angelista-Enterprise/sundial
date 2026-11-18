@@ -68,7 +68,7 @@ describe('anomalyZscore', () => {
     const { state: next, effects } = anomalyZscore(state, windowEvent('2026-01-01T10:05:00.000Z'));
 
     expect(effects).toEqual([]);
-    expect(next.baselines.hourlyDurationsByKind['10']).toEqual([5]);
+    expect(next.baselines.hourlyDurationsByKind['weekday:10']).toEqual([5]);
   });
 
   it('emits anomaly:detected once enough history shows a real outlier', () => {
@@ -78,7 +78,7 @@ describe('anomalyZscore', () => {
       state = withMoment(state, '2026-01-01T10:00:00.000Z');
       state = anomalyZscore(state, windowEvent('2026-01-01T10:05:00.000Z')).state;
     }
-    expect(state.baselines.hourlyDurationsByKind['10']).toHaveLength(BASELINE_SEED);
+    expect(state.baselines.hourlyDurationsByKind['weekday:10']).toHaveLength(BASELINE_SEED);
 
     // Now a wildly longer session in the same hour bucket.
     state = withMoment(state, '2026-01-02T10:00:00.000Z');
@@ -116,8 +116,8 @@ describe('anomalyZscore', () => {
 
     // A far more extreme outlier, since the prior date's outlier duration
     // is now itself part of the rolling baseline and shifted it upward.
-    state = withMoment(state, '2026-01-03T10:00:00.000Z');
-    const { effects } = anomalyZscore(state, windowEvent('2026-01-03T18:00:00.000Z'));
+    state = withMoment(state, '2026-01-05T10:00:00.000Z');
+    const { effects } = anomalyZscore(state, windowEvent('2026-01-05T18:00:00.000Z'));
     expect(effects).toHaveLength(1);
   });
 
@@ -128,7 +128,7 @@ describe('anomalyZscore', () => {
     const { state: next, effects } = anomalyZscore(state, sameProcessEvent);
 
     expect(effects).toEqual([]);
-    expect(next.baselines.hourlyDurationsByKind['10']).toBeUndefined();
+    expect(next.baselines.hourlyDurationsByKind['weekday:10']).toBeUndefined();
   });
 
   function clockTickEvent(ts: string): SanitizedEvent {
@@ -143,8 +143,8 @@ describe('anomalyZscore', () => {
       let state: KernelState = { ...fresh, config: { ...fresh.config, timezone: 'America/New_York' } };
       state = withMoment(state, '2026-01-01T10:00:00.000Z');
       state = anomalyZscore(state, windowEvent('2026-01-01T10:05:00.000Z')).state;
-      expect(state.baselines.hourlyDurationsByKind['5']).toEqual([5]);
-      expect(state.baselines.hourlyDurationsByKind['10']).toBeUndefined();
+      expect(state.baselines.hourlyDurationsByKind['weekday:5']).toEqual([5]);
+      expect(state.baselines.hourlyDurationsByKind['weekday:10']).toBeUndefined();
     });
   });
 
@@ -168,7 +168,7 @@ describe('anomalyZscore', () => {
     it('does not record the in-progress duration as a baseline sample', () => {
       let state = withMoment(createInitialState('d1'), '2026-01-01T10:00:00.000Z');
       const { state: next } = anomalyZscore(state, clockTickEvent('2026-01-01T10:45:00.000Z'));
-      expect(next.baselines.hourlyDurationsByKind['10']).toBeUndefined();
+      expect(next.baselines.hourlyDurationsByKind['weekday:10']).toBeUndefined();
     });
 
     it('is a no-op on clock:tick when no moment is open', () => {
@@ -200,13 +200,13 @@ describe('anomalyZscore', () => {
       const { state: next, effects } = anomalyZscore(state, windowEvent('2026-01-01T10:00:30.000Z'));
 
       expect(effects).toEqual([]);
-      expect(next.baselines.hourlyDurationsByKind['10']).toBeUndefined();
+      expect(next.baselines.hourlyDurationsByKind['weekday:10']).toBeUndefined();
     });
 
     it('does sample right at the 1 minute floor', () => {
       let state = withMoment(createInitialState('d1'), '2026-01-01T10:00:00.000Z');
       const { state: next } = anomalyZscore(state, windowEvent('2026-01-01T10:01:00.000Z'));
-      expect(next.baselines.hourlyDurationsByKind['10']).toEqual([1]);
+      expect(next.baselines.hourlyDurationsByKind['weekday:10']).toEqual([1]);
     });
   });
 
@@ -256,7 +256,7 @@ describe('anomalyZscore', () => {
     it('keeps sampling the baseline even when it refuses to emit — the floors gate narration, not learning', () => {
       let state = withMoment(createInitialState('d1'), '2026-01-01T10:00:00.000Z');
       const { state: next } = anomalyZscore(state, windowEvent('2026-01-01T10:05:00.000Z'));
-      expect(next.baselines.hourlyDurationsByKind['10']).toEqual([5]);
+      expect(next.baselines.hourlyDurationsByKind['weekday:10']).toEqual([5]);
     });
   });
 
@@ -273,11 +273,12 @@ describe('anomalyZscore', () => {
     /** A baseline of real 40-minute sessions at hour 19, each one fully observed. */
     function seededAtHour19(): KernelState {
       let state = createInitialState('d1');
-      for (let i = 0; i < BASELINE_SEED; i++) {
-        const day = String(i + 1).padStart(2, '0');
-        state = observed(state, `2026-08-${day}T19:00:00.000Z`, `2026-08-${day}T20:00:00.000Z`);
-        state = withMoment(state, `2026-08-${day}T19:00:00.000Z`, 'Google Chrome');
-        state = anomalyZscore(state, windowEvent(`2026-08-${day}T19:40:00.000Z`)).state;
+      // Weekdays only: the bucket is hour × weekday class, and 2026-08-12 is a Wednesday.
+      const weekdays = ['07-21', '07-22', '07-23', '07-24', '07-27', '07-28', '07-29', '07-30', '07-31', '08-03', '08-04', '08-05'];
+      for (const day of weekdays.slice(0, BASELINE_SEED)) {
+        state = observed(state, `2026-${day}T19:00:00.000Z`, `2026-${day}T20:00:00.000Z`);
+        state = withMoment(state, `2026-${day}T19:00:00.000Z`, 'Google Chrome');
+        state = anomalyZscore(state, windowEvent(`2026-${day}T19:40:00.000Z`)).state;
       }
       return state;
     }
@@ -296,7 +297,7 @@ describe('anomalyZscore', () => {
       expect(effects).toEqual([]);
       // And the poisoned duration must not have reached the baseline or spent the
       // hour's once-a-day dedup slot, or the fix would only move the damage.
-      expect(next.baselines.hourlyDurationsByKind['19']).toHaveLength(BASELINE_SEED);
+      expect(next.baselines.hourlyDurationsByKind['weekday:19']).toHaveLength(BASELINE_SEED);
       expect(next.baselines.lastAnomalyByKind['19']).toBeUndefined();
     });
 

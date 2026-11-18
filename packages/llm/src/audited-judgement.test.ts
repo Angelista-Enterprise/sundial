@@ -41,6 +41,19 @@ describe('runAuditedJudgement', () => {
     expect(callSystemOne.mock.calls[0][2]).toMatchObject({ model: 'jev-latest' });
   });
 
+  it('an image goes to Jev beside the state, and the ledger row names it without holding it', async () => {
+    callSystemOne.mockResolvedValueOnce({ answers: { same: { type: 'noul', noul: 0.9 } }, model: 'jev-latest', inputTokens: 1, outputTokens: 1, latencyMs: 1, statusCode: 200 });
+    const assets = { 'frame-1': { type: 'image' as const, data_base64: 'SECRETPIXELS', format: 'jpeg' as const } };
+    await runAuditedJudgement({ ...options, purpose: 'frame', assets });
+    expect(callSystemOne.mock.calls[0][2]).toMatchObject({ assets });
+    const [row] = recordLlmAudit.mock.calls[0];
+    expect(row.prompt).not.toContain('SECRETPIXELS');
+    expect(JSON.parse(row.prompt).assets).toEqual(['frame-1']);
+    // The text model cannot see an image: refused before any row or call.
+    await expect(runAuditedJudgement({ ...options, purpose: 'frame', assets, backend: 'text-model' })).rejects.toThrow(/needs Jev/);
+    expect(callSystemOne).toHaveBeenCalledTimes(1);
+  });
+
   it('a partial answer set is not a success', async () => {
     callSystemOne.mockResolvedValueOnce({ answers: {}, model: 'jev-latest', inputTokens: 10, outputTokens: 0, latencyMs: 1, statusCode: 200 });
     await runAuditedJudgement(options);

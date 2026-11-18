@@ -72,11 +72,11 @@ describe('classifyActivity', () => {
     // The leisure profile still contained claude.ai and localhost:3000, so a profile
     // is a prior and never a verdict.
     expect(classifyActivity('Google Chrome', chrome('Claude', 'Pat (Ent)', 'https://claude.ai/chat'), TAXONOMY)).toBe('work');
-    expect(classifyActivity('Google Chrome', chrome('Overture Local', 'Pat (Ent)', 'http://localhost:3000/'), TAXONOMY)).toBe('work');
+    expect(classifyActivity('Google Chrome', chrome('Puzzlebox Local', 'Pat (Ent)', 'http://localhost:3000/'), TAXONOMY)).toBe('work');
   });
 
   it('keeps the two domains that look like leisure and are work', () => {
-    // Overture is classical-concert client work, and the dribbble visits were
+    // Puzzlebox is classical-concert client work, and the dribbble visits were
     // searches for "agentic UI". A naive list calls both downtime.
     expect(classifyActivity('Google Chrome', chrome('Orchestra-Site', 'Pat (Ent)', 'https://orchestra-site.nl/'), TAXONOMY)).toBe('work');
     expect(classifyActivity('Google Chrome', chrome('Agentic UI', 'Pat (Ent)', 'https://dribbble.com/shots/1'), TAXONOMY)).toBe('work');

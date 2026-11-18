@@ -21,8 +21,8 @@ export function isCodeEditor(processName: string): boolean {
 
 /** Used by `moment-kind.ts` (docs/design/06-macos-ui-data-wiring.md's Timeline `kind` classification) to derive a `browse` moment when nothing more specific (a meeting, a focus span, thrashing) applies. */
 export function isBrowser(processName: string): boolean {
-  const p = processName.toLowerCase();
-  return p.includes('safari') || p.includes('chrome') || p.includes('firefox') || p.includes('arc') || p.includes('edge') || p.includes('brave') || p.includes('opera') || p.includes('vivaldi');
+  // Whole words: "Arc", not "Archive Utility"; "Microsoft Edge", not an app with "knowledge" in its name.
+  return /\b(safari|chrome|chromium|firefox|arc|edge|brave|opera|vivaldi|zen|librewolf|waterfox)\b/i.test(processName);
 }
 
 export function isTerminal(processName: string): boolean {
@@ -257,4 +257,17 @@ export function classifyActivity(processName: string, windowTitle: string, taxon
   if (isCodeEditor(processName) || isTerminal(processName) || isConferencingApp(processName)) return 'work';
   if (isMusicApp(processName)) return 'ambient';
   return 'unknown';
+}
+
+/**
+ * Processes whose microphone is not a call: Sundial's own hearing (the Listen chip and the
+ * hearing window open the mic under the app's own name) and the audio daemon. On the record
+ * Sundial itself held the mic in 793 of 1,358 mic-on samples, so every stored moment under
+ * a listening session read as a call. FineTune, a per-app volume mixer, holds the mic all day
+ * (3,587 rows from 2026-11-10 on) and read as one long call.
+ */
+export const NOT_A_CALL_APPS = ['sundial', 'gnomon', 'coreaudiod', 'finetune'];
+export function isOwnAudioProcess(processName: string): boolean {
+  const lower = processName.toLowerCase();
+  return NOT_A_CALL_APPS.some((name) => lower.includes(name));
 }

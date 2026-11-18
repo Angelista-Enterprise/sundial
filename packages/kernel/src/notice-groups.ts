@@ -18,15 +18,18 @@ export interface NoticeGroup {
 }
 
 export const NOTICE_GROUPS: readonly NoticeGroup[] = [
-  { id: 'agents', label: 'Coding agents', what: 'A Claude session waits, asks, fails, loops or collides with you.', kinds: [], prefixes: ['agent-'] },
+  { id: 'agents', label: 'Coding agents', what: 'A coding session waits, asks, fails, loops or collides with you.', kinds: [], prefixes: ['agent-'] },
   { id: 'briefs', label: 'Standup and meeting prep', what: 'Ten minutes before: the standup draft, and what is open with the people you meet.', kinds: ['standup-draft', 'meeting-prep'] },
+  { id: 'chores', label: 'Your chores', what: 'A thing you do most workday mornings or every week, offered in one press: the pull requests waiting, the tickets you come back to.', kinds: ['chore'] },
   { id: 'promises', label: 'Promises', what: 'A promise fading, due at a meeting, or gone quiet.', kinds: ['promise-fading', 'commitment-fading', 'commitment-quiet'] },
   { id: 'returns', label: 'Where was I', what: 'Back from a break: what you were doing, and what you meant to do next.', kinds: ['return-from-break'], prefixes: ['absent:'] },
   { id: 'mail', label: 'Mail that matters', what: 'Mail from someone a promise is with.', kinds: ['mail-matters'] },
   { id: 'day', label: 'Your day and week', what: 'The day running long, a day end or a trend that moved.', kinds: ['day-ending', 'day-runs-long', 'day-end-drift', 'weekly-drift'], prefixes: ['drift:'] },
   { id: 'forecasts', label: 'Forecasts', what: 'A fragmented hour or a project touch Gnomon expects.', kinds: ['hour-fragmented', 'project-touched'], prefixes: ['tournament:'] },
-  { id: 'work', label: "Gnomon's own work", what: 'A job shelved or closed, a goal step, an action it could not check.', kinds: ['work-shelved', 'work-closed', 'action-unverified'], prefixes: ['goal-'] },
-  { id: 'shell', label: 'Failing commands', what: 'The same command failing again and again.', kinds: ['shell-failing-streak'] },
+  { id: 'work', label: "Gnomon's own work", what: 'A job shelved or closed, a goal step, an action it could not check, a route to keep as a skill.', kinds: ['work-shelved', 'work-awaited', 'work-closed', 'action-unverified', 'skill-offer'], prefixes: ['goal-'] },
+  { id: 'shell', label: 'Failing commands', what: 'The same command failing again and again, or two signs that you are stuck.', kinds: ['shell-failing-streak', 'stuck'] },
+  { id: 'corrections', label: 'Corrections', what: 'Gnomon told you something that turned out wrong, and says so.', kinds: ['self-correction'] },
+  { id: 'offers', label: 'Offers of help', what: 'You held one window for a few minutes and Gnomon saw one concrete thing it could do for it.', kinds: ['offer-now'] },
   { id: 'followups', label: 'Follow-ups', what: 'One line in the chat where Gnomon raised something, when it resolves — the push after it said commits were waiting.', kinds: [], prefixes: ['followup:'] },
   { id: 'rules', label: 'Your watch rules', what: 'Rules you made by talking, and the unusual-activity alerts.', kinds: [], prefixes: ['watch:', 'activity-'] },
   // lane H

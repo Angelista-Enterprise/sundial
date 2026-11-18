@@ -118,8 +118,37 @@ describe('calibrate: implicit labels (W5 step 5)', () => {
     expect(s.calibrated.noticeByKind['return-from-break']!['2026-09-20']).toMatchObject({ delivered: 1, seen: 1, labelled: 1 });
     // After 5 minutes, input is not "seen".
     const late = calibrate(deliver(createInitialState('d1'), at(0), [item()]).state, input(at(6)));
-    expect(late.effects).toEqual([]);
+    expect(late.effects).toEqual([expect.objectContaining({ event: expect.objectContaining({ type: 'feedback:implicit', payload: expect.objectContaining({ signal: 'unknown' }) }) })]);
     expect(late.state.calibrated.params['notice.seen:return-from-break']).toMatchObject({ n: 1, hits: 0 });
+  });
+
+  it('plan 15 step 1: the owner\'s go on a knock is "seen" for that notice; the app\'s own go is not', () => {
+    const s = deliver(createInitialState('d1'), at(0), [item(), item({ key: 'k:2' })]).state;
+    const go = calibrate(s, ev('voice:go', at(1), { noticeKey: 'k:2' }));
+    expect(go.state.calibrated.watch.map((w) => Boolean(w.seen))).toEqual([false, true]);
+    expect(calibrate(s, ev('voice:go', at(1), { noticeKey: 'k:2', auto: true })).state.calibrated.watch.some((w) => w.seen)).toBe(false);
+  });
+
+  it('plan 15 step 1: a notice delivered at a task boundary is watched like one delivered on a tick', () => {
+    const base = createInitialState('d1');
+    const s = { ...base, notices: { ...base.notices, lastDelivered: { at: at(0), items: [item()] } } };
+    expect(calibrate(s, ev('boundary:reached', at(0), { kind: 'commit' })).state.calibrated.watch.map((w) => w.key)).toEqual(['k:1']);
+  });
+
+  it('W6 D5: the owner away for the 5 minutes is unknown, not ignored; at the Mac and no reply still counts', () => {
+    const ask = item({ key: 'owner-ask:a1', kind: 'owner-question', channel: 'phasic', cost: 0.9, askId: 'a1' });
+    const away = calibrate(deliver(createInitialState('d1'), at(0), [ask]).state, ev('clock:tick', at(6)));
+    expect(away.state.calibrated.params['gate.answered:high']).toMatchObject({ n: 0, hits: 0 });
+    expect(away.state.calibrated.params['notice.acted:owner-question']).toMatchObject({ n: 0, hits: 0 });
+    expect(away.state.calibrated.watch[0]).toMatchObject({ unknown: true });
+    // Said once, and a reply after it counts whole.
+    expect(calibrate(away.state, ev('clock:tick', at(7))).effects).toEqual([]);
+    const answered = calibrate(away.state, ev('ask:owner-answered', at(8), { askId: 'a1' })).state;
+    expect(answered.calibrated.params['gate.answered:high']).toMatchObject({ n: 1, hits: 1 });
+    expect(answered.calibrated.params['notice.acted:owner-question']).toMatchObject({ n: 1, hits: 1 });
+    // The owner was at the Mac and did not answer: that is a miss.
+    const ignored = fold(deliver(createInitialState('d1'), at(0), [ask]).state, [input(at(2)), ev('clock:tick', at(6))]);
+    expect(ignored.calibrated.params['gate.answered:high']).toMatchObject({ n: 1, hits: 0 });
   });
 
   it('W6 P18: a line the client saw in view (notice:seen) is seen, for that notice only', () => {

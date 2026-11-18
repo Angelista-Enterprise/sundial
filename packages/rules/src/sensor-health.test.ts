@@ -3,7 +3,7 @@ import { createInitialState } from '@sundial/kernel/initial-state.js';
 import type { KernelState, SanitizedEvent } from '@sundial/kernel/types.js';
 import { noticeGroupOf } from '@sundial/kernel/notice-groups.js';
 import { describe, expect, it } from 'vitest';
-import { sensorHealth } from './sensor-health.js';
+import { sensorHealth, upPayload } from './sensor-health.js';
 
 const T0 = Date.parse('2026-09-01T09:00:00.000Z');
 const at = (ms: number) => new Date(T0 + ms).toISOString();
@@ -128,6 +128,9 @@ describe('sensorHealth', () => {
     const three = run([fail(0), fail(1000), fail(2000), fail(3000)]);
     expect(three.said.map((s) => s.key)).toEqual(['sensor-health:llm-auth:jev']);
     expect(three.said[0]!.observation).toMatch(/Jev refused Sundial's key 3 times in a row \(HTTP 401\)/);
+    // A restart (the line's own advice) starts the count again and clears the line.
+    const after = run([fail(0), fail(1000), fail(2000), ev('sundial:up', 3000)]);
+    expect(Object.keys(after.state.sensorHealth.troubles)).not.toContain('llm-auth:jev');
   });
 
   it('keeps budget and push outcomes for Settings without saying them', () => {
@@ -135,6 +138,14 @@ describe('sensorHealth', () => {
     expect(said).toEqual([]);
     expect(state.sensorHealth.budgetExhausted).toEqual({ companion: '2026-09-01' });
     expect(state.sensorHealth.push).toEqual({ lastOkAt: at(MIN), lastFailedAt: at(2 * MIN), lastError: 'timeout' });
+  });
+
+  it('W6 D6: a blind sensor is said once, with the day it went blind, and cleared when it sees again', () => {
+    const blind = (ms: number) => ev('sensor:blind', ms, { pair: 'screen', since: at(0), observation: 'The screen reader read nothing.', evidence: ['30 minutes of use', 7] });
+    const { state, said } = run([blind(40 * MIN), ...ticks(41 * MIN, 50 * MIN), blind(51 * MIN)]);
+    expect(said).toEqual([{ key: 'sensor-health:blind:screen', observation: 'The screen reader read nothing.', ts: at(40 * MIN) }]);
+    expect(state.sensorHealth.troubles['blind:screen']).toMatchObject({ since: at(0), evidence: ['30 minutes of use'] });
+    expect(run([ev('sensor:sighted', 52 * MIN, { pair: 'screen' })], state).state.sensorHealth.troubles).toEqual({});
   });
 });
 
@@ -158,6 +169,26 @@ describe('W6 D9: uptime and downtime', () => {
     expect(run([ev('clock:tick', 0), up(MIN, 0, -60 * MIN)]).said).toEqual([]);
     const after = run([ev('clock:tick', 3 * 60 * MIN + MIN)], down.state);
     expect(after.state.sensorHealth.troubles.downtime).toBeUndefined();
+  });
+
+  it('names the gap at a start: a clean stop, a crash, the Mac off, or asleep', () => {
+    const HOUR = 60 * MIN;
+    const gapAt = (events: SanitizedEvent[], macUpSec: number) => upPayload(run(events).state.sensorHealth, T0 + 2 * HOUR, macUpSec).gap;
+    const longUp = 10 * 3600; // the Mac booted long before the last heartbeat
+    expect(gapAt([ev('clock:tick', 0), ev('sundial:down', 1_000)], longUp)).toEqual({ ms: 2 * HOUR, reason: 'stop' });
+    expect(gapAt([ev('clock:tick', 0)], longUp)).toEqual({ ms: 2 * HOUR, reason: 'crash' });
+    // A stop from an earlier run does not explain this gap.
+    expect(gapAt([ev('sundial:down', -5 * MIN), ev('clock:tick', 0)], longUp)?.reason).toBe('crash');
+    expect(gapAt([ev('clock:tick', 0), ev('sundial:down', 1_000)], 600)?.reason).toBe('mac-off');
+    expect(gapAt([ev('clock:tick', 0), ev('system:sleep-wake', 1_000, { kind: 'sleep' })], longUp)?.reason).toBe('sleep');
+    expect(gapAt([ev('clock:tick', 0), ev('system:sleep-wake', 1_000, { kind: 'sleep' }), ev('system:sleep-wake', 2_000, { kind: 'wake' })], longUp)?.reason).toBe('crash');
+    // A first start has no heartbeat before it: no gap.
+    expect(upPayload(undefined, T0, longUp).gap).toBeNull();
+  });
+
+  it('puts the reason in the downtime notice evidence', () => {
+    const { state } = run([ev('clock:tick', 0), ev('sundial:up', 3 * 60 * MIN, { lastSeenAt: at(0), macBootAt: at(-60 * MIN), gap: { ms: 3 * 60 * MIN, reason: 'crash' } })]);
+    expect(state.sensorHealth.troubles.downtime?.evidence).toEqual(['down 3 h', 'reason: crash']);
   });
 });
 

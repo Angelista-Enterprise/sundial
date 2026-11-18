@@ -1,5 +1,5 @@
 import type { AnsweredQuestion as AnsweredOwnerAsk } from '@sundial/helpers/asked.js';
-import type { HabituationEntry } from '../types.js';
+import type { HabituationEntry, KernelState } from '../types.js';
 // W1: what each chat was shown and said, as the fold keeps it (`conversationTrack`).
 
 /** One turn, clipped to 280 characters. `shownId` is the brief the reply was written against. */
@@ -19,11 +19,23 @@ export interface ShownFact {
 
 export interface ChatSession {
   lastAt: string;
-  shown: { briefId: string; facts: ShownFact[] } | null;
+  shown: { briefId: string; facts: ShownFact[]; cites?: CitableFact[] } | null;
   /** Why the latest turn happened: the notice or question that woke it, when one did. */
   cause: { noticeKey: string | null; askId: string | null } | null;
   /** The last six turns. */
   turns: ChatTurn[];
+}
+
+/** Plan 15 4.5: an owner fact a brief carried. */
+export interface CitableFact {
+  id: string;
+  predicate: string;
+  object: string;
+}
+
+/** Plan 15 4.5: an owner fact a reply named, and when. */
+export interface CitedFact extends CitableFact {
+  at: string;
 }
 
 /** A fact Gnomon told the owner: shown in the brief and named in the reply. `value` is what matched. */
@@ -40,12 +52,24 @@ export interface ConversationState {
   sessions: Record<string, ChatSession>;
   /** A ring of fifty. */
   said: SaidFact[];
+  /** Plan 15 4.5: the owner facts Gnomon cited, a ring of 100. */
+  cited?: CitedFact[];
 }
+
+/** S4: one rig chat's sandbox: the slices its sandboxed tools write, in the owner's shapes (`SANDBOX_SLICES`). */
+export type SandboxSlices = Pick<KernelState, 'loops' | 'ownerAsk' | 'drafts' | 'commitments' | 'workbench' | 'watch'>;
 
 /** KernelState's Conversation fields; `KernelState` extends this. */
 export interface ConversationSlices {
   /** W1: what each chat was shown and said, by `conversationTrack` from `chat:*`. */
   conversation: ConversationState;
+  /** Round 4: the screen rig's chat sessions (`thread:model` with `rig: true`, and S4 a rig chat's helpers, `thread:delegate`), id → first seen, the newest 1000. Single writer: `rigSessions`. */
+  rigSessions?: Record<string, string>;
+  /**
+   * S4: each rig chat's sandbox, its own copy of the slices its sandboxed tools write, folded by the same rules as the
+   * owner's (`sandboxOf`, @sundial/helpers/sandbox.js). Made when the chat is marked rig, the newest five kept. Single writer: `sandbox`.
+   */
+  sandbox?: Record<string, SandboxSlices>;
   /**
    * The assistant's own contributions to the log, folded like any sensor's.
    *
@@ -108,7 +132,19 @@ export interface ConversationSlices {
      * that works.
      */
     classGain: Record<string, HabituationEntry>;
+    /** I13: questions that arrived while one was open, at most five, by priority, then by age. Still one open at a time. Optional: older snapshots. */
+    queue?: QueuedOwnerAsk[];
   };
+}
+
+/** I13: a question that waits for its turn; `ts` is when it first arrived. */
+export interface QueuedOwnerAsk {
+  askId: string;
+  question: string;
+  reason: string;
+  choices: string[];
+  priority: number;
+  ts: string;
 }
 
 export interface OpenOwnerAsk {

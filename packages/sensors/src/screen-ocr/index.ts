@@ -10,6 +10,19 @@ export interface ScreenOcrEvent {
 
 export interface ScreenOcrSensorConfig {
   enabled?: boolean;
+  /** Lower-cased app names captured at most once per `slowIntervalMs` per region. */
+  slowApps?: string[];
+  slowIntervalMs?: number;
+}
+
+/**
+ * Sundial's own window: Gnomon's web client, its menu bar, its own chat. 3,443 of
+ * the record's 108,339 captures were Sundial reading itself. Judged here rather
+ * than in the Swift helper, which cannot be changed without a Screen Recording
+ * re-grant; the helper writes raw and TypeScript decides, by design.
+ */
+export function isOwnWindow(snapshot: ScreenOcrSnapshot): boolean {
+  return [snapshot.processName, snapshot.bundleId].some((name) => !!name && /sundial|gnomon/i.test(name));
 }
 
 /**
@@ -41,7 +54,11 @@ export function isPrivateCapture(snapshot: ScreenOcrSnapshot): boolean {
 
 export class ScreenOcrSensor {
   private readonly enabled: boolean;
+  private readonly slowApps: Set<string>;
+  private readonly slowIntervalMs: number;
   private readonly lastText = new Map<string, string>();
+  /** Per region, when a slow app's capture was last kept. */
+  private readonly lastSlowAt = new Map<string, number>();
   /**
    * Captures dropped because secure input was on, counted once per capture.
    * Secure Keyboard Entry can stay on for hours and blank all OCR; this is how
@@ -51,22 +68,40 @@ export class ScreenOcrSensor {
 
   constructor(config: ScreenOcrSensorConfig = {}) {
     this.enabled = config.enabled === true;
+    this.slowApps = new Set((config.slowApps ?? []).map((a) => a.toLowerCase()));
+    this.slowIntervalMs = config.slowIntervalMs ?? 60_000;
+  }
+
+  /**
+   * Whether a capture is logged: not private, not Sundial's own window, not the same
+   * text as the last of its region, and for a slow app not within `slowIntervalMs`
+   * of its last kept capture. Clocked by the capture's own timestamp so a replay
+   * of the record says the same as the live run. Mutates the sensor's memory.
+   */
+  accept(snapshot: ScreenOcrSnapshot): boolean {
+    if (snapshot.secureInput && snapshot.captureTimestamp !== this.secureInputDrops.lastAt) {
+      this.secureInputDrops.count += 1;
+      this.secureInputDrops.lastAt = snapshot.captureTimestamp;
+    }
+    if (isPrivateCapture(snapshot) || isOwnWindow(snapshot)) return false;
+
+    const text = snapshot.text.trim();
+    if (!text || text === this.lastText.get(snapshot.region)) return false;
+    if (this.slowApps.has(snapshot.processName.toLowerCase())) {
+      const at = Date.parse(snapshot.captureTimestamp);
+      const last = this.lastSlowAt.get(snapshot.region);
+      if (last !== undefined && at - last < this.slowIntervalMs) return false;
+      this.lastSlowAt.set(snapshot.region, at);
+    }
+    this.lastText.set(snapshot.region, text);
+    return true;
   }
 
   poll(): ScreenOcrEvent[] {
     if (!this.enabled || process.platform !== 'darwin') return [];
     const snapshot = readScreenOcrSnapshot();
-    if (!snapshot) return [];
-
-    if (snapshot.secureInput && snapshot.captureTimestamp !== this.secureInputDrops.lastAt) {
-      this.secureInputDrops.count += 1;
-      this.secureInputDrops.lastAt = snapshot.captureTimestamp;
-    }
-    if (isPrivateCapture(snapshot)) return [];
-
+    if (!snapshot || !this.accept(snapshot)) return [];
     const text = snapshot.text.trim();
-    if (!text || text === this.lastText.get(snapshot.region)) return [];
-    this.lastText.set(snapshot.region, text);
 
     return [
       {

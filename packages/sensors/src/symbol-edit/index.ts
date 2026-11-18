@@ -22,16 +22,16 @@ export class SymbolEditSensor {
   async handleFileChanged(projectRoot: string, changes: FileChange[]): Promise<SymbolEditEvent | null> {
     if (!fs.existsSync(path.join(projectRoot, '.git'))) return null;
 
-    const edits: { file: string; symbols: string[]; hunkCount: number }[] = [];
+    const edits: { file: string; symbols: string[]; hunkCount: number; added: number; removed: number }[] = [];
     let totalSymbolCount = 0;
 
     const targets = changes.filter((c) => c.kind !== 'delete').slice(0, MAX_FILES_PER_EVENT);
     for (const change of targets) {
       const diff = await runGitDiff(projectRoot, change.relPath);
       if (!diff) continue;
-      const { symbols, hunkCount } = extractSymbolsFromDiff(diff);
+      const { symbols, hunkCount, added, removed } = extractSymbolsFromDiff(diff);
       if (symbols.length === 0 && hunkCount === 0) continue;
-      edits.push({ file: change.relPath, symbols, hunkCount });
+      edits.push({ file: change.relPath, symbols, hunkCount, added, removed });
       totalSymbolCount += symbols.length;
     }
 

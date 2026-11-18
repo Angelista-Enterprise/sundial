@@ -1,3 +1,4 @@
+// Frozen design reference, not built or imported: palette.test.js pins the web client against it.
 import SwiftUI
 import GnomonKit
 

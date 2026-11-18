@@ -1,0 +1,250 @@
+/* The overlay (Sundial.app's summon panel; overlay.js). Inert in the app: every rule is under
+   `data-overlay`, which index.html sets only from the query (`?overlay=slip`).
+
+   No ground, no bars. The app boots under it, hidden; only Gnomon's own things show: the slip (a ticker)
+   bottom centre (the locator inside it while Gnomon acts or asks), rings and tags on the owner's apps, and the Nodus
+   sheet at the right. Ink is the owner, ochre is Gnomon. Paper at 88% with a blur, so what shows through is
+   shape, not detail; the ink follows the system appearance (overlay.js lets the media query choose the paper). */
+:root[data-overlay] {
+  /* Over a desktop the faintest grey is too faint: the quiet tones read as the muted one. */
+  --ink-subtle: var(--ink-muted);
+  --ink-faint: var(--ink-muted);
+  /* Gnomon's ochre as text, mixed toward the ink: over a washed desktop the paper is never quite paper. */
+  --ochre-text: color-mix(in srgb, var(--ochre) 50%, var(--ink));
+  --ov-font: 'Inter Tight', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  /* A numeral on Gnomon's ochre square: the ink on light paper, the dark paper on dark (the light paper on ochre is 2.3:1). */
+  --ov-on-ochre: var(--ink);
+}
+@media (prefers-color-scheme: dark) { :root[data-overlay]:not([data-theme='light']) { --ov-on-ochre: var(--page); } }
+:root[data-overlay][data-theme='dark'] { --ov-on-ochre: var(--page); }
+:root[data-overlay], :root[data-overlay] body, :root[data-overlay] .board, :root[data-overlay] .board::before { background: transparent; }
+:root[data-overlay] body { visibility: hidden; }
+:root[data-overlay] :is(.ov-slip, .ov-marks, .ov-tags, .ov-tag, .pane[data-overlay-figure]) { visibility: visible; }
+:root[data-ov-marks-only] :is(.ov-slip, .pane[data-overlay-figure]) { visibility: hidden; }
+:root[data-overlay] ::selection { background: color-mix(in srgb, var(--ochre) 30%, transparent); }
+
+.ov-paper { background: color-mix(in srgb, var(--page) 88%, transparent); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); border: 1px solid var(--border-strong); color: var(--ink); font-family: var(--ov-font); }
+.ov-slip :focus-visible { outline: 1px solid var(--ink); outline-offset: 2px; }
+.ov-slip kbd { font: 500 11px var(--ov-font); letter-spacing: 0.04em; color: var(--ink-muted); border: 1px solid var(--border); padding: 0 5px; white-space: nowrap; }
+.ov-gn svg { display: block; width: 14px; height: 14px; }
+.ov-gn path { fill: var(--ochre); }
+/* The step's square: the same ochre tag on the acted part, in the card's head, in the readout and on the newest lap. */
+.ov-stag { display: inline-grid; place-items: center; flex: none; width: 14px; height: 14px; background: var(--ochre); color: var(--ov-on-ochre); font: 600 9px/1 var(--ov-font); font-variant-numeric: tabular-nums; }
+
+/* ── The slip: the edge, what grows, the row. Its slots never move between states. ── */
+.ov-slip { position: fixed; left: 50%; bottom: 36px; z-index: 40; width: min(560px, calc(100vw - 32px)); translate: -50% 0; font-size: 15px; line-height: 1.35; letter-spacing: -0.005em; animation: ov-in-slip 160ms var(--ease) backwards; }
+/* What grows keeps the row's columns: Gnomon's words start where the row's line starts (14 px edge, 14 px mark, 9 px gap). */
+.ov-grown { padding: 6px 12px 10px 14px; }
+.ov-grown:not(:has(> :not([hidden]))) { display: none; }
+.ov-grown:has(> :not([hidden])) + .ov-tick { border-top: 1px solid var(--divider); }
+/* The field has a line of its own; the thread, the readout and the chip share the line under it. */
+.ov-tick { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-height: 44px; padding: 9px 12px 8px 14px; }
+.ov-one { flex: 1 0 100%; min-width: 0; display: flex; align-items: center; gap: 9px; }
+/* The mark's slot is kept when it is empty (listen, ask, answer): the field never shifts sideways between states. */
+.ov-glyph { flex: none; display: grid; place-items: center; width: 14px; }
+.ov-glyph > * { display: none; }
+.ov-glyph[data-mark='gn'] .ov-gn, .ov-glyph[data-mark='dot'] .ov-dot { display: block; }
+.ov-dot { width: 6px; height: 6px; background: var(--ochre); }
+@media (prefers-reduced-motion: no-preference) { .ov-dot { animation: ov-breathe-dot 1.1s var(--ease) infinite alternate; } }
+@keyframes ov-breathe-dot { to { opacity: 0.35; } }
+/* The field and its line: the line sits over the empty field and goes the moment the owner types. */
+.ov-field { position: relative; flex: 1; min-width: 0; display: grid; align-items: center; }
+.ov-field > * { grid-area: 1 / 1; }
+.ov-one-line { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; padding-left: 3px; pointer-events: none; text-wrap: pretty; overflow-wrap: anywhere; }
+.ov-one-line.heard { color: var(--ink-muted); }
+.ov-field #input { width: 100%; min-width: 0; max-height: 6.75em; margin: 0; padding: 0; border: 0; outline: none; resize: none; background: transparent; font: inherit; color: var(--ink); caret-color: var(--ink); }
+.ov-field #input:focus-visible { outline: none; }
+.ov-field #input::placeholder { color: var(--ink-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The readout: what and where over how long, tabular, never wrapping. */
+.ov-ro { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 1px; min-width: 118px; font-size: 12px; line-height: 1.3; color: var(--ink-muted); font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
+.ov-ro-top { display: inline-flex; align-items: center; gap: 6px; }
+.ov-ro b { font-weight: 400; color: var(--ink); }
+.ov-ro b.g { color: var(--ochre-text); }
+.ov-slot { flex: none; min-width: 58px; display: flex; justify-content: flex-end; align-items: center; }
+.ov-slot kbd.ov-hint { margin: 0; }
+.ov-chip { max-width: 160px; height: 24px; padding: 0 9px; border: 1px solid var(--border); background: transparent; font: 400 12px var(--ov-font); color: var(--ink-muted); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color 160ms var(--ease), border-color 160ms var(--ease); }
+.ov-chip:hover { color: var(--ink); border-color: var(--border-strong); }
+.ov-chip.lit { color: var(--ochre-text); border-color: var(--ochre); }
+
+/* Buttons: hairline, no radius; Do it is filled with the ink, and turns Gnomon's on the hand. */
+.ov-btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 13px; border: 1px solid var(--border-strong); background: transparent; font: 400 13px var(--ov-font); color: var(--ink); cursor: pointer; white-space: nowrap; transition: background-color 160ms var(--ease), color 160ms var(--ease); }
+.ov-btn:hover { background: var(--ink); color: var(--page); }
+.ov-btn.ov-go { background: var(--ink); border-color: var(--ink); color: var(--page); }
+.ov-btn.ov-go:hover { background: var(--ochre); border-color: var(--ochre); }
+.ov-btn.ov-sm { height: 24px; padding: 0 10px; font-size: 12px; }
+.ov-btn kbd { border-color: currentColor; color: inherit; opacity: 0.7; }
+.ov-quiet { height: 24px; padding: 0 7px; border: 0; background: transparent; font: 400 12px var(--ov-font); color: var(--ink-muted); cursor: pointer; }
+.ov-quiet:hover { background: var(--wash); color: var(--ink); }
+.ov-quiet[aria-pressed='true'] { background: var(--panel); color: var(--ink); }
+
+/* The edge: a ruler that is Gnomon's state, always there so the slip never changes height for it. Still ticks at rest;
+   the owner's voice in ink; Gnomon's in ochre; thinking, an ochre head that runs along it; a guide, its parts; one ochre
+   mark while it waits. */
+.ov-scale { height: 14px; display: flex; align-items: flex-start; gap: 5px; padding: 0 12px; overflow: hidden; }
+.ov-scale i { flex: none; width: 1px; height: 13px; background: var(--ink-subtle); opacity: 0.7; transform-origin: top; transform: scaleY(var(--s)); transition: transform 160ms var(--ease); }
+.ov-scale i.you { background: var(--ink); opacity: 1; }
+.ov-scale i.g { background: var(--ochre); opacity: 1; }
+@media (prefers-reduced-motion: no-preference) {
+  .ov-scale:is([data-mode='listen'], [data-mode='speak']) i { animation: ov-breathe 900ms var(--ease) infinite alternate; animation-delay: calc(var(--i) * -53ms); }
+  .ov-scale[data-mode='think'] i { animation: ov-run 1.6s linear infinite; animation-delay: calc(var(--i) * 18ms); }
+}
+@keyframes ov-breathe { from { transform: scaleY(calc(var(--s) * 0.45)); } }
+@keyframes ov-run { 0%, 5% { transform: scaleY(1); background: var(--ochre); opacity: 1; } 18%, 100% {} }
+
+/* What grows: the last steps with their times, the ask, the answer, an offer, what waits. */
+.ov-laps { margin: 0; padding: 0; list-style: none; font-size: 12px; line-height: 1.35; font-variant-numeric: tabular-nums; }
+.ov-laps li { display: grid; grid-template-columns: 22px minmax(0, 1fr) 56px 48px; gap: 8px; align-items: center; padding: 3px 0; border-top: 1px solid var(--divider); color: var(--ink-muted); }
+.ov-laps li > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-laps li > span:nth-child(n+3) { text-align: right; }
+.ov-laps li.now { color: var(--ink); }
+.ov-lap-mark { padding-left: 5px; }
+.ov-laps li.now > span:nth-child(3) { color: var(--ochre-text); }
+.ov-laps li.hd { border-top: 0; padding-bottom: 1px; font-size: 10px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; }
+.ov-askb, .ov-answer { display: grid; grid-template-columns: 14px minmax(0, 1fr); column-gap: 9px; padding-top: 4px; }
+.ov-askb > .ov-gn, .ov-answer > .ov-gn { padding-top: 4px; }
+.ov-asks { display: flex; align-items: baseline; gap: 8px; margin: 0 0 5px; }
+.ov-kind { font-size: 10px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ochre-text); }
+.ov-where { min-width: 0; font-size: 12px; color: var(--ink-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-ask-line { margin: 0; font-size: 17px; line-height: 1.3; letter-spacing: -0.012em; text-wrap: pretty; overflow-wrap: anywhere; }
+.ov-detail { margin: 10px 0 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 12px; font-size: 13px; line-height: 1.4; }
+.ov-detail:empty { display: none; }
+.ov-detail dt { padding-top: 2px; font-size: 10px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-muted); }
+.ov-detail dd { margin: 0; overflow-wrap: anywhere; }
+.ov-said { margin: 8px 0 0; font-size: 12px; line-height: 1.4; color: var(--ink-muted); text-wrap: pretty; overflow-wrap: anywhere; white-space: pre-line; }
+.ov-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0 0; }
+.ov-acts small { margin-left: 4px; font-size: 12px; color: var(--ink-muted); }
+/* The answer is the app's own prose, held whole: it grows to two fifths of the screen, then scrolls in place.
+   A cut edge fades into the paper (overlay.js names the sides with more). Its links are words here. */
+.ov-line { --up: 0px; --down: 0px; min-width: 0; max-height: 40vh; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; overflow-wrap: break-word; }
+.ov-line[data-more~='up'] { --up: 20px; }
+.ov-line[data-more~='down'] { --down: 20px; }
+.ov-line:is([data-more~='up'], [data-more~='down']) { -webkit-mask-image: linear-gradient(transparent, var(--ink) var(--up), var(--ink) calc(100% - var(--down)), transparent); mask-image: linear-gradient(transparent, var(--ink) var(--up), var(--ink) calc(100% - var(--down)), transparent); }
+.ov-line::-webkit-scrollbar { width: 6px; }
+.ov-line::-webkit-scrollbar-thumb { border-left: 4px solid transparent; background: var(--border-strong) content-box; }
+.ov-line .prose { margin: 0; }
+.ov-line .prose :is(p, ul, ol) { font-size: 15px; line-height: 1.45; margin: 0 0 8px; }
+.ov-line .prose :is(h1, h2, h3).md-h { margin: 12px 0 4px; font-size: 15px; font-weight: 600; letter-spacing: 0; }
+.ov-line .prose:last-child > :last-child { margin-bottom: 0; }
+.ov-line :is(a, .board-link) { pointer-events: none; text-decoration: none; }
+.ov-line .board-link::after { content: none; }
+:root:has(.pane[data-overlay-figure]) .ov-line { max-height: 6em; }
+.ov-offer, .ov-waits { padding-left: 23px; }
+.ov-offer { display: flex; align-items: center; }
+.ov-offer small, .ov-waits { margin: 0; font-size: 12px; line-height: 1.4; color: var(--ink-muted); }
+/* What came back from the offer: two lines at most, the rest is in the conversation. */
+.ov-offer small { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.ov-waits { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Waiting on the owner's hand: Gnomon's words in its ochre ink, so the held step reads as Gnomon's pause, not the owner's line. */
+.ov-waits.hand { color: var(--ochre-text); }
+/* A second question's answer from its side thread: the question in muted ink, the answer in full ink, two lines at most. */
+.ov-aside { margin: 0; padding-left: 23px; font-size: 13px; line-height: 1.4; font-variant-numeric: tabular-nums; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.ov-aside b { font-weight: 400; color: var(--ink-muted); margin-right: 6px; }
+.ov-grown > :not([hidden]) + :not([hidden]) { margin-top: 8px; }
+/* The trace (⌥T): every call of the turn with the model's time before it. Hidden by default. */
+.ov-trace { list-style: none; margin: 0; padding: 0 0 8px; max-height: 32vh; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; border-bottom: 1px solid var(--border); font-size: 12px; line-height: 1.4; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.ov-trace li { display: grid; grid-template-columns: 6px minmax(0, 1fr) auto; column-gap: 9px; padding: 3px 0; }
+.ov-trace .ov-trace-head { display: block; padding: 0 0 5px; font-size: 11px; letter-spacing: 0.02em; }
+.ov-trace i { width: 6px; height: 6px; margin-top: 6px; background: var(--ink-muted); }
+.ov-trace [data-state='run'] i { background: var(--ochre); }
+.ov-trace [data-state='fail'] i { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ochre); }
+.ov-trace b { font-weight: 500; color: var(--ink); overflow-wrap: anywhere; }
+.ov-trace time { white-space: nowrap; }
+.ov-trace small, .ov-trace .why { grid-column: 2 / 4; font-size: 11px; overflow-wrap: anywhere; }
+.ov-trace [data-state='fail'] .why { color: var(--ochre-text); }
+
+/* The thread head: the thread's name where a frame's title sits; its list a sheet of the same paper above the slip. */
+.ov-slip #thread { position: static; flex: none; margin: 0; padding: 0; border: 0; }
+/* Trace beside the thread, quiet; pressed, it is Gnomon's ink with an underline. Not a pill. */
+.ov-trace-btn { flex: none; margin: 0 auto 0 2px; padding: 0 4px; border: 0; background: none; font: 400 12px var(--ov-font); color: var(--ink-muted); cursor: pointer; text-decoration: none; text-underline-offset: 3px; }
+.ov-trace-btn:hover { color: var(--ink); }
+.ov-trace-btn[aria-pressed='true'] { color: var(--ochre-text); text-decoration: underline; text-decoration-color: var(--ochre); }
+.ov-slip #thread-pick { display: inline-flex; flex-direction: row; align-items: center; gap: 7px; width: auto; max-width: 140px; padding: 0; background: none; color: var(--ink); font: 500 11px var(--ov-font); letter-spacing: 0.1em; text-transform: uppercase; }
+.ov-slip #thread-pick .model-provider { display: none; }
+.ov-slip #thread-pick .model-name { font-size: 11px; color: inherit; }
+.ov-slip #thread-pick::after { content: ''; flex: none; width: 6px; height: 6px; border-left: 1px solid currentColor; border-top: 1px solid currentColor; transform: translateY(2px) rotate(45deg); }
+.ov-slip #thread-pick:hover, .ov-slip #thread-pick[aria-expanded='true'] { background: none; color: var(--ochre-text); }
+.ov-slip #thread-menu { left: -1px; right: -1px; bottom: calc(100% + 8px); max-height: min(60vh, 460px); padding: 6px 0; background: color-mix(in srgb, var(--page) 94%, transparent); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); visibility: visible; font-family: var(--ov-font); }
+.thread-opt { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; align-items: baseline; gap: 8px; width: 100%; padding: 6px 14px; border: 0; background: transparent; font: 400 14px var(--ov-font); color: var(--ink); text-align: left; cursor: pointer; }
+.thread-opt:hover, .thread-opt:focus-visible { background: var(--wash); outline: none; }
+.thread-opt[aria-selected='true'] { background: var(--wash-strong); }
+.thread-opt[aria-selected='true'] .thread-here { display: block; width: 5px; height: 5px; background: var(--ochre); }
+.thread-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread-title em { margin-left: 6px; font-style: normal; font-size: 12px; color: var(--ink-muted); }
+.thread-age { font-size: 12px; color: var(--ink-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.thread-last { grid-column: 2 / 4; min-width: 0; margin-top: -4px; font-size: 12px; color: var(--ink-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread-sep { height: 1px; margin: 5px 0; background: var(--divider); }
+.thread-new-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-right: 14px; }
+.thread-new { display: grid; grid-template-columns: 12px auto auto; align-items: baseline; gap: 8px; padding: 6px 14px; border: 0; background: transparent; font: 400 14px var(--ov-font); color: var(--ink); cursor: pointer; }
+.thread-new:hover, .thread-new:focus-visible { background: var(--wash); outline: none; }
+.thread-new i { position: relative; width: 9px; height: 9px; align-self: center; }
+.thread-new i::before, .thread-new i::after { content: ''; position: absolute; inset: 4px 0; background: var(--ink-muted); }
+.thread-new i::after { inset: 0 4px; }
+.thread-open { padding: 0; border: 0; background: none; font: 400 12px var(--ov-font); color: var(--ink-muted); cursor: pointer; text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; }
+.thread-open:hover { color: var(--ink); }
+.thread-model { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; padding: 3px 14px 0 34px; font-size: 12px; color: var(--ink-muted); }
+.thread-model .model { position: static; margin: 0; padding: 0; border: 0; }
+.thread-model .model-pick { flex-direction: row; align-items: baseline; gap: 6px; width: auto; padding: 3px 0; }
+.thread-model .model-pick:hover, .thread-model .model-pick[aria-expanded='true'] { background: none; }
+.thread-model .model-provider { font-size: 12px; letter-spacing: 0; text-transform: none; color: var(--ink-muted); }
+.thread-model .model-name { font-size: 12px; color: var(--ink); }
+.thread-model .model-menu { position: static; flex-basis: 100%; max-height: 32vh; margin: 4px 0 0 -20px; border: 0; border-top: 1px solid var(--divider); background: transparent; }
+
+/* ── The locator (eye.js): the screen at 72 px, the window's outline, the acted part as the one ochre mark; two lines beside it. ── */
+.ov-loc { display: block; flex: none; overflow: visible; }
+.ov-loc :is(rect, line) { vector-effect: non-scaling-stroke; fill: none; }
+.ov-loc-scr { stroke: var(--border); }
+.ov-loc-bar { stroke: var(--divider); }
+.ov-loc-win { stroke: var(--ink-muted); }
+/* Own class names: the app's sheet styles .hit, .bar and .win, and a CSS width beats an SVG rect's width attribute. */
+.ov-loc .ov-loc-hit { fill: var(--ochre); stroke: none; }
+.ov-loc-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 12px; align-items: center; }
+.ov-loc-row p { margin: 0; min-width: 0; font-size: 12px; line-height: 1.4; color: var(--ink-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-loc-row .ov-loc-what { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink); }
+.ov-loc-what b { flex: none; max-width: 60%; font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
+.ov-loc-kind { min-width: 0; color: var(--ink-muted); overflow: hidden; text-overflow: ellipsis; }
+.ov-askhead { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: start; }
+/* The ask's caption is one line: the figure grows past the map's 72 px for it, the label gives way first. */
+.ov-askloc { display: flex; flex-direction: column; align-items: flex-end; margin: 2px 0 0; min-width: 72px; max-width: 168px; }
+.ov-askloc figcaption { display: flex; max-width: 100%; margin-top: 4px; font-size: 11px; line-height: 1.3; color: var(--ink-muted); white-space: pre; }
+.ov-askloc figcaption > :first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ov-askloc figcaption > :last-child { flex: none; }
+
+/* Marks on the real screen: ochre hairlines with no fill. They point, they never cover. Solid for a
+   thing the app named, dashed for a line found by its words. A guide's step wears its number above. */
+.ov-marks { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 50; overflow: visible; }
+.ov-mark :is(rect, line, path) { fill: none; stroke: var(--ochre); stroke-width: 2; }
+.ov-mark-dashed :is(rect, line, path) { stroke-dasharray: 5 4; }
+.ov-mark .ov-mark-chip { fill: var(--ochre); stroke: none; }
+.ov-mark-num { fill: var(--ov-on-ochre); font: 600 12px var(--ov-font); font-variant-numeric: tabular-nums; }
+/* A tag: a slip of the same paper beside the thing, an ochre edge and a short ochre leader to it. */
+.ov-tag { position: fixed; z-index: 51; padding: 6px 10px; border-color: var(--ochre); font-size: 13px; line-height: 1.35; white-space: nowrap; }
+.ov-tag::before { content: ''; position: absolute; background: var(--ochre); }
+.ov-tag[data-side='right']::before { left: -13px; top: 50%; width: 12px; height: 1px; }
+.ov-tag[data-side='below']::before { top: -13px; left: 16px; width: 1px; height: 12px; }
+.ov-judge { display: flex; align-items: center; gap: 8px; border-color: var(--border-strong); }
+.ov-judge .ov-btn { height: 22px; padding: 0 10px; font-size: 12px; }
+.ov-ask { width: 318px; padding: 10px 12px; white-space: normal; }
+.ov-ask .ov-ask-line { font-size: 14px; line-height: 1.35; }
+.ov-ask .ov-said { margin: 3px 0 0; }
+.ov-ask .ov-acts { margin: 10px 0 0; }
+
+/* The Nodus sheet: the card the newest turn is about, pinned at the right. The camera is off so a fixed
+   pane sits against the window; the card's own chrome stays in the app. */
+:root[data-overlay] .board { perspective: none; isolation: auto; }
+:root[data-overlay] .world { transform: none !important; transform-style: flat; transition: none; }
+:root[data-overlay] .pane[data-overlay-figure] { --glass: color-mix(in srgb, var(--page) 88%, transparent); position: fixed; left: auto !important; right: 44px; top: 72px !important; width: min(548px, calc(100vw - 32px)) !important; height: min(600px, calc(100vh - 300px)) !important; z-index: 40; transform: none !important; filter: none; opacity: 1; border: 1px solid var(--border-strong); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); animation: ov-in 320ms var(--ease) backwards; }
+:root[data-overlay] .pane[data-overlay-figure] :is(.pane-head, .pane-remark, .pane-acts, .pane-resize, .nodus-foot, .nodus-tries) { display: none; }
+:root[data-overlay] .nd-label3d { padding: 0 4px; font-size: 12px; background: color-mix(in srgb, var(--page) 88%, transparent); }
+:root[data-overlay] :is(.nd-label3d, .nd-leader):not([style*='opacity: 0;']) { opacity: 1 !important; }
+:root[data-overlay] .nd-svg :is(line, path, rect, circle) { stroke-opacity: 1; }
+:root[data-overlay] .nd-leader { stroke: var(--ink-muted); stroke-width: 1.5; }
+:root[data-overlay] .nd-leader.nd-hot { stroke: var(--ochre); }
+
+@keyframes ov-in { from { opacity: 0; translate: 0 10px; } }
+@keyframes ov-in-slip { from { opacity: 0; translate: -50% 10px; } }
+@keyframes ov-up-slip { from { opacity: 0; translate: -50% -10px; } }
+/* A mark under the slip: the slip goes to the top, its thread list and the model's list open downward. */
+:root[data-ov-slip-up] .ov-slip { bottom: auto; top: 36px; animation: ov-up-slip 180ms var(--ease) backwards; }
+:root[data-ov-slip-up] .ov-slip #thread-menu { bottom: auto; top: calc(100% + 8px); }
+@media (prefers-reduced-motion: no-preference) { .ov-mark, .ov-tag { animation: ov-in 200ms var(--ease) both; } }
+@media (prefers-reduced-motion: reduce) { .ov-slip, :root[data-ov-slip-up] .ov-slip, :root[data-overlay] .pane[data-overlay-figure], .ov-scale i { animation: none; transition: none; } }

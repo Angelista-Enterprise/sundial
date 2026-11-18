@@ -64,7 +64,7 @@ NEW_PLIST='<?xml version="1.0" encoding="UTF-8"?>
   <key>LSUIElement</key>
   <true/>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Sundial listens so it can keep a transcript of what is said around you, as context for what you were doing. Speech is transcribed on this Mac by a local model; the audio itself is never written to disk and never leaves the machine.</string>
+  <string>Sundial listens so it can keep a transcript of what is said around you, as context for what you were doing, and while you hold the summon key to talk to Gnomon. Speech is transcribed on this Mac by a local model; the audio itself is never written to disk and never leaves the machine.</string>
   <key>NSAudioCaptureUsageDescription</key>
   <string>During a call, Sundial transcribes what the other people say, so the transcript has both sides. Only while hearing is on; transcribed on this Mac by a local model; the audio itself is never written to disk and never leaves the machine.</string>
   <key>NSCalendarsUsageDescription</key>
@@ -77,6 +77,8 @@ NEW_PLIST='<?xml version="1.0" encoding="UTF-8"?>
   <string>Sundial can keep a promise you made as a reminder, with its due date, and notices when you complete it. It writes a reminder only when you approve one.</string>
   <key>NSCalendarsFullAccessUsageDescription</key>
   <string>Sundial reads your calendar to know when you are in a meeting, and writes an event only when you approve one.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Gnomon does a task in an app through the script interface of that app (a mail in Mail, a note in Notes) when you ask it to, and reads back the result to check it worked. Every send asks you first.</string>
 </dict>
 </plist>'
 

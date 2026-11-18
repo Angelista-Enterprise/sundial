@@ -70,10 +70,12 @@ const TABLES_BY_ROUTE = {
   '/gnomon/unsaid': ['gate_decisions', 'state'],
   '/gnomon/calibration': ['predictions', 'gate_decisions'],
   '/gnomon/lab': ['predictions', 'gate_decisions'],
+  '/gnomon/beliefs': ['entity_facts'],
   '/gnomon/trust': ['entity_facts', 'knowledge_entries', 'predictions'],
   '/gnomon/ledger': ['llm_audit'],
   '/gnomon/shelf': ['knowledge_entries', 'state'],
   '/gnomon/assistant/proposals': ['state'],
+  '/gnomon/proposals': ['state'],
   '/gnomon/attribution/proposals': ['state', 'projects'],
 }
 

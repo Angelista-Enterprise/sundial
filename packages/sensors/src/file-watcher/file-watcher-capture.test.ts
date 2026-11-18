@@ -49,3 +49,12 @@ describe('mergeChangeKind', () => {
     expect(mergeChangeKind('add', 'delete')).toBe('delete');
   });
 });
+
+describe('makeIgnoreFn ignores SQLite files', () => {
+  it('drops a database, its WAL and its shared-memory file, and keeps the source next to them', () => {
+    const ignored = makeIgnoreFn('/home/mira/puzzlebox-studio');
+    for (const f of ['record.db', 'record.db-wal', 'record.db-shm', 'record.db-journal', 'cache.sqlite', 'cache.sqlite-wal', 'cache.sqlite3']) expect(ignored(`/home/mira/puzzlebox-studio/data/${f}`)).toBe(true);
+    expect(ignored('/home/mira/puzzlebox-studio/src/db.ts')).toBe(false);
+    expect(ignored('/home/mira/puzzlebox-studio/docs/sqlite-notes.md')).toBe(false);
+  });
+});

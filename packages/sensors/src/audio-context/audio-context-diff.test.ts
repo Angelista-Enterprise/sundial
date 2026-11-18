@@ -7,6 +7,7 @@ function snapshot(overrides: Partial<AvSnapshot> = {}): AvSnapshot {
 }
 
 const zoom = { pid: 501, processName: 'Zoom' };
+const own = { pid: 503, processName: 'Sundial' };
 const music = { pid: 502, processName: 'Music' };
 
 /**
@@ -26,6 +27,7 @@ describe('mediaStateFromSnapshot', () => {
       audioOutput: false,
       camera: false,
       audioInputProcess: null,
+      audioInputProcesses: [],
       audioOutputProcess: null,
       cameraProcess: null,
     });
@@ -76,5 +78,12 @@ describe('mediaStateFromSnapshot', () => {
 
   it('distinguishes one app handing the microphone to another', () => {
     expect(mediaStateFromSnapshot(snapshot({ audioInputProcesses: [zoom] }))).not.toEqual(mediaStateFromSnapshot(snapshot({ audioInputProcesses: [music] })));
+  });
+});
+
+describe('the microphone holder is never Sundial itself', () => {
+  it('own hearing alone is not a mic-on sample; beside a call, the call is the holder and every holder is listed', () => {
+    expect(mediaStateFromSnapshot(snapshot({ audioInputProcesses: [own] }))).toMatchObject({ audioInput: false, audioInputProcess: null, audioInputProcesses: [] });
+    expect(mediaStateFromSnapshot(snapshot({ audioInputProcesses: [own, zoom, music] }))).toMatchObject({ audioInput: true, audioInputProcess: 'Zoom', audioInputProcesses: ['Zoom', 'Music'] });
   });
 });

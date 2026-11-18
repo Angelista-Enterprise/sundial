@@ -71,7 +71,7 @@ export const DEFAULT_DAILY_CAPS: Record<LlmPurpose, number> = {
    */
   transcript: 200,
   /**
-   * W3: the Claude hand (`hands.claude`): one call is a whole background job on
+   * W3: a job on a runtime source (`llm.roles.jobs`): one call is a whole background job on
    * the owner's Claude Code, already capped in dollars per job. Twenty is a
    * loop backstop — the workbench opens a handful of jobs a day.
    */
@@ -82,6 +82,18 @@ export const DEFAULT_DAILY_CAPS: Record<LlmPurpose, number> = {
    * loop backstop only.
    */
   vision: 6000,
+  /**
+   * Nodus: the storyboard of a card Gnomon draws with `gnomon_visualize`, one
+   * call plus at most one repair per card. Sixty is thirty cards in a day, far
+   * past any real use: a loop backstop like the rest.
+   */
+  visualize: 60,
+  /**
+   * S6: `offerNow`, one call per held context, at most one every few minutes. A
+   * 16-hour day at that pace is under 200; 120 stops a loop and a day of
+   * window-hopping long before it costs anything.
+   */
+  offer: 120,
   /**
    * Jev's purposes (docs/jarvis/02, "Budgets: new purposes, generous caps").
    * Loop guards, not cost controls: at ~700 input tokens a call, a day at
@@ -102,6 +114,17 @@ export const DEFAULT_DAILY_CAPS: Record<LlmPurpose, number> = {
   forecast: 1000,
   // One per owner reply.
   listen: 200,
+  /**
+   * The screen text, read by Jev (`screenRead`, `ocr.jev.text`): at most one
+   * call every two minutes, on a change. 16 h of that is 480.
+   */
+  screen: 600,
+  /**
+   * A screen FRAME, read by Jev (`ScreenFrameSensor`, `ocr.jev.frames`). The
+   * sensor's own `framesPerHour` (12) is the pace; this is the day's ceiling,
+   * and the one purpose here that sends a picture of the screen off the Mac.
+   */
+  frame: 200,
 };
 
 /**

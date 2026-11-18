@@ -47,3 +47,31 @@ describe('the owner-question reserve', () => {
     expect(decide(DEFAULT_GATE_POLICY, day(cap + 1), ask as never, at(1), '2026-09-01').channel).toBe('tonic');
   });
 });
+
+describe('Round 4: anticipatory rows past a spent budget (FORESIGHT 4d)', () => {
+  const prep = { shape: 'anticipatory', kind: 'meeting-prep', key: 'prep:1', surprise: 1, precision: 1, valueHalfLifeMs: null, observation: 'Planning with Mira Bakker at 14:00.', evidence: [], concerns: [] } as const;
+  const ambient = { ...prep, shape: 'transition', kind: 'return-from-break', key: 'back:1' } as const;
+  const today = '2026-09-01';
+  const spent = (n: number) => ({ habituation: {}, day: today, spentToday: n });
+
+  it('a meeting prep after the budget is spent reaches the list; an ordinary row does not', () => {
+    expect(decide(DEFAULT_GATE_POLICY, spent(4), prep as never, at(3), today)).toMatchObject({ channel: 'tonic', reason: 'anticipatory' });
+    expect(decide(DEFAULT_GATE_POLICY, spent(4), ambient as never, at(3), today)).toMatchObject({ channel: 'suppressed', reason: 'budget-spent' });
+    // Inside the budget it is an ordinary admission.
+    expect(decide(DEFAULT_GATE_POLICY, spent(1), prep as never, at(3), today).reason).toBe('admitted');
+  });
+
+  it('bounded: two rows over the budget, then budget-spent like anything else', () => {
+    expect(decide(DEFAULT_GATE_POLICY, spent(5), prep as never, at(3), today).reason).toBe('anticipatory');
+    expect(decide(DEFAULT_GATE_POLICY, spent(6), prep as never, at(3), today).reason).toBe('budget-spent');
+    expect(decide({ ...DEFAULT_GATE_POLICY, anticipatoryOverBudget: 0 }, spent(4), prep as never, at(3), today).reason).toBe('budget-spent');
+    // A day of twelve meetings after four ordinary rows: two preps more, never twelve.
+    const items = [...Array.from({ length: 4 }, (_, i) => ({ candidate: { ...ambient, key: `back:${i}` }, ts: at(i * 0.1) })), ...Array.from({ length: 12 }, (_, i) => ({ candidate: { ...prep, key: `prep:${i}` }, ts: at(1 + i * 0.5) }))];
+    expect(simulateGate(DEFAULT_GATE_POLICY, items as never, 'UTC')).toMatchObject({ tonic: 6, suppressed: 10, reasons: { 'budget-spent': 10 } });
+  });
+
+  it('habituation is unaffected: a prep already said wears down, and the budget rule does not let it past', () => {
+    const worn = { habituation: { 'prep:1': { gain: 0.064, at: at(2.9), fires: 3 } }, day: today, spentToday: 4 };
+    expect(decide(DEFAULT_GATE_POLICY, worn, prep as never, at(3), today)).toMatchObject({ channel: 'suppressed', reason: 'habituated' });
+  });
+});

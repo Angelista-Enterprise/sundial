@@ -159,7 +159,7 @@ export const WITH_SHOWN = 8
  * and it is the thing a flat count of meetings cannot say.
  *
  * Returns everyone, ordered strongest first; the surface decides where to stop.
- * A person with an empty list is not a gap in the data — Marco Kuiper has three
+ * A person with an empty list is not a gap in the data — Marco Quill has three
  * meetings and no co-attendees, which means the owner sees him one to one, and
  * that is worth saying out loud.
  */

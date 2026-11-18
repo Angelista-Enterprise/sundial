@@ -7,13 +7,14 @@ import { isZeroActivity } from './idle-track.js';
 import { routeFor } from './notice-route.js';
 import { isQuieted, noticeTitle } from '@sundial/kernel/notice-groups.js';
 import { NOT_A_CALL_APPS } from '@sundial/kernel/watch.js';
-import type { DeferredNotice, DeliveredNotice, Effect, KernelState, NoticeCandidate, PhasicNotice, Rule } from '@sundial/kernel/types.js';
+import type { DeferredNotice, DeliveredNotice, Effect, KernelState, NoticeCandidate, NoticeOffer, PhasicNotice, Rule } from '@sundial/kernel/types.js';
 
 export { DEFAULT_GATE_POLICY, MAX_HABITUATION_KEYS, applyDelivery, decide, habituatedGain, policyForBias, simulateGate } from '@sundial/kernel/gate.js';
 export type { Channel, Decision, DecisionTerms, GatePolicy, GateSimulation, NoticeState } from '@sundial/kernel/gate.js';
-import { applyDelivery, decide, policyForBias, type Decision, type GatePolicy, type NoticeState } from '@sundial/kernel/gate.js';
+import { applyDelivery, decide, OFFER_KIND, phasicBarFor, policyForBias, type Decision, type GatePolicy, type NoticeState } from '@sundial/kernel/gate.js';
 import { param, TRUST_N } from '@sundial/kernel/calibrated.js';
 import { capabilityOf, levelOf } from '@sundial/kernel/autonomy.js';
+import { knockAllowed, knockMode } from '@sundial/kernel/read/knock.js';
 
 /**
  * A call or a meeting now: an app holding the microphone, or the open moment's
@@ -167,12 +168,15 @@ export function calibratedPolicy(state: KernelState, policy: GatePolicy): GatePo
   return { ...policy, reservedOverCap: earned ? 1 : 0, interruptionCostWeight };
 }
 
+/** S6: offers of help said on `localDay`, on any channel (`notices.offersSaid`). */
+export const offersSaidOn = (state: KernelState, localDay: string): number => (state.notices.offersSaid?.day === localDay ? state.notices.offersSaid.n : 0);
+
 /** The gate's slice of `state.notices`, with today's interruptions counted from the phasic queue. */
 function gateStateOf(state: KernelState, localDay: string): NoticeState {
   const { habituation, day, spentToday, recentPhasic } = state.notices;
   // A notice the plugin could not deliver (`notice:dropped`) did not spend the owner's attention, so it does not spend the cap.
   const phasicToday = recentPhasic.filter((p) => !p.undelivered && localDate(p.at, state.config.timezone) === localDay).length;
-  return { habituation, day: localDay, spentToday: day === localDay ? spentToday : 0, phasicToday };
+  return { habituation, day: localDay, spentToday: day === localDay ? spentToday : 0, phasicToday, offersToday: offersSaidOn(state, localDay) };
 }
 
 /** Bound on the defer ring. Small on purpose: a queue nobody drains is a memory leak wearing a feature's name. */
@@ -205,7 +209,7 @@ function decisionEffect(candidate: NoticeCandidate, decision: Decision, ts: stri
     interruptionCost: decision.terms.cost,
     // K0.2 — the bars as the dial left them, not as the policy ships them.
     tonicBar: policy.tonicThreshold,
-    phasicBar: policy.phasicThreshold,
+    phasicBar: phasicBarFor(policy, candidate.kind),
     decidedAt: ts,
   };
 }
@@ -234,11 +238,33 @@ function decisionEffect(candidate: NoticeCandidate, decision: Decision, ts: stri
  */
 const isPlain = (candidate: NoticeCandidate) => (candidate as unknown as { plain?: unknown }).plain === true;
 
+/** The offer on a delivery's payload: its label only. The press finds the call in `notices.offers`, by the notice key. */
+const offerLabel = (candidate: NoticeCandidate) => {
+  const offer = offerOf(candidate);
+  return offer ? { offer: offer.label } : {};
+};
+
 function askIdOf(candidate: NoticeCandidate): { askId?: string; plain?: true } {
   const askId = (candidate as unknown as { askId?: unknown }).askId;
   // UC4 §10: a watch rule marked plain is delivered as its own sentence — banner and push — with no model turn behind it.
   const plain = isPlain(candidate) ? { plain: true as const } : {};
   return typeof askId === 'string' && askId !== '' ? { askId, ...plain } : plain;
+}
+
+/** Round 4: a candidate's offer, when it is a whole one: a tool, its arguments, the button's words. */
+export function offerOf(candidate: NoticeCandidate): NoticeOffer | null {
+  const o = candidate.offer;
+  return o && typeof o.tool === 'string' && o.tool !== '' && typeof o.label === 'string' && o.label !== '' && o.args !== null && typeof o.args === 'object' ? { tool: o.tool, args: o.args, label: o.label.slice(0, 40), ...(typeof o.n === 'number' && Number.isFinite(o.n) ? { n: o.n } : {}) } : null;
+}
+/** Offers kept for a press, newest last. A press reads the offer by its notice key from here, never from the page. */
+export const MAX_OFFERS = 8;
+function withOffer(notices: KernelState['notices'], candidate: NoticeCandidate, ts: string): Pick<KernelState['notices'], 'offers'> {
+  const offer = offerOf(candidate);
+  if (!offer) return notices.offers ? { offers: notices.offers } : {};
+  const { [candidate.key]: _old, ...rest } = notices.offers ?? {};
+  // `line`: the notice's own words (its observation, sanitized at ingest), so a surface shows the line this offer came with, never a neighbour's.
+  const line = typeof candidate.observation === 'string' && candidate.observation.trim() !== '' ? { line: candidate.observation.trim().slice(0, 200) } : {};
+  return { offers: Object.fromEntries([...Object.entries(rest), [candidate.key, { ...offer, kind: candidate.kind, at: ts, ...line }]].slice(-MAX_OFFERS)) };
 }
 
 function applyDecision(
@@ -287,27 +313,32 @@ function applyDecision(
   const notDeferred = deferred.filter((d) => d.candidate.key !== candidate.key);
   // W5: what this event delivered, for `calibrate` (after this rule) to watch what the owner does next.
   const explored = decision.reason === 'exploration' ? { exploration: true as const } : {};
-  const item: DeliveredNotice = { key: candidate.key, kind: candidate.kind, channel: decision.channel, cost: decision.terms.cost, evidence: candidate.evidence.slice(0, 2), sessionId: candidate.sessionId ?? null, askId: askIdOf(candidate).askId ?? null, ...explored };
-  const lastDelivered = { at: ts, items: [...(state.notices.lastDelivered?.at === ts ? state.notices.lastDelivered.items : []), item] };
+  const sameEvent = state.notices.lastDelivered?.at === ts ? state.notices.lastDelivered.items : [];
+  // Plan 15 step 1: an interruption at the Mac comes with a knock when the room allows one. One knock per event.
+  const mode = decision.channel === 'phasic' && route === 'mac' && state.config.experiments?.voiceKnock === true && !sameEvent.some((i) => i.knock) && knockAllowed(state, ts) ? knockMode(state, candidate.kind, ts) : null;
+  const knock = mode ? { knock: { mode, turn: mode === 'knock-wait' && !isPlain(candidate) } } : {};
+  const item: DeliveredNotice = { key: candidate.key, kind: candidate.kind, channel: decision.channel, cost: decision.terms.cost, evidence: candidate.evidence.slice(0, 2), sessionId: candidate.sessionId ?? null, askId: askIdOf(candidate).askId ?? null, ...explored, ...knock };
+  const lastDelivered = { at: ts, items: [...sameEvent, item] };
+  const offersSaid = candidate.kind === OFFER_KIND ? { offersSaid: { day: localDay, n: offersSaidOn(state, localDay) + 1 } } : {};
 
   if (decision.channel === 'phasic') {
     const phasic: PhasicNotice = { kind: candidate.kind, observation: candidate.observation, evidence: candidate.evidence, weight: Math.round(decision.weight * 1000) / 1000, at: event.ts, noticeKey: candidate.key };
     return {
-      state: { ...state, notices: { ...state.notices, ...next, recentPhasic: [...state.notices.recentPhasic, phasic].slice(-MAX_RECENT_PHASIC), deferred: notDeferred, lastDelivered } },
+      state: { ...state, notices: { ...state.notices, ...next, recentPhasic: [...state.notices.recentPhasic, phasic].slice(-MAX_RECENT_PHASIC), deferred: notDeferred, lastDelivered, ...offersSaid, ...withOffer(state.notices, candidate, ts) } },
       effects: [
         // `noticeKey` rides on the payload (2026-08-15) so the delivery channel —
         // the harness's companion agent — can name the gate entry when the owner
         // answers `not-now`. Additive: no consumer matched on the payload shape.
         // `route` (lane D, #6): where the delivery plugin sends it — `mac` or `phone`. It never decides.
         // W2: `acts` is the whole delivery decision, made here; `sessionId` is the chat it is addressed to (null: the conversation).
-        { type: 'Notify', channel: 'phasic-notice', payload: { kind: candidate.kind, observation: candidate.observation, evidence: candidate.evidence, weight: phasic.weight, noticeKey: candidate.key, ...askIdOf(candidate), route, title: noticeTitle(candidate.kind), sessionId: candidate.sessionId ?? null, acts: deliveryActs('phasic', route, isPlain(candidate), candidate.sessionId, state.config.notifications) } }, // lane H (H4): the push's title
+        { type: 'Notify', channel: 'phasic-notice', payload: { kind: candidate.kind, observation: candidate.observation, evidence: candidate.evidence, weight: phasic.weight, noticeKey: candidate.key, ...askIdOf(candidate), ...offerLabel(candidate), route, title: noticeTitle(candidate.kind), sessionId: candidate.sessionId ?? null, acts: deliveryActs('phasic', route, isPlain(candidate), candidate.sessionId, state.config.notifications, mode) } }, // lane H (H4): the push's title
         record,
       ],
     };
   }
 
   return {
-    state: { ...state, notices: { ...state.notices, ...next, deferred: notDeferred, lastDelivered } },
+    state: { ...state, notices: { ...state.notices, ...next, deferred: notDeferred, lastDelivered, ...offersSaid, ...withOffer(state.notices, candidate, ts) } },
     effects: [
       // The tonic admission's own delivery event (2026-08-15). The ScheduleLLM
       // below produces the polished knowledge entry MINUTES later (LLM latency,
@@ -317,7 +348,7 @@ function applyDecision(
       {
         type: 'Notify',
         channel: 'tonic-notice',
-        payload: { kind: candidate.kind, observation: candidate.observation, evidence: candidate.evidence, weight: Math.round(decision.weight * 1000) / 1000, noticeKey: candidate.key, ...askIdOf(candidate), ...explored, sessionId: candidate.sessionId ?? null, acts: deliveryActs('tonic', route, isPlain(candidate), candidate.sessionId, state.config.notifications) },
+        payload: { kind: candidate.kind, observation: candidate.observation, evidence: candidate.evidence, weight: Math.round(decision.weight * 1000) / 1000, noticeKey: candidate.key, ...askIdOf(candidate), ...offerLabel(candidate), ...explored, sessionId: candidate.sessionId ?? null, acts: deliveryActs('tonic', route, isPlain(candidate), candidate.sessionId, state.config.notifications) },
       },
       // A plain rule's note is its own sentence: no model call writes it up.
       ...(isPlain(candidate)
@@ -369,7 +400,8 @@ export const noticeGate: Rule = (state, event) => {
   // moves both thresholds together, so the dial nudges the same bar the policy
   // already uses rather than introducing a second one.
   const settings = state.settings;
-  const policy = calibratedPolicy(state, policyForBias(settings?.noticeBias ?? 0));
+  // S6: an offer of help clears its own bar (`config.offerBar`), under the same dial and every same guard.
+  const policy = calibratedPolicy(state, policyForBias(settings?.noticeBias ?? 0, state.config.offerBar));
 
   // The owner answered a question that is still waiting its turn in the ring
   // (asked mid-call, deferred, answered in the web seat before the gate got
@@ -383,6 +415,14 @@ export const noticeGate: Rule = (state, event) => {
     });
     if (remaining.length === state.notices.deferred.length) return { state, effects: [] };
     return { state: { ...state, notices: { ...state.notices, deferred: remaining } }, effects: [] };
+  }
+
+  // Round 4: the owner pressed an offer (`/gnomon/api/offer`). It is spent: a second press finds nothing.
+  if (event.type === 'notice:offer-taken') {
+    const key = typeof event.payload.noticeKey === 'string' ? event.payload.noticeKey : '';
+    if (!state.notices.offers || !Object.hasOwn(state.notices.offers, key)) return { state, effects: [] };
+    const { [key]: _taken, ...offers } = state.notices.offers;
+    return { state: { ...state, notices: { ...state.notices, offers } }, effects: [] };
   }
 
   // W2: a notice the delivery plugin could not deliver. Its interruption stops
@@ -411,7 +451,8 @@ export const noticeGate: Rule = (state, event) => {
     return welcomeBack(state, event.ts, event.id, policy, away.held);
   }
 
-  if (event.type === 'clock:tick') {
+  // Plan 15 step 1: a task boundary (`boundaryTrack`) is a second moment to look at what is held.
+  if (event.type === 'clock:tick' || event.type === 'boundary:reached') {
     const held = state.notices.deferred;
     if (held.length === 0) return { state, effects: [] };
 

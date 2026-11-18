@@ -1,7 +1,7 @@
 import { classifyLlmError } from '@sundial/helpers/llm-error-class.js';
 import { estimateBilledPromptTokens } from '@sundial/helpers/llm-billed-tokens.js';
 import { openLlmAudit } from './audit.js';
-import { SYSTEMONE_DEFAULT_MODEL, callSystemOne, type SystemOneAnswer, type SystemOneQuestion } from './systemone.js';
+import { SYSTEMONE_DEFAULT_MODEL, callSystemOne, type SystemOneAnswer, type SystemOneImageAsset, type SystemOneQuestion } from './systemone.js';
 import { callSystemOneTextModel } from './systemone-text-model.js';
 import { getLlmConfig } from './config.js';
 import { DEFAULT_PROVIDER, providerLabel } from '@sundial/helpers/llm-providers.js';
@@ -30,6 +30,8 @@ export interface AuditedJudgementOptions {
   parentCallId?: string | null;
   /** W3: the reservation's id, used as the row's id (see `AuditedLlmCallOptions.callId`). */
   callId?: string;
+  /** Images the state names. Jev only: the text model cannot see them, so an asset with `text-model` is refused. Never written to the audit row, only their ids. */
+  assets?: Record<string, SystemOneImageAsset>;
 }
 
 export interface AuditedJudgementResult {
@@ -61,7 +63,8 @@ export async function runAuditedJudgement(options: AuditedJudgementOptions): Pro
   const backend = options.backend ?? 'jev';
   const bareModel = options.model ?? SYSTEMONE_DEFAULT_MODEL;
   const model = backend === 'text-model' ? (getLlmConfig(options.purpose)?.model ?? 'unconfigured') : `${SYSTEMONE_PROVIDER}/${bareModel}`;
-  const prompt = JSON.stringify({ state: options.state, questions: options.questions });
+  if (options.assets && backend !== 'jev') throw new Error('an image judgement needs Jev; the text model cannot see it');
+  const prompt = JSON.stringify({ state: options.state, questions: options.questions, ...(options.assets ? { assets: Object.keys(options.assets) } : {}) });
 
   const audit = await openLlmAudit({
     ...(options.callId ? { id: options.callId } : {}),
@@ -72,6 +75,7 @@ export async function runAuditedJudgement(options: AuditedJudgementOptions): Pro
     attempt: options.attempt ?? 1,
     parentCallId: options.parentCallId ?? null,
     route: judgeProvider(backend, options.purpose).provider,
+    access: backend === 'jev' ? 'judge' : (getLlmConfig(options.purpose)?.access ?? 'api'),
   });
 
   const start = Date.now();
@@ -79,7 +83,7 @@ export async function runAuditedJudgement(options: AuditedJudgementOptions): Pro
     const result =
       backend === 'text-model'
         ? await callSystemOneTextModel(options.state, options.questions, { purpose: options.purpose, timeoutMs: options.timeoutMs })
-        : await callSystemOne(options.state, options.questions, { model: bareModel, timeoutMs: options.timeoutMs });
+        : await callSystemOne(options.state, options.questions, { model: bareModel, timeoutMs: options.timeoutMs, ...(options.assets ? { assets: options.assets } : {}) });
     const answered = Object.keys(result.answers).length;
     await audit.settle({
       respondedAt: new Date().toISOString(),

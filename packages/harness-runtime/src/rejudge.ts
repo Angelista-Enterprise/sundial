@@ -55,23 +55,18 @@ export function unpackAnswers(answers: JudgementResultPayload['answers'], items:
 export interface RejudgeGoals {
   labels: string[];
   ids: string[];
-  /** J4.4: the open speech promises, as heard, and their thread ids. */
-  promiseLabels?: string[];
-  promiseIds?: string[];
 }
 
 /** A stored moment row's `data` IS the rollup `momentClose` wrote (plus `kind`, `intent`…); the fan-out reads the rollup fields it knows. */
 export function fanoutItemFromRow(row: StoredMoment, goals?: RejudgeGoals): PackedItem {
   const rollup = { ...(row.data as unknown as MomentRollup), processName: (row.data.processName as string | undefined) ?? row.processName };
-  const built = momentFanout.build({ rollup, projectId: row.projectId, durationMs: row.durationMs, openGoals: goals?.labels ?? [], openPromises: goals?.promiseLabels ?? [] });
-  const spoken = typeof rollup.spokenExcerpt === 'string' && rollup.spokenExcerpt !== '' ? rollup.spokenExcerpt.slice(0, 160) : undefined;
+  const built = momentFanout.build({ rollup, projectId: row.projectId, durationMs: row.durationMs, openGoals: goals?.labels ?? [] });
   return {
     momentId: row.id,
     state: built.state,
     questions: built.questions,
     durationMs: row.durationMs,
-    // The same second-key and quote a live close carries (J4.4), read off the stored row.
-    metadata: { projectId: row.projectId, nonText: (rollup.gitCommitCount ?? 0) > 0 || (rollup.shellCommandCount ?? 0) > 0 || Boolean(rollup.calendarActive) || Boolean(rollup.micActive), ...(spoken ? { spoken } : {}) },
+    metadata: { projectId: row.projectId },
   };
 }
 
@@ -143,7 +138,7 @@ export async function rejudgeMoments(rows: StoredMoment[], deps: RejudgeDeps, op
           model: result.model,
           latencyMs: Math.round(result.latencyMs / items.length),
           // The same metadata a live close carries, so `applyMomentJudgement` credits goals the same way.
-          metadata: { backfill: true, durationMs: item.durationMs ?? 0, ...item.metadata, ...(opts.goals ? { goals: opts.goals.ids, promises: opts.goals.promiseIds ?? [] } : {}) },
+          metadata: { backfill: true, durationMs: item.durationMs ?? 0, ...item.metadata, ...(opts.goals ? { goals: opts.goals.ids } : {}) },
         });
         progress.done += 1;
       }

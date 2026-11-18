@@ -27,7 +27,7 @@ import { promisify } from 'node:util';
 import { getRecentSignals, getSignalsInRange } from '@sundial/db/index.js';
 import { type CalendarEvent, readCalendarEvents } from '@sundial/sensors/calendar/calendar-capture.js';
 import { canonicalizeRepoDir } from '@sundial/sensors/project/project-capture.js';
-import { findEnvelopeIndex, mailEvent, mailSince } from '@sundial/sensors/mail/envelope-index.js';
+import { findEnvelopeIndex, mailEvent, mailSince } from '@sundial/sensors/envelope-index.js';
 import { sanitizeAtIngest } from '@sundial/helpers/sanitize-at-ingest.js';
 
 const run = promisify(execFile);

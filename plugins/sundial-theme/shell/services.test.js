@@ -41,6 +41,12 @@ group('services', () => {
     expect(by.phone.choices).toBeNull()
   })
 
+  it('describes the phone route as it runs: the ntfy inbox, healthy on the steps the phone sends', () => {
+    expect(svc('phone').needs).toContain('notifications.inbox')
+    expect(`${svc('phone').what} ${svc('phone').needs}`).not.toMatch(/8767|Serve route/)
+    expect(svc('phone').signal).toContain('health:steps')
+  })
+
   it('carries why a service cannot be turned on', () => {
     const by = Object.fromEntries(describe({}, [], [], {}, { hearing: 'No model.' }).filter((r) => !r.sep).map((r) => [r.id, r]))
     expect(by.hearing.blocked).toBe('No model.')
@@ -76,5 +82,20 @@ group('typed values', () => {
     expect(textValue(svc('vault'), 'Notes')).toBeNull()
     expect(textValue(svc('vault'), '')).toBe('')
     expect(textValue(svc('ocr'), 'x')).toBeNull()
+  })
+})
+
+group('the roles in the catalog', () => {
+  it('background work is a switch on llm.roles.background whose judge row shows only while it is on', () => {
+    const rows = (config) => describe(config, [], []).filter((r) => !r.sep)
+    const ids = (config) => rows(config).map((r) => r.id)
+    expect(ids({})).toContain('backgroundRole')
+    expect(ids({})).not.toContain('judgeRole')
+    expect(ids({ llm: { roles: { background: '' } } })).not.toContain('judgeRole')
+    expect(ids({ llm: { roles: { background: 'claude:sonnet' } } })).toContain('judgeRole')
+    // A role saved as a list shows its head.
+    expect(rows({ llm: { roles: { background: ['claude:opus', 'tensorx:qwen'] } } }).find((r) => r.id === 'backgroundRole').value).toBe('claude:opus')
+    expect(allowed(svc('jobsRole'), 'claude')).toBe(true)
+    expect(allowed(svc('jobsRole'), 'codex')).toBe(false)
   })
 })

@@ -18,6 +18,8 @@ import type { Rule } from '@sundial/kernel/types.js';
  * not just an activity logger) wants more history by default, not less.
  */
 /** lane Q (Q10): how long an LLM call keeps its prompt and response text, and a completed effect its journal row. */
+/** Days `judgement:result` rows are kept (the fact audit's excepted). Longer than `REJUDGE_AFTER_DAYS` (30). */
+export const JUDGEMENT_RETENTION_DAYS = 60;
 export const AUDIT_BODY_DAYS = 30;
 
 export const retentionPrune: Rule = (state, event) => {
@@ -37,6 +39,12 @@ export const retentionPrune: Rule = (state, event) => {
   const heardDays = state.config.transcriptRetentionDays;
   if (heardDays < state.config.retentionDays) {
     effects.push({ type: 'DeleteRows', olderThan: new Date(Date.parse(event.ts) - heardDays * 24 * 60 * 60 * 1000).toISOString(), signalTypes: ['audio'], eventTypes: ['transcript'] });
+  }
+  // Model judgements go at 60 days: 1.5 KB a row, about 1.7 MB a day, and what they
+  // decided already lives in the state they fed. Past the 30-day re-judge window, and
+  // the fact audit's answers stay: a retracted fact shows them as its evidence.
+  if (JUDGEMENT_RETENTION_DAYS < state.config.retentionDays) {
+    effects.push({ type: 'DeleteRows', olderThan: new Date(Date.parse(event.ts) - JUDGEMENT_RETENTION_DAYS * 86_400_000).toISOString(), signalTypes: ['judgement'], eventTypes: ['result'], keepQuestionSets: ['audit-fact'] });
   }
   // Screens of an app on the strict list go whatever their age. The sensor has
   // dropped them at capture since the app joined the list; this removes the ones

@@ -1,3 +1,4 @@
+import { NOT_A_CALL_APPS } from '@sundial/kernel/watch.js';
 import type { CallSpan, Rule } from '@sundial/kernel/types.js';
 
 interface MediaStatePayload {
@@ -11,7 +12,8 @@ interface MediaStatePayload {
 }
 
 const WORK_CALL_APPS = ['zoom', 'microsoft teams', 'teams', 'google meet', 'meet', 'webex', 'slack', 'around', 'tuple', 'pop', 'google chrome', 'chrome', 'safari', 'arc', 'firefox'];
-const PERSONAL_CALL_APPS = ['whatsapp', 'facetime', 'signal', 'telegram', 'discord', 'messages', 'skype'];
+// avconferenced: macOS's own FaceTime / iPhone-call service — on the record it held the mic through a meeting the owner skipped.
+const PERSONAL_CALL_APPS = ['whatsapp', 'facetime', 'avconferenced', 'signal', 'telegram', 'discord', 'messages', 'skype'];
 
 /** Which kind of call an app holding the microphone most likely is. A browser is a work call: meet/teams run there. */
 export function classifyCallApp(app: string): CallSpan['kind'] {
@@ -37,7 +39,9 @@ export function classifyCallApp(app: string): CallSpan['kind'] {
 export const callSpanTrack: Rule = (state, event) => {
   if (event.type !== 'media:state') return { state, effects: [] };
   const payload = event.payload as MediaStatePayload;
-  const micApp = payload.audioInput === true && typeof payload.audioInputProcess === 'string' && payload.audioInputProcess.trim() !== '' ? payload.audioInputProcess.trim() : null;
+  const raw = payload.audioInput === true && typeof payload.audioInputProcess === 'string' ? payload.audioInputProcess.trim() : '';
+  // Sundial's own hearing holds the microphone under its own name: that is not a call (it read as one in every meeting).
+  const micApp = raw !== '' && !NOT_A_CALL_APPS.some((name) => raw.toLowerCase().includes(name)) ? raw : null;
   const camera = payload.camera === true;
   const open = state.av.call;
 

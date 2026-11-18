@@ -7,6 +7,8 @@ export interface WindowRef {
   windowId: string;
   /** Editor open-file path (AX `kAXDocumentAttribute`); the Swift helper already captures it, this now carries it through instead of dropping it. `null` when the frontmost app exposes none. */
   documentPath: string | null;
+  /** S5R2: a sheet or dialog was in front of the window (the helper's `sheet`). Only present when true. */
+  sheet?: true;
 }
 
 interface SidecarWindowInfo {
@@ -18,6 +20,7 @@ interface SidecarWindowInfo {
   documentPath?: string | null;
   isOnscreen?: boolean;
   isMinimized?: boolean;
+  sheet?: boolean;
 }
 
 /**
@@ -69,5 +72,6 @@ export function readWindowSidecar(): WindowRef | null {
     windowTitle: normalizeWindowTitle(parsed.windowTitle),
     windowId,
     documentPath: typeof parsed.documentPath === 'string' && parsed.documentPath.length > 0 ? parsed.documentPath : null,
+    ...(parsed.sheet === true ? { sheet: true as const } : {}),
   };
 }

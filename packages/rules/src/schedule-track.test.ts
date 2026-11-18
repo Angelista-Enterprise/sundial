@@ -17,6 +17,15 @@ const ev = (o: Record<string, unknown>) => ({
 });
 
 describe('scheduleTrack', () => {
+  it('leaves a declined meeting off the schedule, and keeps the video flag and a tentative reply', () => {
+    const now = '2026-07-18T09:00:00.000Z';
+    const { state: next } = scheduleTrack(
+      createInitialState('d1'),
+      upcoming(now, [ev({ title: 'Declined', selfStatus: 'declined' }), ev({ title: 'Maybe', selfStatus: 'tentative', isOnline: true }), ev({ title: 'Yes', selfStatus: 'accepted' })]),
+    );
+    expect(next.schedule.upcoming.map((e) => [e.title, e.online, e.status])).toEqual([['Maybe', true, 'tentative'], ['Yes', undefined, undefined]]);
+  });
+
   it('folds upcoming events into state.schedule, sorted by start', () => {
     const now = '2026-07-18T09:00:00.000Z';
     const { state: next } = scheduleTrack(

@@ -58,6 +58,10 @@ export function createInitialState(deviceId: string): KernelState {
   return {
     device: { id: deviceId },
     window: { active: null, previous: null, attribution: { projectId: null, source: null, confidence: null } },
+    task: null,
+    jobs: {},
+    apps: { used: {}, workspaces: {} },
+    byGnomon: { until: null, since: null, apps: [], anyApp: false, focus: null, marked: null, n: { act: 0, rig: 0 } },
     moment: null,
     // Null, not `now`: a daemon that has folded nothing has observed nothing, so
     // its first event cannot be measured as a gap from a boot that may have
@@ -107,7 +111,7 @@ export function createInitialState(deviceId: string): KernelState {
     // (see `KernelState.config`'s doc comment) — these are just the
     // zero-config defaults for a daemon that's never had `startDaemon` run
     // (e.g. a bare `createInitialState()` in a test).
-    config: { retentionDays: 180, screenTextRetentionDays: 14, transcriptRetentionDays: 14, autoHearMeetings: false, decayFactor: 0.95, projectRules: [], sharedPlaces: [], projectAliases: {}, orgByPath: {}, locationLabels: {}, ownerAliases: [], timezone: 'UTC', refutationEnabled: true, leisureRules: { browserProfiles: {}, domainOverrides: {}, processes: {}, excluded: [] }, experiments: { ownerStateInGateCost: false, forecasting: false, gateFeatures: false, presence: false }, vault: null, budgets: {}, llm: { use: {}, providers: [] }, actions: DEFAULT_SUNDIAL_CONFIG.actions, pendingRestart: [] },
+    config: { retentionDays: 180, screenTextRetentionDays: 14, transcriptRetentionDays: 14, autoHearMeetings: false, decayFactor: 0.95, projectRules: [], sharedPlaces: [], projectAliases: {}, orgByPath: {}, locationLabels: {}, ownerAliases: [], timezone: 'UTC', refutationEnabled: true, leisureRules: { browserProfiles: {}, domainOverrides: {}, processes: {}, excluded: [] }, experiments: { ownerStateInGateCost: false, forecasting: false, gateFeatures: false, presence: false, witnessPairs: false, voiceKnock: false, quietSummon: false, stuckSigns: false, holdToTalk: false, screenMarks: false, screenGuide: false, screenAct: false, screenLook: false, screenActUnasked: false, screenFast: false, screenFastRoutes: false, screenStage: false, maskOldLooks: false, rigOffline: false, screenPanelKeys: false, offerNow: false }, vault: null, budgets: {}, llm: { use: {}, providers: [], sources: {}, roles: {} }, actions: DEFAULT_SUNDIAL_CONFIG.actions, pendingRestart: [] },
     budgets: {
       byPurpose: {
         intent: { callsToday: 0 },
@@ -121,6 +125,8 @@ export function createInitialState(deviceId: string): KernelState {
         transcript: { callsToday: 0 },
         hand: { callsToday: 0 },
         vision: { callsToday: 0 },
+        visualize: { callsToday: 0 },
+        offer: { callsToday: 0 },
         perceive: { callsToday: 0 },
         classify: { callsToday: 0 },
         rank: { callsToday: 0 },
@@ -128,6 +134,8 @@ export function createInitialState(deviceId: string): KernelState {
         audit: { callsToday: 0 },
         forecast: { callsToday: 0 },
         listen: { callsToday: 0 },
+        screen: { callsToday: 0 },
+        frame: { callsToday: 0 },
       },
       // No day seen yet. The first `clock:tick` sets it without a boundary: seeding the wall
       // clock's date here made that tick fire `day:boundary` for a day that never ran
@@ -224,11 +232,18 @@ export function createInitialState(deviceId: string): KernelState {
     tickets: {},
     watch: { rules: [], runtime: {} },
     nightShift: { queue: [], open: null, recent: [], night: null, countTonight: 0, spentUsdTonight: 0 },
+    approvals: { open: [], recent: [], decided: [] },
     drift: { days: {}, meetings: [], checkedWeek: null, holding: {} },
     factTests: { day: null, seen: {}, records: {} },
     briefs: { days: {}, prState: {}, lastMet: {}, done: {} },
     // lane H
     sensorHealth: { troubles: {}, lastTickAt: null, keys: null, llmAuth: {}, budgetExhausted: {}, push: { lastOkAt: null, lastFailedAt: null, lastError: null } },
+    streamCoverage: { days: [], firstDay: {}, silentSince: {}, judgedDay: null },
+    // plan 15, 2.4
+    voice: { pendingKnock: null, recentLines: [], mutedUntil: null },
+    overlay: { open: null, tally: {} },
+    marks: { now: [], guide: null, guideTally: {} },
+    boundary: { last: null },
   };
 }
 
@@ -309,7 +324,8 @@ function hydrateMoment(state: KernelState): KernelState {
  * resolve a 51st reads as a live signal when it is a fossil. The measurement
  * itself is preserved in the almanac, which is the right home for a result.
  */
-const RETIRED_FORECASTER_KINDS: ReadonlySet<string> = new Set(['project-continuity']);
+// `day-ending` retired 2026-10-14: a 4.8% base rate gave it +0.008 Brier over all rows (lab/sensor-hygiene/forecaster-skill.mjs); the last active hour has lag-1 autocorrelation -0.18.
+const RETIRED_FORECASTER_KINDS: ReadonlySet<string> = new Set(['project-continuity', 'day-ending']);
 
 /**
  * `predictions.calibration` used to be one pooled `{n,hits,brierSum}` — the

@@ -97,6 +97,8 @@ export interface SensorHealth {
   permissions: PermissionStatus[];
   /** OCR captures dropped because secure input held the keyboard, since boot. */
   ocrSecureInputDrops?: { count: number; lastAt: string | null };
+  /** Frames the frame sensor did not send (`ocr.jev.frames`): no capture beside it, a private capture, a size Jev refuses. */
+  screenFrameSkips?: { unpaired: number; private: number; size: number };
 }
 
 function sidecarAgeMs(path: string, now: number): number | null {
@@ -132,9 +134,6 @@ export function getSensorHealth(config?: ResolvedSundialConfig, now: number = Da
 }
 
 // lane H (H1, H2, H8)
-/** Audio helper states that mean hearing is on but nothing is being heard. */
-export const MIC_TROUBLE_STATES = ['denied', 'no-transcriber', 'no-model', 'transcriber-failed', 'capture-failed', 'transcribe-failed'] as const;
-
 export interface HealthSignalInputs {
   health: SensorHealth;
   /** `audio.enabled`: the microphone is only reported when hearing is on. */

@@ -1,0 +1,12 @@
+{
+  "name": "@sundial/nodus",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Nodus, Gnomon's visual engine: a typed visual spec, the binders that fill it from the record, the storyboard and critic stages, and the browser renderers that draw it. Plain ES modules with no build, read by the plugin in node and served to the web client as they are.",
+  "exports": {
+    "./*.js": "./src/*.js",
+    "./vendor/*": "./vendor/*",
+    "./package.json": "./package.json"
+  }
+}

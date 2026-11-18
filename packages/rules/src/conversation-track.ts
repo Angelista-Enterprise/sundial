@@ -1,5 +1,6 @@
 import { deriveId } from '@sundial/helpers/derive-id.js';
-import type { ChatSession, ChatTurn, Effect, KernelState, Rule, SaidFact, ShownFact } from '@sundial/kernel/types.js';
+import type { ChatSession, ChatTurn, CitableFact, CitedFact, Effect, KernelState, Rule, SaidFact, ShownFact } from '@sundial/kernel/types.js';
+import { isRigSession } from '@sundial/kernel/read/rig-session.js';
 import { promisesInTurns } from './conversation-extract.js';
 
 /**
@@ -21,11 +22,18 @@ import { promisesInTurns } from './conversation-extract.js';
  * `chat:owner` also opens the promises the owner stated outright, with the same
  * id the nightly pass mints (`deriveId(at, sessionId, 'chat-promise', sentence)`),
  * so the two paths open nothing twice while both run.
+ *
+ * Round 4: a session of the screen rig (`isRigSession`) keeps its turns (its own
+ * brief reads them) but teaches nothing: no promise opens from its words, and
+ * nothing it said or cited goes on `said` or `cited`, so no follow-up loop and no
+ * correction comes from a test chat.
  */
 
 export const MAX_SESSIONS = 12;
 export const MAX_TURNS = 6;
 export const MAX_SAID = 50;
+/** Plan 15 4.5: the owner facts a reply cited, kept for the 14 days a correction may come in. */
+export const MAX_CITED = 100;
 const TURN_CHARS = 280;
 const MIN_NAME_CHARS = 4;
 
@@ -83,7 +91,7 @@ export const conversationTrack: Rule = (state, event) => {
     if (!state.conversation.sessions[sessionId]) return { state, effects };
     const sessions = { ...state.conversation.sessions };
     delete sessions[sessionId];
-    return { state: { ...state, conversation: { sessions, said: state.conversation.said.filter((s) => s.sessionId !== sessionId) } }, effects };
+    return { state: { ...state, conversation: { ...state.conversation, sessions, said: state.conversation.said.filter((s) => s.sessionId !== sessionId) } }, effects };
   }
 
   if (event.type === 'chat:shown') {
@@ -91,9 +99,12 @@ export const conversationTrack: Rule = (state, event) => {
     const facts: ShownFact[] = (Array.isArray(p.facts) ? p.facts : [])
       .filter((f): f is { key: string; value: Record<string, unknown> } => typeof f?.key === 'string' && typeof f.value === 'object' && f.value !== null)
       .map((f) => ({ key: f.key, value: f.value }));
+    const cites: CitableFact[] = (Array.isArray(p.cites) ? p.cites : [])
+      .filter((c): c is CitableFact => typeof c?.id === 'string' && typeof c.predicate === 'string' && typeof c.object === 'string')
+      .map((c) => ({ id: c.id, predicate: c.predicate, object: c.object }));
     const cause = (p.cause ?? {}) as Record<string, unknown>;
     return {
-      state: withSession(state, sessionId, event.ts, (s) => ({ ...s, shown: { briefId, facts }, cause: { noticeKey: str(cause.noticeKey) || null, askId: str(cause.askId) || null } })),
+      state: withSession(state, sessionId, event.ts, (s) => ({ ...s, shown: { briefId, facts, ...(cites.length > 0 ? { cites } : {}) }, cause: { noticeKey: str(cause.noticeKey) || null, askId: str(cause.askId) || null } })),
       effects: [],
     };
   }
@@ -103,6 +114,7 @@ export const conversationTrack: Rule = (state, event) => {
 
   if (event.type === 'chat:owner') {
     const next = withSession(state, sessionId, event.ts, (s) => pushTurn(s, { at: event.ts, by: 'owner', turnId, text: text.slice(0, TURN_CHARS) }));
+    if (isRigSession(state, sessionId)) return { state: next, effects: [] };
     // The owner's stated promises, opened without a model (UC1, moved here from the nightly pass).
     const effects: Effect[] = promisesInTurns([{ sessionId, at: event.ts, text }], state.config.timezone).map((found, i) => ({
       type: 'EmitEvent',
@@ -120,9 +132,12 @@ export const conversationTrack: Rule = (state, event) => {
     const session = state.conversation.sessions[sessionId];
     const shownId = session?.shown?.briefId ?? null;
     const hits: SaidFact[] = mentioned(session?.shown?.facts ?? [], text).map((m) => ({ ...m, at: event.ts, sessionId, turnId }));
+    const lower = text.toLowerCase();
+    const cited: CitedFact[] = (session?.shown?.cites ?? []).filter((c) => c.object.trim().length >= MIN_NAME_CHARS && lower.includes(c.object.trim().toLowerCase())).map((c) => ({ ...c, at: event.ts }));
     const next = withSession(state, sessionId, event.ts, (s) => pushTurn(s, { at: event.ts, by: 'gnomon', turnId, text: text.slice(0, TURN_CHARS), shownId }));
-    if (hits.length === 0) return { state: next, effects: [] };
-    return { state: { ...next, conversation: { ...next.conversation, said: [...next.conversation.said, ...hits].slice(-MAX_SAID) } }, effects: [] };
+    if ((hits.length === 0 && cited.length === 0) || isRigSession(state, sessionId)) return { state: next, effects: [] };
+    const conversation = { ...next.conversation, said: [...next.conversation.said, ...hits].slice(-MAX_SAID), ...(cited.length > 0 ? { cited: [...(next.conversation.cited ?? []).filter((c) => !cited.some((n) => n.id === c.id)), ...cited].slice(-MAX_CITED) } : {}) };
+    return { state: { ...next, conversation }, effects: [] };
   }
 
   return { state, effects: [] };

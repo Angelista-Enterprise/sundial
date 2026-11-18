@@ -50,7 +50,9 @@ for (const key of ['SUNDIAL_WEB_PORT', 'SUNDIAL_PHONE_PORT', 'SUNDIAL_CHROME_POR
 
 export default defineConfig({
   test: {
-    exclude: [...defaultExclude, '**/.claude/worktrees/**'],
+    // claude-mod/ and lab/claude-desktop/ hold Claude Code mods: their tests run under `claude plugin test`, not here.
+    // lab/nodus/out/ holds lab results (git-ignored), with old copies of the engine and its tests.
+    exclude: [...defaultExclude, '**/.claude/worktrees/**', 'claude-mod/**', 'lab/claude-desktop/**', 'lab/nodus/out/**'],
     // Every test run gets its own empty data folder, so no test can ever read
     // or write a real install (~/.sundial) — whatever a test forgets to stub.
     env: testHomes(),

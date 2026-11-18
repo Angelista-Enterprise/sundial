@@ -10,7 +10,9 @@ to you.
 
 ## What you need
 
-- A Mac. Sundial runs on macOS only, because its sensors are native Swift programs.
+- A Mac with macOS 14 (Sonoma) or newer. Sundial runs on macOS only, because
+  its sensors are native Swift programs, and its window reader uses
+  ScreenCaptureKit calls that macOS 13 does not have. `doctor` checks this.
 - Node.js 22 or newer (`brew install node`, or <https://nodejs.org>).
 - pnpm (`brew install pnpm`, or `npm install -g pnpm`).
 - The Xcode Command Line Tools, which bring `swiftc` and `git`
@@ -64,8 +66,37 @@ The installer prints seven steps:
 7. **Waiting for http://127.0.0.1:3080.** It waits up to two minutes for the
    web client to answer.
 
-At the end it prints the shell hook line, offers to add Sundial to Claude Code,
-and opens your browser.
+In step 5 it asks whether to download the search model: one file of about
+90 MB from huggingface.co, once, when the first moment closes. No text from
+your record is sent; Hugging Face sees your IP address. Enter is yes. Without
+it, semantic search is off and search matches words only. The answer is kept as
+`memory.embeddings` in `config.json`, so a later install does not ask again.
+
+If `gh` is on your Mac, step 5 says so: while `gh` is signed in, Sundial asks
+GitHub for your open pull requests every five minutes, with your own login. To
+stop it, turn off **GitHub pull requests** in Settings, under **What may leave
+this Mac**, and restart (or set `"sensors": { "githubPrs": false }` in
+`config.json`). The same group switches the search model download and Atlas
+mode's library searches, and those two apply at once.
+
+It also asks whether to turn on hearing (a download of about 575 MB; the
+answer is no unless you type `y`). After a yes, a second question asks whether
+calls open hearing by themselves (`audio.autoMeetings`); the others in a call
+are not told, and the answer is no unless you type `y`. At the end it offers to add Sundial's MCP server to Claude
+Code and other agent hosts, and opens your browser.
+
+In step 5 it also asks before each change to `~/.claude/settings.json` (it
+creates the file if Claude Code is not installed). Enter is yes:
+
+- report-only hooks: each session tells Sundial when it waits, asks, fails or
+  ends. Nothing leaves your Mac.
+- a SessionStart hook that gives each new session up to five lines from your
+  record (project, open ticket, promises, last failure). Those lines reach
+  Anthropic through Claude Code.
+
+A checkout that has the gnomon-band Claude Code mod also asks before linking
+it into `~/.claude/skills`. Without a terminal there is no question and the
+answer is yes; the options below leave each one out.
 
 ### Install options
 
@@ -76,7 +107,14 @@ and opens your browser.
 | `--no-launchagent` | Stop after step 5 and start nothing. You start Sundial by hand from Applications, or with `open /Applications/Sundial.app`. |
 | `--no-app` | Run Sundial from a LaunchAgent instead of the app, as before. Full Disk Access does not reach it then. |
 | `--no-login-item` | Do not add the app to Login Items. |
-| `--no-mcp` | Do not ask about Claude Code; print the command instead. |
+| `--no-mcp` | Do not ask about Claude Code and other MCP hosts; print the command instead. |
+| `--no-claude-hooks` / `--claude-hooks` | Leave the report-only hooks out, or add them, without asking. |
+| `--no-claude-context` / `--claude-context` | Leave the SessionStart context hook out, or add it, without asking. |
+| `--no-claude-mod` / `--claude-mod` | Leave the gnomon-band mod unlinked, or link it, without asking. |
+| `--embeddings` / `--no-embeddings` | Answer the search model question yes or no without asking. Without a terminal and without either, the answer is yes. |
+| `--hearing` / `--no-hearing` | Answer the hearing question yes or no without asking. |
+| `--auto-meetings` / `--no-auto-meetings` | Answer whether calls open hearing by themselves. Without a terminal and without either, the answer is no. |
+| `--no-shell-hook` | Do not set up the shell hook; print the line to add instead. |
 | `--skip-build` | Skip steps 3 and 4. Only useful when you already built this checkout. |
 | `--timeout <seconds>` | How long step 7 waits (default 120). |
 
@@ -114,6 +152,13 @@ Open a new terminal window for the alias to work.
 The first time a browser opens Sundial, it goes to `/setup`. You can come back
 to <http://127.0.0.1:3080/setup> at any time. Nothing on it is needed to start.
 
+**One question first.** Only in the packaged app, which has no terminal to ask
+in: download the search model? The same question `install` asks (about 90 MB
+from huggingface.co, once; no text from your record is sent; Hugging Face sees
+your IP address). **Download it** is the default, so Enter is yes; **Words
+only** keeps search on words. Until you answer, nothing downloads it. The answer
+is kept as `memory.embeddings` in `config.json`.
+
 **The record.** How many observations Sundial has recorded so far. The first
 ones arrive within a minute of the sensors starting.
 
@@ -147,7 +192,7 @@ screen still shows your day. Gnomon's chat and its written summaries need one.
 ## Add a model
 
 On the setup page, press **Choose a model**. Pick a preset (Ollama on this Mac,
-OpenAI, OpenRouter, DeepSeek) or **Other** for any OpenAI-compatible address.
+OpenAI, Anthropic, OpenRouter, DeepSeek) or **Other** for any OpenAI-compatible address.
 Paste an API key if the provider needs one, press **Check** to list its models,
 pick one, and press **Use this model**. Then press **Restart Sundial**.
 
@@ -173,12 +218,13 @@ exit code or duration.
 ## Use Sundial from Claude Code (optional)
 
 Sundial has an MCP server. MCP (Model Context Protocol) lets an agent such as
-Claude Code call tools. Sundial's tools only read your record; none of them
-write.
+Claude Code call tools. Most of Sundial's tools read your record; the few that
+write only carry your own words (a correction, a fact you state, your answer
+to Gnomon's question). None of them acts in your apps.
 
 If the `claude` command is installed, `install` asks at the end whether to add
-Sundial (y/N). It changes your Claude Code settings only when you answer `y`.
-To add it yourself later, run this from the repository folder:
+Sundial's MCP server (y/N). To add it yourself later, run this from the
+repository folder:
 
 ```bash
 claude mcp add sundial --scope user -e SUNDIAL_HOME="$HOME/.sundial" -- "$(command -v node)" "$PWD/packages/mcp/bin/sundial-mcp.js"
@@ -230,6 +276,22 @@ label and ports.
 Early users ran this software under an older name, with data in `~/.gnomon`.
 `node bin/sundial migrate` copies that install into `~/.sundial` (it never moves
 or changes the old folder); then run `install`.
+
+## Your first conversation
+
+With a model set and Accessibility granted, open the chat (`⌥C` on the board)
+and ask:
+
+> What did I work on this morning?
+
+Gnomon answers from the record. Now bring up the slip over your other apps
+with **⌥Space**, switch to TextEdit with a document open, and ask:
+
+> What is in this window?
+
+Gnomon looks at the window and tells you. It cannot change anything yet:
+acting is off on a new install. To let it press and type, behind a confirm for
+every step, follow [screen-acting.md](screen-acting.md#what-is-on-by-default).
 
 ## Next
 

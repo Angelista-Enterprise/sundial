@@ -8,7 +8,7 @@ import {
   parameterSchemaSpecToJsonSchema,
   validateArgs,
 } from '@deepseek-ai/dsh-tools';
-import { ASK_TOOL_REGISTRY } from '@sundial/kernel/tools/index.js';
+import { TOOL_REGISTRY } from '@sundial/kernel/tools/index.js';
 import { toolDefinitions } from '@sundial/kernel/tools/registry.js';
 import { toParameterSchemaSpec, toValueSchemaSpec } from './schema.js';
 import { toDshTool } from './to-dsh-tool.js';
@@ -16,18 +16,18 @@ import { toDshTool } from './to-dsh-tool.js';
 /** name → { spec, wire } for every tool, converted once. */
 function convertAll() {
   const out = new Map();
-  for (const tool of ASK_TOOL_REGISTRY) {
+  for (const tool of TOOL_REGISTRY) {
     const [definition] = toolDefinitions([tool]);
     out.set(tool.name, { wire: definition.parameters, spec: toParameterSchemaSpec(definition.parameters) });
   }
   return out;
 }
 
-describe('toParameterSchemaSpec over all 29 real tool schemas', () => {
+describe('toParameterSchemaSpec over all 32 real tool schemas', () => {
   const converted = convertAll();
 
-  it('covers the full ASK_TOOL_REGISTRY (the 29 shared tools; lane D added gnomon_project_handoff, lane C gnomon_drift and gnomon_agent_yield, lane B gnomon_brief, lane A gnomon_did_i, gnomon_timeline and gnomon_what_if, W5 gnomon_reliability, and gnomon_agent_sessions)', () => {
-    expect(converted.size).toBe(29);
+  it('covers the full TOOL_REGISTRY (the 32 shared tools; gnomon_pull_requests; lane D added gnomon_project_handoff, lane C gnomon_drift and gnomon_agent_yield, lane B gnomon_brief, lane A gnomon_did_i, gnomon_timeline and gnomon_what_if, W5 gnomon_reliability, gnomon_agent_sessions, gnomon_changes and gnomon_notices)', () => {
+    expect(converted.size).toBe(32);
     expect([...converted.keys()]).toContain('gnomon_routines');
   });
 
@@ -164,7 +164,7 @@ describe('toDshTool definitions', () => {
   };
 
   it('produces registry-ready definitions for all 13 (name, description, supported parameters, json output)', () => {
-    for (const tool of ASK_TOOL_REGISTRY) {
+    for (const tool of TOOL_REGISTRY) {
       const definition = toDshTool(tool);
       expect(definition.name).toBe(tool.name);
       expect(definition.description).toBe(tool.description);
@@ -176,7 +176,7 @@ describe('toDshTool definitions', () => {
   });
 
   it('rejects invalid args before the gnomon handler runs (dsh-side validation)', async () => {
-    const momentDetail = toDshTool(ASK_TOOL_REGISTRY.find((tool) => tool.name === 'gnomon_moment_detail'));
+    const momentDetail = toDshTool(TOOL_REGISTRY.find((tool) => tool.name === 'gnomon_moment_detail'));
     await expect(momentDetail.execute({}, undefined)).rejects.toThrow();
   });
 });

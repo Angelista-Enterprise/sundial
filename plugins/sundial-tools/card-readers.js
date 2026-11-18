@@ -2,6 +2,7 @@ import { wakeupsOf } from '@sundial/helpers/loops.js';
 import { threadRows as threadRowsOf } from './threads.js';
 import { INSTRUMENT_ROUTES } from '../sundial-theme/shell/cards.js';
 import { lensProblem, runLens } from '../sundial-theme/shell/lens-core.js';
+import { cardSpec } from '@sundial/nodus/card.js';
 
 /**
  * What `gnomon_look` answers for each kind of card on the board.
@@ -128,6 +129,10 @@ export function createCardReaders({ read, tool, state }) {
       const view = card?.filters?.view;
       return view && all[view] !== undefined ? { view, [view]: all[view] } : all;
     },
+    // Plan 15 step 5: what Gnomon believes about the owner, by group, each with its source.
+    beliefs: async () => read('/gnomon/beliefs'),
+    // Round 3: the routes Gnomon learned on screen, per app, each with how often it worked, when last, and the dead ends.
+    routes: async () => read('/gnomon/api/routes'),
     // Goals and every open commitment; set to a project, only its commitments.
     play: async (_key, card) => {
       const [goals, habits] = await Promise.all([read('/gnomon/goals'), read('/gnomon/habits')]);
@@ -293,5 +298,11 @@ export function createCardReaders({ read, tool, state }) {
     // when it lifts them onto the board.
     surface: fromCardText('a surface Gnomon drew in the conversation and stood on the board; its text is what it shows'),
     figure: fromCardText('a figure Gnomon drew; its text is what it shows'),
+    // A Nodus card is read as its walk and its rows: the spec itself is a few hundred marks.
+    nodus: async (_key, card) => {
+      const spec = cardSpec(card?.text);
+      if (!spec) return { is: 'a Nodus figure with no readable spec', ...(card ? {} : { unavailable: 'No such card on the board.' }) };
+      return { is: `a live Nodus figure Gnomon composed from the record (${spec.form}, view ${spec.view ?? 'day'}); it re-reads its view when opened`, title: spec.title, headline: spec.headline, reads: spec.source, rows: spec.lanes.map((l) => `${l.label}${l.value != null ? ` ${l.value} ${l.unit ?? ''}`.trimEnd() : ''}${l.then != null ? ` (then ${l.then})` : ''}`), parts: spec.parts.length, walk: spec.steps.map((s) => s.say), walkBy: spec.by?.storyboard ?? null, critic: spec.by?.critic ?? null };
+    },
   };
 }

@@ -23,6 +23,8 @@
 # Native addons ship as pnpm installed them: this Mac's architecture only (v0).
 # Ad-hoc signed; every Mach-O in MacOS/ gets BUNDLE_ID as its identifier.
 set -euo pipefail
+# The oldest macOS Sundial runs on (Sonoma): ScreenCaptureKit's screenshot call is 14.0. Without it a build targets this Mac's own version.
+SWIFT_TARGET="$(uname -m)-apple-macos14.0"
 REPO=${0:A:h:h:h:h}
 OUT=${1:-$REPO/apps/macos/build}
 BUNDLE_ID=${BUNDLE_ID:-dev.sundial.daemon}
@@ -53,8 +55,8 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$RES/app/bin" "$RES/app/plugins" "$RES/app/packages/sensors"
 cp "$DIST"/sundial-daemon "$DIST"/sundial-*-helper "$APP/Contents/MacOS/"
 # The app itself, with Sparkle: swift.sh's copy (for a checkout) has none.
-swiftc -O -swift-version 5 -o "$APP/Contents/MacOS/Sundial" apps/macos/Sundial.swift -F "$SPARKLE" -framework Sparkle \
-  -framework AppKit -framework WebKit -framework ServiceManagement -Xlinker -rpath -Xlinker @executable_path/../Frameworks
+swiftc -O -swift-version 5 -target "$SWIFT_TARGET" -o "$APP/Contents/MacOS/Sundial" apps/macos/Sundial.swift apps/macos/AppChannel.swift apps/macos/ScreenLook.swift -F "$SPARKLE" -framework Sparkle \
+  -framework AppKit -framework WebKit -framework ServiceManagement -framework AVFoundation -framework ScreenCaptureKit -framework Vision -Xlinker -rpath -Xlinker @executable_path/../Frameworks
 ditto "$SPARKLE/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 # The browser helper is an app of its own (see app.sh), nested here with its
 # own identity; a test build gets its own, so it never shares Automation rows.
@@ -86,6 +88,8 @@ done
 cp bin/sundial "$RES/app/bin/"
 cp env.example "$RES/app/"
 cp packages/sensors/shell-hook.zsh packages/sensors/claude-hook.mjs "$RES/app/packages/sensors/"
+mkdir -p "$RES/app/apps/macos/sounds"
+cp apps/macos/sounds/*.wav "$RES/app/apps/macos/sounds/"
 cp "$NODE_BIN" "$RES/node"
 
 # The live bundle's plist (usage strings and all), as build.sh takes it.
@@ -99,9 +103,10 @@ plutil -replace CFBundleVersion -string "${SUNDIAL_BUILD:-$(git rev-list --count
 if [ -n "${SUNDIAL_FEED_URL:-}" ]; then
   plutil -replace SUFeedURL -string "$SUNDIAL_FEED_URL" "$PLIST"
   plutil -replace SUPublicEDKey -string "${SUNDIAL_ED_PUBLIC_KEY:?an update feed needs SUNDIAL_ED_PUBLIC_KEY}" "$PLIST"
-  # Check daily and download in the background; the app installs once Node is up.
+  # Check daily, then ask before installing (the owner's default, 2026-11-17): Sparkle shows
+  # the update and installs it only on the owner's yes.
   plutil -replace SUEnableAutomaticChecks -bool true "$PLIST"
-  plutil -replace SUAutomaticallyUpdate -bool true "$PLIST"
+  plutil -replace SUAutomaticallyUpdate -bool false "$PLIST"
 fi
 plutil -lint "$PLIST" >/dev/null
 

@@ -1,5 +1,6 @@
 import { deliveryActs } from '@sundial/helpers/delivery-acts.js'
 import { COMPANION_SESSION_ID } from '@sundial/helpers/vocab.js'
+import { SANDBOX_CHANNEL } from '@sundial/helpers/sandbox.js'
 import { briefMessage, followupLine, noticeContext, wakeupPrompt } from './notice-message.js'
 
 /**
@@ -44,13 +45,13 @@ import { briefMessage, followupLine, noticeContext, wakeupPrompt } from './notic
  */
 const NOTICE_CHANNELS = new Set(['phasic-notice', 'tonic-notice'])
 
-export function createDelivery({ getCompanion, getThread = async () => null, onDropCompanion, isDisposed = () => false, notifyNative, notifyPhone, pushAtMac = true, record = () => {}, brief = null, announce = () => {}, log = console.log, warn = console.warn }) {
+export function createDelivery({ getCompanion, getThread = async () => null, getLiveThread = () => null, onDropCompanion, isDisposed = () => false, notifyNative, notifyPhone, pushAtMac = true, record = () => {}, brief = null, announce = () => {}, log = console.log, warn = console.warn }) {
   // One promise chain. Two notices admitted in the same tick would otherwise
   // race to create the companion, producing two agents over one session id.
   let queue = Promise.resolve()
 
   const dropped = (payload, sessionId, reason) => {
-    record('notice:dropped', { noticeKey: typeof payload?.noticeKey === 'string' ? payload.noticeKey : '', sessionId, reason, kind: typeof payload?.kind === 'string' ? payload.kind : '' })
+    record('notice:dropped', { noticeKey: typeof payload?.noticeKey === 'string' ? payload.noticeKey : '', sessionId, reason, kind: typeof payload?.kind === 'string' ? payload.kind : '', ...(typeof payload?.sandbox === 'string' ? { sandbox: payload.sandbox } : {}) })
     return { delivered: false, reason }
   }
 
@@ -65,8 +66,34 @@ export function createDelivery({ getCompanion, getThread = async () => null, onD
     else agent.inject(message)
   }
 
+  /**
+   * S4: a rig chat's sandbox speaks (`SANDBOX_CHANNEL`, the `sandbox` lane): one line in that rig thread, and nothing
+   * else. Never the companion, never a turn, never ntfy, a banner or a knock, never announced to the owner's page. Only to
+   * a LIVE agent (`getLiveThread`: one in memory, not disposed): resolving the thread would resume or create the rig session
+   * and put a closed test chat back in the owner's Threads. Its delivery row carries the sandbox mark, so it folds into that
+   * sandbox and no owner rule sees it.
+   */
+  async function sandboxLine(payload) {
+    const sessionId = typeof payload?.sandbox === 'string' && payload.sandbox !== '' && payload.sandbox !== COMPANION_SESSION_ID && payload.sessionId === payload.sandbox ? payload.sandbox : null
+    const row = { noticeKey: typeof payload?.noticeKey === 'string' ? payload.noticeKey : '', sessionId, sandbox: sessionId, kind: typeof payload?.kind === 'string' ? payload.kind : '' }
+    if (sessionId === null) return { delivered: false, reason: 'no-rig-thread' }
+    let agent = null
+    try {
+      agent = await getLiveThread(sessionId)
+    } catch {}
+    if (!agent || agent.status === 'disposed') {
+      record('notice:dropped', { ...row, reason: 'session-gone' })
+      return { delivered: false, reason: 'session-gone' }
+    }
+    drawLine(agent, followupLine(payload))
+    record('notice:delivered', { ...row, acts: ['line'] })
+    log(`[sundial-proactive] sandbox line ${row.noticeKey} in ${sessionId}`)
+    return { delivered: true, channel: SANDBOX_CHANNEL }
+  }
+
   async function deliver({ channel, payload } = {}) {
     if (isDisposed()) return { delivered: false, reason: 'disposed' }
+    if (channel === SANDBOX_CHANNEL) return sandboxLine(payload)
 
     // A diagnostic riding the same effect type. Not an error, and not the
     // owner's business — it was already logged by the executor.
@@ -127,7 +154,9 @@ export function createDelivery({ getCompanion, getThread = async () => null, onD
       }
     }
 
-    record('notice:delivered', { noticeKey: payload.noticeKey, sessionId, acts })
+    // The turn a knock held back (`voiceKnock`): this notice was counted when it was delivered.
+    // Round 4: `offer` (its button's words) marks a notice that came with one act to take, so the go rate has its divisor.
+    if (payload.afterGo !== true) record('notice:delivered', { noticeKey: payload.noticeKey, sessionId, acts, ...(typeof payload.offer === 'string' ? { offer: payload.offer } : {}) })
     log(`[sundial-proactive] ${acts.join('+')} ${payload.noticeKey}${sessionId ? ` in ${sessionId}` : ''}`)
     return { delivered: true, channel: phasic ? 'phasic' : 'tonic' }
   }

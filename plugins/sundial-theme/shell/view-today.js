@@ -9,7 +9,7 @@ import { localToday } from './span.js'
 import { statusWord } from './status.js'
 import { coverage } from './calibration.js'
 import { clock, focusBar, hm, json, shareBar, stagger, when } from './view-kit.js'
-import { assistantProposalsSection, draftsSection, proposalsSection } from './view-proposals.js'
+import { assistantProposalsSection, draftsSection, learnedSection, proposalsSection } from './view-proposals.js'
 import { shelfSection } from './view-shelf.js'
 import { dayPanel } from './view-day.js'
 
@@ -158,7 +158,7 @@ export function todayParts(onAsk, date = null) {
 }
 
 /** What the parts of Today are read from, for `markStale`. */
-export const PART_ROUTES = ['/gnomon/today', '/gnomon/day', '/gnomon/dial', '/gnomon/shelf', '/gnomon/asks', '/gnomon/unsaid', '/gnomon/attribution/proposals', '/gnomon/assistant/proposals']
+export const PART_ROUTES = ['/gnomon/today', '/gnomon/day', '/gnomon/dial', '/gnomon/shelf', '/gnomon/asks', '/gnomon/unsaid', '/gnomon/attribution/proposals', '/gnomon/assistant/proposals', '/gnomon/proposals']
 
 /** One rebuild in flight per day, shared by the parts that all want it after the same frame. */
 export const rebuilding = new Map()
@@ -189,7 +189,7 @@ export const TODAY_PARTS = CATALOG_TODAY_PARTS
 export async function buildTodayParts(onAsk, forDate = null) {
   const get = (path) => json(path).catch(() => null)
   const on = forDate ? `?date=${forDate}` : ''
-  const [figure, today, shelf, day, shape, habits, unsaid, proposals, suggested, drafts, asks, meetingBrief] = await Promise.all([
+  const [figure, today, shelf, day, shape, habits, unsaid, proposals, suggested, drafts, asks, meetingBrief, learned] = await Promise.all([
     get(`/gnomon/dial${on}`),
     get(`/gnomon/today${on}`),
     get('/gnomon/shelf'),
@@ -203,6 +203,7 @@ export async function buildTodayParts(onAsk, forDate = null) {
     get('/gnomon/asks'),
     // lane B
     forDate ? null : get('/gnomon/brief'),
+    get('/gnomon/proposals'),
   ])
   if (figure === null && today === null) return null
 
@@ -281,14 +282,14 @@ export async function buildTodayParts(onAsk, forDate = null) {
   const openAsks = (asks?.asks ?? []).filter((a) => !a.outcome)
   const openDrafts = { open: drafts?.open ?? [], closed: [] }
   const openSuggested = { proposals: suggested?.proposals ?? [], resolved: [] }
-  const waitingCount = unanswered.length + (proposals?.proposals?.length ?? 0) + openSuggested.proposals.length + openDrafts.open.length + openAsks.length
+  const waitingCount = unanswered.length + (proposals?.proposals?.length ?? 0) + openSuggested.proposals.length + openDrafts.open.length + openAsks.length + (learned?.items?.length ?? 0)
   const asksNode = openAsks.length
     ? el('section', { class: 'panel' }, [
         el('h3', { class: 'col-title', text: 'Gnomon asks' }),
         ...openAsks.map((a) => el('div', { class: 'row' }, [el('span', { class: 'row-name', text: a.question }), answerDoor()])),
       ])
     : null
-  const leftNodes = [shelfSection({ ...shelf, items: unanswered, working: null }, onAsk), proposalsSection(proposals, onAsk), assistantProposalsSection(openSuggested), draftsSection(openDrafts), asksNode].filter(Boolean)
+  const leftNodes = [learnedSection(learned), shelfSection({ ...shelf, items: unanswered, working: null }, onAsk), proposalsSection(proposals, onAsk), assistantProposalsSection(openSuggested), draftsSection(openDrafts), asksNode].filter(Boolean)
   const answeredNode = answered.length ? el('details', { class: 'shelf-answered' }, [el('summary', { text: `${answered.length} answered` }), shelfSection({ ...shelf, items: answered, working: null }, onAsk)]) : null
   // The face people actually read: one sentence about the day, then what
   // Gnomon left that still waits for a verdict. The dial and the columns are
@@ -301,6 +302,8 @@ export async function buildTodayParts(onAsk, forDate = null) {
   const briefNode = forDate ? null : briefBlock(meetingBrief)
   const brief = el('section', { class: 'today brief' }, [
     el('p', { class: 'brief-line', text: briefLine({ date, observedMin, projects, meetings: today?.meetings, noticed: noticed.length }) }),
+    // Round 5: what Gnomon did on screen today, quiet under the day's sentence (the Ledger says the same line).
+    today?.didToday?.line ? el('p', { class: 'panel-note', text: today.didToday.line }) : null,
     // The live line (#strip) moves in here from app.js; for another day there is no "now".
     forDate ? null : el('div', { class: 'brief-now' }),
     moment,
@@ -500,9 +503,9 @@ export function resumeDetails(resume, use = null) {
  * shelf item's first line. Words at the read boundary, for old rows as well
  * as new ones. Pure.
  */
-export const JOB_WORDS = { 'topic-brief': 'brief', 'handoff-note': 'handoff note', 'meeting-brief': 'meeting brief', 'owner-request': 'your request', 'rule-idea': 'rule idea' }
+export const JOB_WORDS = { 'topic-brief': 'brief', 'handoff-note': 'handoff note', 'meeting-brief': 'meeting brief', 'owner-request': 'your request', 'rule-idea': 'rule idea', 'day-packet': 'morning packet' }
 
-export const jobWords = (text) => String(text ?? '').replace(/\b(topic-brief|handoff-note|meeting-brief|owner-request|rule-idea)\b(?= ·)/g, (slug) => JOB_WORDS[slug])
+export const jobWords = (text) => String(text ?? '').replace(/\b(topic-brief|handoff-note|meeting-brief|owner-request|rule-idea|day-packet)\b(?= ·)/g, (slug) => JOB_WORDS[slug])
 
 /**
  * What Gnomon said in passing today, newest first — the quiet lane made

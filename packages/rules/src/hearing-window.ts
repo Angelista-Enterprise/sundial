@@ -2,23 +2,6 @@ import { NOT_A_CALL_APPS } from '@sundial/kernel/watch.js';
 import type { HearingReason, HearingWindow, Rule } from '@sundial/kernel/types.js';
 
 /**
- * How long before a meeting starts to wake up.
- *
- * People join early, and the minute before a call is where "can you hear me"
- * and the actual first sentence live. Waking on the calendar's start instant
- * would miss both.
- */
-const LEAD_MS = 3 * 60_000;
-
-/**
- * How long after a meeting's scheduled end to keep listening.
- *
- * Meetings overrun. A calendar end is a plan, not an observation, and the last
- * five minutes are disproportionately the ones with the decisions in them.
- */
-const OVERRUN_MS = 10 * 60_000;
-
-/**
  * How long a call holds the window open after the microphone goes quiet.
  *
  * `media:state` is a sample, not a span: a brief dip — a device switch, a mute,
@@ -60,14 +43,6 @@ const MANUAL_MAX_MS = 4 * 60 * 60_000;
  */
 const MUTE_MS = 60 * 60_000;
 
-interface CalendarEvent {
-  title?: string;
-  startDate?: string;
-  endDate?: string;
-  isAllDay?: boolean;
-  attendees?: string[];
-}
-
 function parse(value: unknown): number | null {
   if (typeof value !== 'string') return null;
   const ms = Date.parse(value);
@@ -90,11 +65,9 @@ function open(state: Parameters<Rule>[0], reason: HearingReason, untilMs: number
   const until = new Date(Math.max(currentUntil, untilMs)).toISOString();
   const next: HearingWindow = {
     listening: true,
-    // A meeting names the window; a call that happens to be inside one should
-    // not rename it, because the title is what the transcript gets filed under.
-    // A manual start holds its name for the same reason in reverse: the owner
-    // asked for this window, and the strip should keep saying so.
-    reason: current.listening && (current.reason === 'meeting' || current.reason === 'manual') ? current.reason : reason,
+    // A manual start holds its name: the owner asked for this window, and the
+    // strip should keep saying so when a call lands inside it.
+    reason: current.listening && current.reason === 'manual' ? 'manual' : reason,
     until,
     title: title ?? (current.listening ? current.title : null),
     mutedUntil: current.mutedUntil,
@@ -110,23 +83,17 @@ function open(state: Parameters<Rule>[0], reason: HearingReason, untilMs: number
  * at all: handed a quiet room, whisper invents, and no confidence threshold
  * catches it because the model is not in doubt.
  *
- * Two things wake it, both already known to Gnomon:
+ * Two things wake it: the owner's Listen, and a call (`media:state`: another
+ * app holds the microphone). The call reason is OFF unless `audio.autoMeetings`
+ * (`state.config.autoHearMeetings`), since nobody else in the room is told.
  *
- * - **A meeting**, from `calendar:active` (one in progress) or
- *   `calendar:upcoming` (one about to start). An all-day event with no
- *   attendees is a marker in a calendar, not a room with people in it, and the
- *   same test `computeMomentKind` already uses keeps those asleep.
- * - **A call**, from `media:state` — something else is holding the microphone.
- *   This is the case the calendar cannot see: an unscheduled huddle, someone
- *   ringing, a call that runs long past its slot.
- *
- * Both are OFF unless `audio.autoMeetings` (`state.config.autoHearMeetings`):
- * nobody else in the room is told, so by default only the owner's Listen opens
- * the microphone. The window still closes on its own below.
+ * The calendar no longer wakes it (2026-11-13). A calendar event is a plan, not
+ * a room: a day-long event with attendees held the microphone and the system
+ * audio tap open for 11 to 12 hours a day, transcribing every video played and
+ * draining the battery. A meeting that happens on this Mac is a call.
  *
  * The window CLOSES on a clock tick rather than on an event, because "nothing
- * is happening" produces no events by definition — that is what the old
- * always-on design got wrong in the other direction.
+ * is happening" produces no events by definition.
  */
 export const hearingWindow: Rule = (state, event) => {
   // The owner's own hand, from the strip's listen chip. The third reason, and
@@ -146,38 +113,7 @@ export const hearingWindow: Rule = (state, event) => {
     return { state: { ...state, hearing: { ...ASLEEP, mutedUntil: new Date(now + MUTE_MS).toISOString() } }, effects: [] };
   }
 
-  const inferred = event.type === 'calendar:active' || event.type === 'calendar:upcoming' || event.type === 'media:state';
-  if (inferred && state.config.autoHearMeetings !== true) return { state, effects: [] };
-
-  if (event.type === 'calendar:active') {
-    const meeting = (event.payload as { event?: CalendarEvent }).event;
-    if (!meeting) return { state, effects: [] };
-    // The same "is this a real meeting" test the moment kind uses: an all-day
-    // block with nobody in it is a note to self.
-    if (meeting.isAllDay === true && (meeting.attendees?.length ?? 0) === 0) return { state, effects: [] };
-    const end = parse(meeting.endDate);
-    if (end === null) return { state, effects: [] };
-    const now = Date.parse(event.ts);
-    if (!Number.isFinite(now)) return { state, effects: [] };
-    return open(state, 'meeting', end + OVERRUN_MS, typeof meeting.title === 'string' ? meeting.title : null, now);
-  }
-
-  if (event.type === 'calendar:upcoming') {
-    const events = (event.payload as { events?: CalendarEvent[] }).events ?? [];
-    const now = Date.parse(event.ts);
-    if (!Number.isFinite(now)) return { state, effects: [] };
-    for (const meeting of events) {
-      if (meeting.isAllDay === true && (meeting.attendees?.length ?? 0) === 0) continue;
-      const start = parse(meeting.startDate);
-      const end = parse(meeting.endDate);
-      if (start === null || end === null) continue;
-      // Only one that is actually near. A meeting this afternoon is not a
-      // reason to listen all morning.
-      if (start - now > LEAD_MS || end < now) continue;
-      return open(state, 'meeting-soon', end + OVERRUN_MS, typeof meeting.title === 'string' ? meeting.title : null, now);
-    }
-    return { state, effects: [] };
-  }
+  if (event.type === 'media:state' && state.config.autoHearMeetings !== true) return { state, effects: [] };
 
   if (event.type === 'media:state') {
     const media = event.payload as { audioInput?: boolean; audioInputProcess?: string | null };
@@ -204,7 +140,9 @@ export const hearingWindow: Rule = (state, event) => {
       return { state: { ...state, hearing: { ...state.hearing, mutedUntil: muted } }, effects: [] };
     }
     const until = parse(state.hearing.until);
-    if (until === null || now < until) {
+    // A window the calendar opened before 2026-11-13 is closed on the next tick.
+    const calendar = state.hearing.reason === 'meeting' || state.hearing.reason === 'meeting-soon';
+    if (!calendar && (until === null || now < until)) {
       if (muted === state.hearing.mutedUntil) return { state, effects: [] };
       return { state: { ...state, hearing: { ...state.hearing, mutedUntil: muted } }, effects: [] };
     }

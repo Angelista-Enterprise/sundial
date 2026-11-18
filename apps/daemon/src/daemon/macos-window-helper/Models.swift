@@ -24,6 +24,8 @@ struct WindowInfo: Codable {
     let windowAlpha: Double
     let windowRole: String
     let windowSubrole: String
+    /// S5R2: a sheet on the focused window, or a dialog window in front (opened-track.ts folds it as left open).
+    let sheet: Bool
     let documentPath: String?
     let screen: ScreenInfo?
     let pid: Int32

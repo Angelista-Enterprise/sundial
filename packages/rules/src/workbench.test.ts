@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createInitialState } from '@sundial/kernel/initial-state.js';
 import type { Effect, KernelState, SanitizedEvent } from '@sundial/kernel/types.js';
-import { briefPoints, workbench, pickJob, MAX_JOBS_PER_DAY, MAX_QUEUED_JOBS, JOB_TIMEOUT_MS, REPEAT_GRACE_MS } from './workbench.js';
+import { briefPoints, workbench, pickJob, MAX_JOBS_PER_DAY, MAX_QUEUED_JOBS, JOB_TIMEOUT_MS, REPEAT_GRACE_MS, RETRY_AFTER_MS, COLD_RETRY_MS, RULE_IDEA_GAP_MS } from './workbench.js';
 
 const NOW = '2026-09-04T22:30:00.000Z';
 const plus = (ms: number) => new Date(Date.parse(NOW) + ms).toISOString();
@@ -12,11 +12,8 @@ function away(): KernelState {
   const state = createInitialState('d');
   state.config.ownerAliases = ['pat'];
   state.lifeEvent.idle.isIdle = true;
-  // This week's rule idea is taken, so the other jobs are what these tests see.
-  state.workbench.done[RULE_IDEA_KEY] = NOW;
   return state;
 }
-const RULE_IDEA_KEY = `rule-idea:${Math.floor(Date.parse(NOW) / (7 * 86_400_000))}`;
 
 function withThread(state: KernelState): KernelState {
   state.commitments.open.push({
@@ -67,13 +64,19 @@ describe('pickJob', () => {
     expect(pickJob(state, NOW)).toBeNull();
   });
 
-  it('once a week, while away, a rule idea comes after handoffs and before tool briefs', () => {
+  it('a rule idea waits for a chore to cross its count, never a clock; after handoffs, before tool briefs, one a week', () => {
     const state = away();
-    delete state.workbench.done[RULE_IDEA_KEY];
     state.memory.recentEntityIds.push('tool:zed');
-    expect(pickJob(state, NOW)).toMatchObject({ kind: 'rule-idea', key: RULE_IDEA_KEY });
-    state.workbench.done[RULE_IDEA_KEY] = NOW;
+    // No chore crossed: weeks may pass, and no rule idea opens.
     expect(pickJob(state, NOW)).toMatchObject({ kind: 'topic-brief', subject: 'zed' });
+    state.chores = { keys: {}, offered: {}, crossed: { key: 'host:tracker.example.com', days: 3, at: plus(-60_000) } };
+    expect(pickJob(state, NOW)).toMatchObject({ kind: 'rule-idea', key: 'rule-idea:host:tracker.example.com', detail: { seed: 'host:tracker.example.com', days: '3' } });
+    state.workbench.done['rule-idea:host:tracker.example.com'] = NOW;
+    expect(pickJob(state, NOW)).toMatchObject({ kind: 'topic-brief', subject: 'zed' });
+    // Another chore crosses two days later: it waits out the week the last idea took, then opens.
+    state.chores.crossed = { key: 'host:mail.example.com', days: 3, at: plus(2 * 86_400_000) };
+    expect(pickJob(state, plus(2 * 86_400_000))).toMatchObject({ kind: 'topic-brief' });
+    expect(pickJob(state, plus(RULE_IDEA_GAP_MS))).toMatchObject({ kind: 'rule-idea', key: 'rule-idea:host:mail.example.com' });
   });
 
   it('respects the daily cap and the gap after the last job', () => {
@@ -271,6 +274,126 @@ describe('repeating jobs', () => {
     const { state: next } = workbench(state, ev('work:requested', { subject: 'X', brief: 'y', repeat: 'every 2 hours' }));
     expect(next.workbench.repeats).toBeUndefined();
     expect(next.workbench.open).toBeNull();
+  });
+});
+
+describe('the morning packet on the first touch of a workday', () => {
+  // Monday 16 Nov 2026, Amsterdam (UTC+1): first touch 08:27 local, standup at 09:00.
+  const TOUCH = '2026-11-16T07:27:00.000Z';
+  const touch = (ts = TOUCH, day = '2026-11-16') => ev('owner:first-touch', { timestamp: ts, day }, ts);
+  const started = (effects: Effect[]) => effects.filter((e): e is Extract<Effect, { type: 'StartSubagent' }> => e.type === 'StartSubagent').map((e) => e.job);
+
+  function monday(): KernelState {
+    const state = createInitialState('d');
+    state.config.timezone = 'Europe/Amsterdam';
+    state.config.ownerAliases = ['pat'];
+    state.schedule.upcoming = [
+      { title: 'Standup', start: '2026-11-16T08:00:00.000Z', end: '2026-11-16T08:15:00.000Z', attendees: ['pat', 'Mira Bakker'], isAllDay: false, recurring: true },
+      { title: 'BOX-484 review', start: '2026-11-16T13:00:00.000Z', end: '2026-11-16T13:45:00.000Z', attendees: ['pat', 'Mira Bakker'], isAllDay: false },
+      { title: 'Planning', start: '2026-11-17T09:00:00.000Z', end: '2026-11-17T10:00:00.000Z', attendees: ['pat', 'Bob Jansen'], isAllDay: false },
+    ];
+    const thread = (id: string, days: string[], stage: 'seen' | 'pr', pr: { number: number; state: string; reviewState: null } | null = null) => ({ id, firstSeen: '', lastSeen: '', days, sources: { browser: days.length }, stage, commits: 0, pr });
+    state.tickets = {
+      'BOX-484': thread('BOX-484', ['2026-11-09', '2026-11-12'], 'pr', { number: 12, state: 'OPEN', reviewState: null }),
+      'BOX-511': thread('BOX-511', ['2026-11-09', '2026-11-10'], 'seen'),
+      'BOX-600': thread('BOX-600', ['2026-11-13'], 'seen'),
+      'BOX-700': thread('BOX-700', ['2026-11-09'], 'seen'),
+    };
+    state.briefs = { days: { '2026-11-13': { commits: { 'puzzlebox-studio': { n: 3, branches: ['feat/box-484'] } }, prs: {}, tickets: [], agents: {} } }, prState: {}, lastMet: {}, done: {} };
+    return state;
+  }
+
+  it("asks for one day-packet job that carries the packet parts, and spends one of the day's jobs", () => {
+    const out = workbench(monday(), touch());
+    const [job] = started(out.effects);
+    expect(job).toMatchObject({ kind: 'day-packet', key: 'day-packet:2026-11-16', reason: 'your first touch of the day', openedAt: TOUCH });
+    expect(job!.detail).toEqual({
+      day: '2026-11-16',
+      parts: ['pull-requests', 'tickets', 'calendar', 'standup'],
+      calendar: ['Standup at 09:00 with Mira Bakker.', 'BOX-484 review at 14:00 with Mira Bakker.'],
+      tickets: ['BOX-484 (PR #12 open), in a meeting today', 'BOX-511, opened 2 days'],
+      standup: ['Standup at 09:00 with Mira Bakker.', 'Friday: 3 commits on puzzlebox-studio (feat/box-484).', 'Today: BOX-484 review 14:00.'],
+      leftOut: 'Mail and Messages are left out: they reach the record only through private apps.',
+      firstTouch: '08:27',
+    });
+    expect(out.state.workbench).toMatchObject({ open: { key: 'day-packet:2026-11-16' }, day: '2026-11-16', countToday: 1 });
+  });
+
+  it('a second first touch the same day does nothing, while the packet runs or after it closed', () => {
+    const once = workbench(monday(), touch());
+    const again = workbench(once.state, touch('2026-11-16T09:00:00.000Z'));
+    expect(again.state).toBe(once.state);
+    expect(again.effects).toEqual([]);
+    const jobId = once.state.workbench.open!.id;
+    const closed = workbench(once.state, ev('work:shelved', { jobId, title: 'Morning packet', body: '**Pull requests** one waits on review.' }, '2026-11-16T07:30:00.000Z')).state;
+    expect(closed.workbench.done['day-packet:2026-11-16']).toBe('2026-11-16T07:30:00.000Z');
+    expect(workbench(closed, touch('2026-11-16T09:00:00.000Z')).state).toBe(closed);
+  });
+
+  it('a packet that failed (the worker ended without reporting) runs once more after the wait, on a tick; a second failure stays failed', () => {
+    const once = workbench(monday(), touch());
+    const job = once.state.workbench.open!;
+    const at = (ms: number) => new Date(Date.parse(TOUCH) + ms).toISOString();
+    const failed = workbench(once.state, ev('work:closed', { jobId: job.id, outcome: 'failed', note: 'the worker ended without reporting' }, at(4000)));
+    expect(failed.effects, 'not at once: the route that just failed is still cold').toEqual([]);
+    expect(failed.state.workbench.queue?.map((j) => [j.kind, j.tries])).toEqual([['day-packet', 1]]);
+    expect(started(workbench(failed.state, ev('clock:tick', {}, at(60_000))).effects), 'before the wait is over').toEqual([]);
+    expect(workbench(failed.state, touch(at(5000))).state.workbench.queue, 'a second first touch adds none').toHaveLength(1);
+    const retried = workbench(failed.state, ev('clock:tick', {}, at(RETRY_AFTER_MS + 5000)));
+    expect(started(retried.effects).map((j) => [j.kind, j.id, j.tries])).toEqual([['day-packet', job.id, 1]]);
+    expect(retried.state.workbench.countToday, 'the retry spends no second job').toBe(1);
+    const again = workbench(retried.state, ev('work:closed', { jobId: job.id, outcome: 'failed', note: 'the worker ended without reporting' }, at(RETRY_AFTER_MS + 9000)));
+    expect(again.state.workbench.queue ?? []).toEqual([]);
+    expect(again.state.workbench.recent.map((r) => r.outcome)).toEqual(['failed', 'failed']);
+  });
+
+  it('a cold model route (the network, a timeout, both hedged attempts failing) is retried sooner; an auth error waits the full gap', () => {
+    const once = workbench(monday(), touch());
+    const job = once.state.workbench.open!;
+    const at = (ms: number) => new Date(Date.parse(TOUCH) + ms).toISOString();
+    const cold = workbench(once.state, ev('work:closed', { jobId: job.id, outcome: 'failed', note: 'the worker ended without reporting (error: NETWORK: fetch failed)' }, at(4000)));
+    expect(cold.state.workbench.queue?.[0]?.notBefore).toBe(at(4000 + COLD_RETRY_MS));
+    expect(started(workbench(cold.state, ev('clock:tick', {}, at(4000 + COLD_RETRY_MS))).effects).map((j) => j.id)).toEqual([job.id]);
+    const auth = workbench(once.state, ev('work:closed', { jobId: job.id, outcome: 'failed', note: 'the worker ended without reporting (error: AUTH 401: Invalid API key)' }, at(4000)));
+    expect(auth.state.workbench.queue?.[0]?.notBefore).toBe(at(4000 + RETRY_AFTER_MS));
+  });
+
+  it("the owner's Stop is not retried, and a retry waiting never holds up a job behind it", () => {
+    const once = workbench(monday(), touch());
+    const stopped = workbench(once.state, ev('work:closed', { jobId: once.state.workbench.open!.id, outcome: 'failed', note: 'stopped by owner' }, '2026-11-16T07:28:00.000Z'));
+    expect(stopped.state.workbench.queue ?? []).toEqual([]);
+    const failed = workbench(once.state, ev('work:closed', { jobId: once.state.workbench.open!.id, outcome: 'failed' }, '2026-11-16T07:28:00.000Z'));
+    const asked = workbench(failed.state, ev('work:requested', { subject: 'vitest', brief: 'read up on vitest' }, '2026-11-16T07:29:00.000Z'));
+    expect(started(asked.effects).map((j) => j.kind)).toEqual(['owner-request']);
+    expect(asked.state.workbench.queue?.map((j) => j.kind)).toEqual(['day-packet']);
+  });
+
+  it('not on a day off: the weekend by default, and whatever config.workdays leaves out', () => {
+    expect(started(workbench(monday(), touch('2026-11-21T09:00:00.000Z', '2026-11-21')).effects)).toEqual([]);
+    const state = monday();
+    state.config.workdays = [2, 3, 4, 6];
+    expect(started(workbench(state, touch()).effects), 'Monday is not one of them').toEqual([]);
+    expect(started(workbench(state, touch('2026-11-21T09:00:00.000Z', '2026-11-21')).effects).map((j) => j.kind), 'Saturday is').toEqual(['day-packet']);
+  });
+
+  it('keeps the background caps: the day spent, the gap after a job, the breaker open, and one job open at a time', () => {
+    const spent = monday();
+    spent.workbench = { ...spent.workbench, day: '2026-11-16', countToday: MAX_JOBS_PER_DAY };
+    expect(workbench(spent, touch()).effects).toEqual([]);
+
+    const gap = monday();
+    gap.workbench.recent = [{ id: 'j0', kind: 'topic-brief', key: 'brief:tool:vitest', subject: 'vitest', reason: '', detail: {}, openedAt: '2026-11-16T07:00:00.000Z', closedAt: '2026-11-16T07:10:00.000Z', outcome: 'shelved', title: 't' }];
+    expect(workbench(gap, touch()).effects).toEqual([]);
+
+    const broken = monday();
+    broken.reliability = { ...broken.reliability, llm: { openai: { streak: 10, openedAt: '2026-11-16T07:00:00.000Z', openUntil: '2026-11-16T07:29:00.000Z', days: [] } } } as KernelState['reliability'];
+    expect(workbench(broken, touch()).effects, "the work route's breaker is open").toEqual([]);
+
+    const busy = monday();
+    busy.workbench.open = { id: 'j1', kind: 'meeting-brief', key: 'meeting:x', subject: 'x', reason: '', detail: {}, openedAt: '2026-11-16T07:20:00.000Z' };
+    const queued = workbench(busy, touch());
+    expect(queued.effects).toEqual([]);
+    expect(queued.state.workbench.queue?.map((j) => j.kind)).toEqual(['day-packet']);
   });
 });
 

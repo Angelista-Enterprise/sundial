@@ -64,6 +64,11 @@ export async function upsertCommitment(input: CommitmentRowInput): Promise<void>
     });
 }
 
+/** One row by id, open or closed; null when there is none. */
+export async function getCommitment(id: string): Promise<StoredCommitment | null> {
+  return stored(await getDb().select().from(commitments).where(sql`${commitments.id} = ${id}`).limit(1))[0] ?? null;
+}
+
 /** Open threads, most recently touched first — the order a person would want to be reminded in. */
 export async function getOpenCommitments(limit = 20): Promise<StoredCommitment[]> {
   return stored(await getDb().select().from(commitments).where(isNull(commitments.closedAt)).orderBy(desc(commitments.lastTouchedAt)).limit(limit));

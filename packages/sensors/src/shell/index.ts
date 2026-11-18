@@ -25,6 +25,9 @@ export interface ShellEvent {
  * the lowest-level record while `gnomon_signals(shell)` answered confidently.
  *
  * So: hook file → read on every tick. History file → focus-gated, as before.
+ * Both on every tick since 2026-10-14: the hook file used to become the ONLY
+ * source once it existed, and a shell that never loaded the hook then wrote
+ * history nobody read (see `ShellCapture.init`).
  */
 export class ShellSensor {
   private readonly capture = new ShellCapture();
@@ -43,21 +46,9 @@ export class ShellSensor {
       this.wasFocused = focused;
     }
 
-    // Asked before the focus gate, not after: the gate returns early on the
-    // history path, so a check made later could never see the hook file appear.
-    if (this.capture.refreshSource()) {
-      this.wasFocused = focused;
-      return this.capture.readNewCommands().map(toEvent);
-    }
-
-    if (!focused) {
-      this.wasFocused = false;
-      return [];
-    }
-    if (!this.wasFocused) this.capture.reseekHistoryFileToNow();
-    this.wasFocused = true;
-
-    return this.capture.readNewCommands().map(toEvent);
+    if (focused && !this.wasFocused) this.capture.reseekHistoryFileToNow();
+    this.wasFocused = focused;
+    return this.capture.readNewCommands(focused).map(toEvent);
   }
 }
 

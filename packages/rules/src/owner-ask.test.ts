@@ -16,6 +16,7 @@ function ownerAsk(state: KernelState, event: SanitizedEvent): { state: KernelSta
 
 const NOW = '2026-01-01T09:00:00.000Z';
 
+const asksOfTest = (state: KernelState) => state.loops.open.filter((l) => l.kind === 'owner-ask');
 const emitted = (effects: Effect[]) => effects.filter((e): e is Extract<Effect, { type: 'EmitEvent' }> => e.type === 'EmitEvent');
 const written = (effects: Effect[]) => effects.filter((e): e is Extract<Effect, { type: 'WriteDB'; table: 'owner_asks' }> => e.type === 'WriteDB' && e.table === 'owner_asks');
 
@@ -137,11 +138,53 @@ describe('ownerAsk', () => {
     expect((payload.surprise as number) * (payload.precision as number)).toBeGreaterThan(1.6);
   });
 
-  it('refuses a second question while one is pending — a queue of open questions is an interrogation', () => {
+  it('I13: a second question while one is pending waits unseen; the open one stays the only one', () => {
     const state = withOpen(OPEN);
     const { state: next, effects } = ownerAsk(state, opened({ askId: 'owner-ask:2', question: 'And this one?' }));
-    expect(next).toBe(state);
     expect(effects).toEqual([]);
+    expect(next.loops).toBe(state.loops);
+    expect(next.ownerAsk.askedCount).toBe(1);
+    expect(next.ownerAsk.queue?.map((q) => q.askId)).toEqual(['owner-ask:2']);
+  });
+
+  it('I13: the queue holds five, by priority and then by age, and takes no double, no chat-turn ask and no unanswerable one', () => {
+    const at = (minute: number) => `2026-01-01T09:${String(minute).padStart(2, '0')}:00.000Z`;
+    let state = withOpen(OPEN);
+    const ask = (payload: Record<string, unknown>, minute: number) => { state = ownerAsk(state, opened(payload, at(minute))).state; };
+    for (let i = 1; i <= 5; i++) ask({ question: `Is BOX-48${i} still open?` }, i);
+    ask({ question: 'Is BOX-481 still open?' }, 6);
+    ask({ question: OPEN.question }, 7);
+    ask({ question: 'Which branch is the release?', mode: 'wait' }, 8);
+    ask({ question: 'Who is person-0a1b2c3d?' }, 9);
+    expect(state.ownerAsk.queue?.map((q) => q.question)).toEqual([1, 2, 3, 4, 5].map((i) => `Is BOX-48${i} still open?`));
+    ask({ question: 'Is the release today?', priority: 2 }, 10);
+    expect(state.ownerAsk.queue?.map((q) => q.question)).toEqual(['Is the release today?', ...[1, 2, 3, 4].map((i) => `Is BOX-48${i} still open?`)]);
+    expect(asksOfTest(state)).toHaveLength(1);
+  });
+
+  it('I13: an answer and an expiry each open the next question, as an ordinary event the fold then opens', () => {
+    const queue = [
+      { askId: 'owner-ask:2', question: 'Is BOX-484 still open?', reason: 'no commit in a week', choices: ['yes', 'no'], priority: 0, ts: '2026-01-01T09:01:00.000Z' },
+      { askId: '', question: 'Is the release today?', reason: '', choices: [], priority: 0, ts: '2026-01-01T09:02:00.000Z' },
+    ];
+    const base = withOpen(OPEN);
+    const state = { ...base, ownerAsk: { ...base.ownerAsk, queue } };
+
+    const afterAnswer = ownerAsk(state, answered({ askId: 'owner-ask:1', answer: 'Its own project.' }, '2026-01-01T09:05:00.000Z'));
+    expect(openAsk(afterAnswer.state)).toBeNull();
+    expect(afterAnswer.state.ownerAsk.answeredCount).toBe(1);
+    expect(afterAnswer.state.ownerAsk.queue).toEqual([queue[1]]);
+    const next = emitted(afterAnswer.effects).map((e) => e.event).find((e) => e.type === 'ask:owner-opened');
+    expect(next?.payload).toMatchObject({ askId: 'owner-ask:2', question: 'Is BOX-484 still open?', choices: ['yes', 'no'], queuedAt: '2026-01-01T09:01:00.000Z' });
+
+    const reopened = ownerAsk(afterAnswer.state, { ...next!, sanitized: true } as SanitizedEvent);
+    expect(openAsk(reopened.state)?.question).toBe('Is BOX-484 still open?');
+    expect(reopened.state.ownerAsk.askedCount).toBe(2);
+
+    const afterExpiry = ownerAsk(state, tick('2026-01-02T09:01:00.000Z'));
+    expect(written(afterExpiry.effects)[0]?.row.outcome).toBe('expired');
+    expect(afterExpiry.state.ownerAsk.queue).toEqual([queue[1]]);
+    expect(emitted(afterExpiry.effects).filter((e) => e.event.type === 'ask:owner-opened')).toHaveLength(1);
   });
 
   it('ignores an empty question', () => {

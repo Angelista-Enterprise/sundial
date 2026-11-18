@@ -254,7 +254,9 @@ function dayEndCandidates(state: KernelState, eventId: string, ts: string): { ef
   // Today's own partial figure must not vote on what "normally" is, or a long night
   // quietly raises the bar it is being measured against.
   const today = samples[samples.length - 1]!.day;
-  const history = samples.filter((s) => s.day !== today);
+  // Nor a day Sundial was down on (`streamSilence` judged it an outage): its day end is when the pipeline died, not when the owner stopped.
+  const outage = new Set(state.streamCoverage?.outageDays ?? []);
+  const history = samples.filter((s) => s.day !== today && !outage.has(s.day));
   const median = medianDayEndMinutes(history);
 
   if (median !== null && history.length >= MIN_DAY_END_SAMPLES - 1) {

@@ -30,6 +30,14 @@ function harness(agent = fakeAgent(), options = {}) {
 }
 
 describe('createDelivery', () => {
+  it('Round 4: a notice with an offer is recorded delivered with its button words, the go rate\'s divisor', async () => {
+    const record = vi.fn()
+    const { delivery } = harness(fakeAgent(), { record })
+    await delivery.deliver(notice('tonic-notice', { offer: 'Open the prep', acts: ['inject'] }))
+    await delivery.deliver(notice('tonic-notice', { noticeKey: 'k2', acts: ['inject'] }))
+    expect(record.mock.calls).toEqual([['notice:delivered', { noticeKey: 'absent:break', sessionId: null, acts: ['inject'], offer: 'Open the prep' }], ['notice:delivered', { noticeKey: 'k2', sessionId: null, acts: ['inject'] }]])
+  })
+
   it('wakes the companion on a phasic notice — injection alone would leave an idle agent idle', async () => {
     const { delivery, agent } = harness()
     const result = await delivery.deliver(notice('phasic-notice'))
@@ -106,7 +114,7 @@ describe('createDelivery', () => {
     await delivery.deliver(notice('tonic-notice'))
 
     const { source } = agent.inject.mock.calls[0][0]
-    expect(source.kind).toBe('plugin')
+    expect(source.kind).toBe('sundial-proactive') // dsh 0.2 takes the plugin's own kind; `plugin` is refused
     expect(source.form).toBe('notice')
     expect(source.summary).toContain('No break since 13:20')
   })
@@ -234,13 +242,23 @@ describe('createDelivery', () => {
       expect(await delivery.deliver(line())).toEqual({ delivered: true, channel: 'tonic' })
       const [type, message, opts] = s.session.append.mock.calls[0]
       expect([type, opts]).toEqual(['user/message', { surfaceOp: 'append' }])
-      expect(message.source).toMatchObject({ kind: 'plugin', form: 'notice', summary: 'Follow-up: Pushed: puzzlebox-studio is up to date (263 commits were waiting).' })
+      expect(message.source).toMatchObject({ kind: 'sundial-proactive', form: 'notice', summary: 'Follow-up: Pushed: puzzlebox-studio is up to date (263 commits were waiting).' })
       expect(s.inject).not.toHaveBeenCalled()
       expect(s.followup).not.toHaveBeenCalled()
       expect(companion.inject).not.toHaveBeenCalled()
       expect(notifyNative).not.toHaveBeenCalled()
       expect(notifyPhone).not.toHaveBeenCalled()
       expect(record.mock.calls).toEqual([['notice:delivered', { noticeKey: 'followup:unpushed:abc', sessionId: 'session-7f', acts: ['line'] }]])
+    })
+
+    it('the turn a knock held back runs in that thread and is not counted as a second delivery', async () => {
+      const s = thread()
+      const record = vi.fn()
+      const { delivery } = harness(fakeAgent(), { getThread: async () => s, record })
+      expect(await delivery.deliver(line({ acts: ['turn'], afterGo: true, plain: false }))).toMatchObject({ delivered: true })
+      expect(s.followup).toHaveBeenCalledTimes(1)
+      expect(s.inject).not.toHaveBeenCalled()
+      expect(record).not.toHaveBeenCalled()
     })
 
     it('a running thread takes the line at its next step', async () => {

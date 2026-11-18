@@ -68,7 +68,16 @@ export interface WorkSlices {
   };
   screen: {
     app: string | null;
+    /** Before `prevByRegion`: the previous capture's lines, whichever region. Written empty now; read only from an older snapshot. */
     prevLines: string[];
+    /**
+     * The furniture reference, per region: the last capture's lines and app for
+     * `focused` and for `cursor` apart. The two regions alternate, so the
+     * previous capture of the app was usually the OTHER region and almost
+     * nothing matched (replayed on the record: 17% fewer kept lines, and more
+     * of them new). Optional: older snapshots predate it.
+     */
+    prevByRegion?: Record<string, { app: string | null; lines: string[] }>;
     eventId: string | null;
     kept: string[];
     /**
@@ -80,6 +89,12 @@ export interface WorkSlices {
      */
     refs: string[];
     audit: { captures: number; lines: number; kept: number; furniture: number; noise: number };
+    /** What the last capture showed, typed, by `screenTrack` (`screen-facts.ts`). Optional: older snapshots predate it. */
+    facts?: ScreenFact[];
+    /** Jev's reading of the screen TEXT (`screenRead`, `ocr.jev.text`). `askedAt`/`signature` pace the asking. */
+    read?: { askedAt: string; signature: string; answer: ScreenReading | null };
+    /** Jev's reading of a screen FRAME (`screen:frame`, `ocr.jev.frames`), the last one. */
+    frame?: ScreenFrameReading | null;
   };
   /** The browser tab the owner is looking at, by `browserTrack` from `browser:tab` / `browser:status`. */
   browser: {
@@ -87,6 +102,8 @@ export interface WorkSlices {
     /** False once the helper reported Apple Events denied — the owner never clicked Allow. */
     authorized: boolean;
     lastError: string | null;
+    /** A browser in front whose tabs nothing can read (`browser:status { supported: false }`), until a tab is read again. */
+    unsupported?: string | null;
   };
   /** A call in progress, by `callSpanTrack` from `media:state` (an app holding the microphone). */
   av: {
@@ -123,6 +140,11 @@ export interface WorkSlices {
     /** Local day `countToday` belongs to. */
     day: string | null;
     countToday: number;
+    /**
+     * Gnomon's self-reviews asked for on one local day, and when the newest was: their own ceiling and gap
+     * (`spareSlot`), counted here and not from `recent`, whose 20 rows a busy day pushes them out of.
+     */
+    reviews?: { day: string; n: number; last: string };
   };
   /** J4.3 — drafts the text model wrote from evidence, judged, waiting for the owner's tap. */
   drafts: {
@@ -303,8 +325,8 @@ export interface ShellFailureStreak {
 }
 
 /** What kind of thing the work loop makes. See `KernelState.workbench`. */
-/** The three Gnomon picks for itself, and the one the owner hands it (`gnomon_start_job` → `work:requested`). */
-export type WorkJobKind = 'topic-brief' | 'handoff-note' | 'meeting-brief' | 'owner-request' | 'rule-idea';
+/** The ones Gnomon picks for itself, the one the owner hands it (`gnomon_start_job` → `work:requested`), the morning packet the first touch of a workday asks for, and the review of Gnomon's own failed steps (`selfReview`). */
+export type WorkJobKind = 'topic-brief' | 'handoff-note' | 'meeting-brief' | 'owner-request' | 'rule-idea' | 'day-packet' | 'self-review';
 
 /** One job the work loop opened. The payload the `work-job` Notify channel carries verbatim. */
 export interface WorkJob {
@@ -319,6 +341,12 @@ export interface WorkJob {
   /** Kind-specific facts the worker needs and a rule already holds (attendees, branch, project). */
   detail: Record<string, string | string[] | null>;
   openedAt: string;
+  /** S4: the rig chat whose sandbox asked for it (set on `StartSubagent` by the `sandbox` lane): its result never reaches the owner's shelf or phone. */
+  sandbox?: string;
+  /** Set 5 R3: a learner's job (the morning packet, a self-review) that failed waits in the queue until this, for its one retry. */
+  notBefore?: string;
+  /** Set 5 R3: how many times it already failed (`RETRY_KINDS`: one retry, then it stays failed). */
+  tries?: number;
 }
 
 export interface WorkJobRecord extends WorkJob {
@@ -349,4 +377,36 @@ export interface Draft {
   closedAt?: string;
   /** `judge-draft`'s answers: P(grounded) and the tone level 0–3; null until they land. */
   judged: { grounded: number | null; tone: number | null } | null;
+}
+
+/**
+ * One typed thing read off the screen, on this Mac, from the sanitized OCR
+ * lines (`packages/rules/src/screen-facts.ts`). `value` is short (≤ 160).
+ * `call` names the app; `person` is a name tile in a call window.
+ */
+export type ScreenFactKind = 'ticket' | 'pr' | 'error' | 'file' | 'call' | 'person';
+export interface ScreenFact {
+  kind: ScreenFactKind;
+  value: string;
+}
+
+/** Jev's answers about the screen text, as numbers and one fixed label (`questions/screen-read.ts`). */
+export interface ScreenReading {
+  at: string;
+  activity: string | null;
+  activityP: number | null;
+  meeting: number | null;
+  blocked: number | null;
+  work: number | null;
+}
+
+/** Jev's answers about one frame (`questions/screen-frame.ts`). `focus` is the main region, 0..1 of the frame, when Jev placed one. */
+export interface ScreenFrameReading {
+  at: string;
+  app: string | null;
+  shows: string | null;
+  showsP: number | null;
+  meeting: number | null;
+  error: number | null;
+  focus: { x: number; y: number; w: number; h: number } | null;
 }

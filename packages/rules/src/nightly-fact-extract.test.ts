@@ -99,6 +99,14 @@ describe('parseExtractedFactCandidates', () => {
     expect(parseExtractedFactCandidates(JSON.stringify(many))).toHaveLength(MAX_EXTRACTED_FACTS_PER_PASS);
   });
 
+  it('takes a larger cap from the conversation pass, and keeps a well-formed "at" day only', () => {
+    const many = Array.from({ length: 45 }, (_, i) => ({ entityKind: 'topic', canonicalName: `t${i}`, predicate: 'p', object: 'o', confidence: 50, at: i === 0 ? '2023-05-20' : 'last Tuesday' }));
+    const out = parseExtractedFactCandidates(JSON.stringify(many), 40);
+    expect(out).toHaveLength(40);
+    expect(out[0].at).toBe('2023-05-20');
+    expect(out[1]).not.toHaveProperty('at');
+  });
+
   it('returns an empty array for malformed JSON or a non-array response', () => {
     expect(parseExtractedFactCandidates('not json')).toEqual([]);
     expect(parseExtractedFactCandidates('{"not": "an array"}')).toEqual([]);

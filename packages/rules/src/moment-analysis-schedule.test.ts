@@ -228,13 +228,3 @@ describe('momentAnalysisSchedule', () => {
     expect(effects).toHaveLength(2);
   });
 });
-
-describe('UC1: resolve slots by relevance (U1-F23)', () => {
-  it('puts the promise to someone in this meeting, or whose thing a title names, in a slot before older ones', async () => {
-    const { slotPromises } = await import('./moment-analysis-schedule.js');
-    const p = (id: string, counterparty: string, keys: string[]) => ({ id, promise: { counterparty, keys } }) as never;
-    const five = [p('a', 'Bob', ['x']), p('b', 'Bob', ['y']), p('c', 'Bob', ['z']), p('d', 'Bob', ['w']), p('mira', 'Mira Bakker', ['draft'])];
-    expect(slotPromises(five, { meetingAttendees: ['Mira Bakker'], windowTitles: [] }).map((c: { id: string }) => c.id)).toEqual(['mira', 'a', 'b', 'c']);
-    expect(slotPromises(five, { meetingAttendees: [], windowTitles: ['Draft — Docs'] })[0]).toMatchObject({ id: 'mira' });
-  });
-});

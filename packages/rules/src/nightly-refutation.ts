@@ -30,8 +30,9 @@ const MIN_INTERVAL_MS = 20 * 60 * 60 * 1000;
  * for the same reason (D2/D11 — heavy background work happens while the owner
  * is away, never in the middle of their afternoon):
  *
- *  - circadian night only, so the model calls land when nothing is competing;
- *  - the owner must be idle;
+ *  - when the owner goes idle (`idle:start`), at any hour: Round 5, the owner's
+ *    rule that Gnomon improves itself on events, never only at night or on a
+ *    clock (it waited for night and an idle owner at once, on a tick);
  *  - at most one pass per `MIN_INTERVAL_MS`.
  *
  * **The skeptic gets no privileged write.** It does not lower a confidence and
@@ -42,13 +43,12 @@ const MIN_INTERVAL_MS = 20 * 60 * 60 * 1000;
  * from whatever a model said one night, and `contradictionCheck` stays the
  * single writer.
  *
- * Rides `clock:tick` rather than `day:boundary`, unlike `nightlyFactExtract`.
+ * Rides `idle:start` rather than `day:boundary`, unlike `nightlyFactExtract`.
  * The boundary fires at midnight whether or not the owner is at the desk, and
- * this pass wants the idle gate — which is a condition on a moment, not on a
- * date.
+ * this pass wants the owner away, which the event says.
  */
 export const nightlyRefutation: Rule = (state, event) => {
-  if (event.type !== 'clock:tick') return { state, effects: [] };
+  if (event.type !== 'idle:start') return { state, effects: [] };
   // On unless the owner turned it OFF (default flipped 2026-09-07, after the
   // owner marked twelve wrong facts by hand that a running skeptic exists to
   // catch). The destructive failure here is still a FALSE refutation, and
@@ -56,8 +56,6 @@ export const nightlyRefutation: Rule = (state, event) => {
   // now deliberate rather than deferred. `refutationEnabled: false` in
   // ~/.sundial/config.json turns it back off.
   if (!state.config.refutationEnabled) return { state, effects: [] };
-  if (state.mind.circadian !== 'night') return { state, effects: [] };
-  if (!state.lifeEvent.idle.isIdle) return { state, effects: [] };
 
   const last = state.memory.lastRefutationAt;
   if (last !== null && Date.parse(event.ts) - Date.parse(last) < MIN_INTERVAL_MS) return { state, effects: [] };

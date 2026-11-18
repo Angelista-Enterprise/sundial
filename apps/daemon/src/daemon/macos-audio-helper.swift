@@ -90,6 +90,8 @@ func execDisclaimed() {
     // listening after the launcher believes it stopped.
     signal(SIGTERM) { _ in kill(disclaimedChild, SIGTERM) }
     signal(SIGINT) { _ in kill(disclaimedChild, SIGINT) }
+    // A parent killed hard (SIGKILL) sends no signal to forward; the child then kept the mic open as an orphan (2026-11-13).
+    Thread.detachNewThread { while true { sleep(2); if getppid() == 1 { kill(disclaimedChild, SIGTERM); exit(0) } } }
     var status: Int32 = 0
     while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
     exit((status & 0x7F) == 0 ? (status >> 8) & 0xFF : 1)
@@ -242,6 +244,11 @@ private func log(_ message: String) {
 ///
 /// It needs no TCC of its own — it never touches a device, only a socket.
 var whisperChild: Process?
+/// Set when WE stop it, so only an exit of its own is restarted.
+var whisperStopping = false
+/// Seconds before the next restart, doubled per quick crash (1 s … 60 s). whisper.cpp 1.9.x segfaults on a
+/// request in which its VAD finds no speech (`whisper_lang_str_full(-1)` is null); fixed upstream after 1.9.5.
+var whisperBackoff: TimeInterval = 1
 
 private func whisperBinary() -> String? {
     let candidates = ["/opt/homebrew/bin/whisper-server", "/usr/local/bin/whisper-server"]
@@ -289,6 +296,17 @@ private func startWhisper(port: Int) -> Bool {
     task.arguments = arguments
     task.standardOutput = FileHandle.nullDevice
     task.standardError = FileHandle.nullDevice
+    let startedAt = Date()
+    task.terminationHandler = { finished in
+        DispatchQueue.main.async {
+            if whisperStopping { return }
+            if Date().timeIntervalSince(startedAt) > 60 { whisperBackoff = 1 }
+            let wait = whisperBackoff
+            whisperBackoff = min(wait * 2, 60)
+            log("whisper-server exited (\(finished.terminationStatus)); restarting in \(Int(wait)) s")
+            DispatchQueue.main.asyncAfter(deadline: .now() + wait) { if !whisperStopping { _ = startWhisper(port: port) } }
+        }
+    }
     do {
         try task.run()
     } catch {
@@ -301,8 +319,11 @@ private func startWhisper(port: Int) -> Bool {
 }
 
 private func stopWhisper() {
+    whisperStopping = true
     guard let task = whisperChild, task.isRunning else { return }
     task.terminate()
+    // Hold the exit until the port is free, or the next helper's server cannot bind 8771.
+    for _ in 0..<30 where task.isRunning { usleep(100_000) }
 }
 
 // MARK: - WAV, in memory
@@ -587,11 +608,17 @@ private func resample(_ buffer: AVAudioPCMBuffer, with converter: AVAudioConvert
 private let mono16k = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: sampleRate, channels: 1, interleaved: true)!
 
 private final class Ears {
-    private let engine = AVAudioEngine()
+    // Created on start and dropped on stop. A stopped AVAudioEngine keeps its input
+    // unit initialised, and macOS 26 keeps the microphone indicator lit for an
+    // initialised unit even when nothing runs (seen 2026-11-03: `asleep` in the
+    // status file, no process in CoreAudio's running list, orange capsule on).
+    private var engine: AVAudioEngine?
     private var converter: AVAudioConverter?
     let gate = Gate(source: "mic")
 
     func start() throws {
+        let engine = AVAudioEngine()
+        self.engine = engine
         let input = engine.inputNode
         // Pin the BUILT-IN microphone, rather than following the system default.
         //
@@ -633,8 +660,13 @@ private final class Ears {
     }
 
     func stop() {
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
+        if let engine {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+            engine.reset()
+            self.engine = nil
+        }
+        converter = nil
         gate.reset()
     }
 }
@@ -876,6 +908,7 @@ private func applyListenWindow() {
 }
 
 private var windowTimer: DispatchSourceTimer?
+private var windowWatch: DispatchSourceFileSystemObject?
 
 private func begin() {
     let port = URL(string: whisperUrlString)?.port ?? 8771
@@ -900,6 +933,20 @@ private func begin() {
             timer.setEventHandler { applyListenWindow() }
             timer.resume()
             windowTimer = timer
+            // The window file changed: act now. The timer stays, because a window also closes when nothing happens.
+            let fd = open((listenWindowPath as NSString).deletingLastPathComponent, O_EVTONLY)
+            guard fd >= 0 else { return }
+            var seen: Date?
+            let watch = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: .write, queue: .main)
+            watch.setEventHandler {
+                let changed = (try? FileManager.default.attributesOfItem(atPath: listenWindowPath))?[.modificationDate] as? Date
+                guard changed != seen else { return }
+                seen = changed
+                applyListenWindow()
+            }
+            watch.setCancelHandler { close(fd) }
+            watch.resume()
+            windowWatch = watch
         }
     }
 }
@@ -907,6 +954,7 @@ private func begin() {
 private func shutdown(_ code: Int32) {
     windowTimer?.cancel()
     windowTimer = nil
+    windowWatch?.cancel()
     ears.stop()
     systemEars.stop()
     stopWhisper()

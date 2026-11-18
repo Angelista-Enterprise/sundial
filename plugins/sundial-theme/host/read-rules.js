@@ -8,7 +8,8 @@ export async function readRules({ state, now }) {
   const month = new Date(now - 30 * 86_400_000).toISOString()
   const [decisions, adoptions] = await Promise.all([
     getGateDecisionsBetween(month, at).then((rows) => rows.filter((d) => d.kind.startsWith('watch:'))),
-    getSignalsInRange(new Date(now - 365 * 86_400_000).toISOString(), at, 500, ['rule:adopted']).then((rows) => rows.map((r) => ({ ts: r.capturedAt, payload: r.data }))),
+    // S4: an adoption with any sessionId or sandbox mark is a rig chat's (the owner's own carry neither; the same rule id may be the owner's).
+    getSignalsInRange(new Date(now - 365 * 86_400_000).toISOString(), at, 500, ['rule:adopted']).then((rows) => rows.map((r) => ({ ts: r.capturedAt, payload: r.data })).filter((r) => !r.payload?.sessionId && !r.payload?.sandbox)),
   ])
   return { rules: rulesView(state?.watch, decisions, adoptions, at) }
 }

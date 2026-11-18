@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { getDb, resetDb, insertMoment, insertSnapshot, insertEmbedding } from '@sundial/db/index.js';
 import { computeLocalEmbedding, LOCAL_EMBEDDING_MODEL } from '@sundial/memory/index.js';
-import { ASK_TOOL_REGISTRY } from '@sundial/kernel/tools/index.js';
+import { TOOL_REGISTRY } from '@sundial/kernel/tools/index.js';
 import { toDshTool } from './to-dsh-tool.js';
 import { withLocalTimes } from './render.js';
 import { createHandleCache } from './handles.js';
@@ -24,7 +24,7 @@ vi.mock('@sundial/memory/index.js', async (importOriginal) => {
 });
 
 function dshTool(name, deps) {
-  const tool = ASK_TOOL_REGISTRY.find((candidate) => candidate.name === name);
+  const tool = TOOL_REGISTRY.find((candidate) => candidate.name === name);
   if (!tool) throw new Error(`no such gnomon tool: ${name}`);
   return toDshTool(tool, deps);
 }

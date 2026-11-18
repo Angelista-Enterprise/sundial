@@ -253,6 +253,34 @@
       "when": 1790505042823,
       "tag": "0035_commitments_promise",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "6",
+      "when": 1791237486838,
+      "tag": "0036_llm_audit_source",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "6",
+      "when": 1794400000000,
+      "tag": "0037_signals_captured_at_utc",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "6",
+      "when": 1794418049946,
+      "tag": "0038_llm_audit_first_token",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "6",
+      "when": 1794813160756,
+      "tag": "0039_llm_audit_upstream",
+      "breakpoints": true
     }
   ]
 }

@@ -14,15 +14,50 @@ import fs from 'node:fs';
 export const DEFAULT_PROVIDER = 'openai';
 export const LEGACY_PROVIDER = 'tensorx';
 
+/**
+ * The wire protocol a provider speaks (docs/provider-architecture.md §2). Sundial's own
+ * adapter (plugins/sundial-llm-openai) and the kernel's raw fetch speak `openai-chat`;
+ * the other two go through dsh's pi-ai adapter in the chat and through the kernel's
+ * model port (`@sundial/llm` `setModelPort`) for background calls. Since 2026-10-05
+ * (step 2 of docs/provider-implementation.md).
+ */
+export const PROTOCOLS = ['openai-chat', 'anthropic-messages', 'openai-responses'] as const;
+export type LlmProtocol = (typeof PROTOCOLS)[number];
+export const isProtocol = (v: unknown): v is LlmProtocol => typeof v === 'string' && (PROTOCOLS as readonly string[]).includes(v);
+
 export interface LlmProvider {
   id: string;
   label: string;
   baseUrl: string;
   model: string;
+  protocol: LlmProtocol;
+  /** `provider:model` (or a bare route) a chat hedge goes to instead of this route again. */
+  hedgeTo?: string;
+  /** Merged into every chat request body for this route, under the fields Sundial sets. */
+  body?: Record<string, unknown>;
+}
+
+/**
+ * The `providers` config of dsh's pi-ai adapter for the providers Sundial's own adapter does
+ * not speak: one hand-declared route each (`api`, `baseURL`, `models`), so pi-ai's installed
+ * catalog never adds models or sign-in flows of its own, and always `apiKeyEnv`, so a route is
+ * never authenticated through pi-ai's ambient discovery (`ANTHROPIC_AUTH_TOKEN` and the Claude
+ * plan sign-in among it). The key reference is the same `.env` name Sundial's adapter reads;
+ * the installer links `$DSH_HOME/.env` to that file so dsh's credential layer finds it.
+ */
+export function piAiProfiles(providers: readonly LlmProvider[]): Record<string, { displayName: string; api: 'anthropic-messages' | 'openai-responses'; baseURL: string; apiKeyEnv: string; models: { id: string }[] }> {
+  const out: ReturnType<typeof piAiProfiles> = {};
+  for (const p of providers) {
+    const api = p.protocol ?? 'openai-chat';
+    if (api === 'openai-chat') continue;
+    out[p.id] = { displayName: p.label, api, baseURL: p.baseUrl, apiKeyEnv: providerKeyEnv(p.id), models: [{ id: p.model }] };
+  }
+  return out;
 }
 
 const KNOWN_HOSTS: [RegExp, string][] = [
   [/^api\.openai\.com$/, 'OpenAI'],
+  [/^api\.anthropic\.com$/, 'Anthropic'],
   [/(^|\.)openrouter\.ai$/, 'OpenRouter'],
   [/^api\.deepseek\.com$/, 'DeepSeek'],
   [/(^|\.)tensorx\.ai$/, 'TensorX'],
@@ -39,10 +74,53 @@ const KNOWN_HOSTS: [RegExp, string][] = [
  * openai"), so an install whose only model is a saved provider uses the one
  * `llm.use.default` names, and its model. A selection of any other route stays.
  */
-export function chatDefault<S extends { provider: string; model: string }>(selection: S, llm: { providers: LlmProvider[]; use: Record<string, string> } | undefined, ownRoute = Boolean(process.env.SUNDIAL_LLM_BASE_URL)): S {
+export function chatDefault<S extends { provider: string; model: string }>(selection: S, llm: { providers: LlmProvider[]; use: Record<string, string>; roles?: Record<string, string[]> } | undefined, ownRoute = Boolean(process.env.SUNDIAL_LLM_BASE_URL)): S {
+  // `llm.roles.chat` (step 3 of the provider plan): the first listed source is the chat's default, a saved
+  // provider or Gnomon's own route; the rest of the list is what a limit falls through to (host/server.js).
+  const head = chatCandidates(llm)[0];
+  if (head) return { ...selection, ...head };
   if (ownRoute || (selection.provider !== DEFAULT_PROVIDER && selection.provider !== LEGACY_PROVIDER)) return selection;
   const p = llm?.providers.find((x) => x.id === llm.use.default);
   return p ? { ...selection, provider: p.id, model: p.model } : selection;
+}
+
+/** `llm.roles.chat` as `{provider, model}` candidates, in order: saved providers and Gnomon's own route (`openai`), unknown sources skipped. */
+export function chatCandidates(llm: { providers: LlmProvider[]; roles?: Record<string, string[]> } | undefined): { provider: string; model: string }[] {
+  const out: { provider: string; model: string }[] = [];
+  for (const entry of llm?.roles?.chat ?? []) {
+    const i = entry.indexOf(':');
+    const [source, model] = i < 0 ? [entry, null] : [entry.slice(0, i), entry.slice(i + 1) || null];
+    if (source === DEFAULT_PROVIDER) {
+      const own = model ?? process.env.SUNDIAL_LLM_MODEL;
+      if (process.env.SUNDIAL_LLM_BASE_URL && own) out.push({ provider: DEFAULT_PROVIDER, model: own });
+    } else {
+      const p = llm?.providers.find((x) => x.id === source);
+      if (p) out.push({ provider: p.id, model: model ?? p.model });
+    }
+  }
+  return out;
+}
+
+/** Where a held route's thread may go, in order (Set 2 R4): its own `hedgeTo` first, then `llm.roles.chat`. */
+export function pausedCandidates(llm: { providers: LlmProvider[]; roles?: Record<string, string[]> } | undefined, route: string | undefined): { provider: string; model: string }[] {
+  const hedgeTo = llm?.providers.find((p) => p.id === route)?.hedgeTo;
+  return [...(hedgeTo ? chatCandidates({ providers: llm!.providers, roles: { chat: [hedgeTo] } }) : []), ...chatCandidates(llm)];
+}
+
+/**
+ * The chat source a thread continues on when `current` is held (the breaker open, a 429's cooldown):
+ * the first listed chat candidate that is not held, or null when `current` is fine or nothing else is open.
+ */
+export function openChatSource(current: { provider: string; model: string } | null | undefined, candidates: { provider: string; model: string }[], held: (route: string) => boolean): { provider: string; model: string } | null {
+  if (!current || !held(current.provider)) return null;
+  return candidates.find((c) => !held(c.provider) && c.provider !== current.provider) ?? null;
+}
+
+/** Whether `state.reliability.llm[route]` holds the route right now (the kernel's breaker or a 429's cooldown). */
+export function routeHeldIn(reliability: Record<string, { openUntil?: string | null; cooldownUntil?: string | null }> | undefined, route: string, now = Date.now()): boolean {
+  const r = reliability?.[route];
+  const past = (at: string | null | undefined) => typeof at === 'string' && Date.parse(at) > now;
+  return Boolean(r && (past(r.openUntil) || past(r.cooldownUntil)));
 }
 
 /** Whether a base URL points at this Mac. */
@@ -64,6 +142,8 @@ export function isLocalUrl(baseUrl: string): boolean {
  * (`groq/llama-3.3-70b`). An unknown address keeps the id as it was.
  */
 export function ledgerModel(model: string, routeId: string | undefined, baseUrl: string | undefined): string {
+  // The `claude` runtime source has no URL: its calls are recorded under the source, like the hand jobs. (`claude-code/` until 2026-10-05.)
+  if (routeId === 'claude' || routeId === 'claude-code') return `${routeId}/${model}`;
   if (model.includes('/') || !routeId || !baseUrl || isLocalUrl(baseUrl)) return model;
   return `${routeId}/${model}`;
 }
@@ -85,9 +165,11 @@ export function providerKeyEnv(id: string): string {
   return id === DEFAULT_PROVIDER ? 'SUNDIAL_LLM_API_KEY' : `SUNDIAL_LLM_KEY_${id.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
 }
 
-/** A provider id the config may use: a short slug, and never the default route's names. */
+/** The route ids Sundial itself owns: Gnomon's own route and its old name, the runtime sources and the judge. */
+export const RESERVED_IDS = new Set([DEFAULT_PROVIDER, LEGACY_PROVIDER, 'claude', 'copilot', 'jev']);
+/** A provider id the config may use: a short slug, and never one of Sundial's own route ids. */
 export function isProviderId(id: unknown): id is string {
-  return typeof id === 'string' && /^[a-z][a-z0-9-]{1,30}$/.test(id) && id !== DEFAULT_PROVIDER && id !== LEGACY_PROVIDER;
+  return typeof id === 'string' && /^[a-z][a-z0-9-]{1,30}$/.test(id) && !RESERVED_IDS.has(id);
 }
 
 export function isHttpUrl(value: unknown): value is string {
@@ -100,6 +182,9 @@ export function isHttpUrl(value: unknown): value is string {
   }
 }
 
+/** Request fields a provider's `body` never sets. */
+const PROTECTED_BODY = new Set(['model', 'messages', 'tools', 'stream']);
+
 /** `config.json`'s `llm.providers`, shape-checked; a bad entry is dropped, not fatal. */
 export function parseProviders(raw: unknown): LlmProvider[] {
   if (!Array.isArray(raw)) return [];
@@ -109,7 +194,9 @@ export function parseProviders(raw: unknown): LlmProvider[] {
     if (!p || !isProviderId(p.id) || seen.has(p.id) || !isHttpUrl(p.baseUrl) || typeof p.model !== 'string' || p.model.trim() === '') continue;
     seen.add(p.id);
     const baseUrl = p.baseUrl.replace(/\/+$/, '');
-    out.push({ id: p.id, baseUrl, model: p.model.trim(), label: typeof p.label === 'string' && p.label.trim() !== '' ? p.label.trim() : providerLabel(baseUrl) });
+    const hedgeTo = typeof p.hedgeTo === 'string' && /^[a-z][a-z0-9-]{1,30}(:\S+)?$/.test(p.hedgeTo) ? p.hedgeTo : undefined;
+    const body = p.body && typeof p.body === 'object' && !Array.isArray(p.body) ? Object.fromEntries(Object.entries(p.body).filter(([k]) => !PROTECTED_BODY.has(k))) : {};
+    out.push({ id: p.id, baseUrl, model: p.model.trim(), label: typeof p.label === 'string' && p.label.trim() !== '' ? p.label.trim() : providerLabel(baseUrl), protocol: isProtocol(p.protocol) ? p.protocol : 'openai-chat', ...(hedgeTo ? { hedgeTo } : {}), ...(Object.keys(body).length > 0 ? { body } : {}) });
   }
   return out;
 }

@@ -181,6 +181,9 @@ export const readClaude: RecordReader = (r, ctx) => {
   if (typeof r.cwd === 'string' && r.cwd !== '') ctx.cwd = r.cwd;
   if (typeof r.gitBranch === 'string' && r.gitBranch !== '') ctx.branch = r.gitBranch;
   if (r.isSidechain === true || r.isMeta === true || r.isCompactSummary === true || r.isApiErrorMessage === true) return [];
+  // A mod's $.prompt.submit is not the owner's words: Lookout's own looks came back as agent-task and woke it again.
+  const origin = (r.origin ?? {}) as Record<string, unknown>;
+  if (r.type === 'user' && origin.kind === 'plugin' && origin.asUser !== true) return [];
   const message = (r.message ?? {}) as Record<string, unknown>;
   const content = message.content;
   const at = str(r.timestamp) || undefined;

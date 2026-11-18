@@ -8,6 +8,7 @@ import { getEffectJournalEntry, markEffectCompleted, markEffectStarted } from '@
 import { getAllProjects } from '@sundial/db/queries/projects.js';
 import { effectDeliveryGuarantee } from '@sundial/kernel/effect-delivery.js';
 import { MAX_BACKGROUND_IN_FLIGHT } from '@sundial/kernel/budgets.js';
+import { createInitialState } from '@sundial/kernel/initial-state.js';
 import { createEventId } from '@sundial/helpers/event-id.js';
 import { loadSundialConfig } from '@sundial/helpers/sundial-config.js';
 import { KernelRuntime, REJUDGE_AFTER_DAYS, SNAPSHOT_WARN_BYTES, aliasPairKey, journalShifted, needsAudit, snapshotSizeWarning, replayDecision, spokenEvidence, tablesTouched, toDaemonEvent } from './runtime.js';
@@ -16,13 +17,13 @@ import { KernelRuntime, REJUDGE_AFTER_DAYS, SNAPSHOT_WARN_BYTES, aliasPairKey, j
  * Integration coverage for the ported daemon loop: boot (cold start), the
  * append → fold pipeline, clock:tick + snapshot cadence, warm boot (snapshot
  * + tail replay), and shutdown's final snapshot. Runs against a throwaway
- * SQLite file in a temp SUNDIAL_HOME — never a real ~/.gnomon database.
+ * SQLite file in a temp SUNDIAL_HOME — never a real ~/.sundial database.
  */
 
 let tmpDir: string;
 
 beforeAll(async () => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gnomon-harness-runtime-'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sundial-harness-runtime-'));
   process.env.SUNDIAL_HOME = tmpDir;
   process.env.DATABASE_URL = `file:${path.join(tmpDir, 'harness-test.db')}`;
   resetDb();
@@ -55,6 +56,34 @@ describe('KernelRuntime', () => {
     const shell = signals.filter((s) => s.signalType === 'shell' && s.eventType === 'command');
     expect(shell.length).toBeGreaterThanOrEqual(1);
     await runtime.shutdown();
+  });
+
+  it('the log holds UTC times only: an offset is converted, a time that does not parse is dropped', async () => {
+    const runtime = new KernelRuntime({ deviceId: 'test-device' });
+    await runtime.boot();
+    const before = (await getSignalsAfter(null)).length;
+
+    await runtime.appendSignal('health:steps', { count: 10 }, '2026-01-01T08:00:00.123456+01:00');
+    await runtime.appendSignal('health:steps', { count: 11 }, 'yesterday');
+
+    const added = (await getSignalsAfter(null)).slice(before).filter((s) => s.signalType === 'health');
+    expect(added.map((s) => s.capturedAt)).toEqual(['2026-01-01T07:00:00.123Z']);
+    await runtime.shutdown();
+  });
+
+  it('a clean stop writes sundial:down before the last snapshot, and the next start names the gap a stop', async () => {
+    const first = new KernelRuntime({ deviceId: 'test-device' });
+    await first.boot();
+    await first.tickClock();
+    await first.shutdown();
+    const snapshot = await getLatestSnapshot();
+    expect(JSON.parse(snapshot!.stateJson).sensorHealth.downAt).toEqual(expect.any(String));
+
+    const second = new KernelRuntime({ deviceId: 'test-device' });
+    await second.boot();
+    const ups = (await getSignalsAfter(null)).filter((s) => s.signalType === 'sundial' && s.eventType === 'up');
+    expect(ups[ups.length - 1].data.gap).toMatchObject({ reason: 'stop' });
+    await second.shutdown();
   });
 
   it('tickClock logs a clock:tick signal and writes a snapshot (the cadence)', async () => {
@@ -93,6 +122,24 @@ describe('KernelRuntime', () => {
     const days = Object.values(second.getState()?.drift?.days ?? {});
     expect(days.reduce((n, d) => n + d.active, 0)).toBeGreaterThanOrEqual(1);
     expect(second.getState()?.drift?.checkedWeek).toBeNull();
+    await second.shutdown();
+  });
+
+  it('rebuilds the chore counters from the last four weeks of the log when the snapshot holds none (Set 5 R3)', async () => {
+    const first = new KernelRuntime({ deviceId: 'test-device' });
+    await first.boot();
+    const day = (back: number) => new Date(Date.now() - back * 86_400_000).toISOString();
+    // Made-up ticket; one row older than the horizon, which the rebuild leaves out.
+    for (const back of [40, 9, 5, 2]) await first.appendSignal('document:opened', { kind: 'jira-ticket', id: 'BOX-484', title: 'BOX-484 something', sourceApp: 'Arc' }, day(back));
+    await first.shutdown();
+    const latest = await getLatestSnapshot();
+    const { chores: _chores, ...older } = JSON.parse(latest!.stateJson);
+    await new Promise((r) => setTimeout(r, 5));
+    await insertSnapshot({ id: createEventId(), stateJson: JSON.stringify(older), logOffset: latest!.logOffset });
+
+    const second = new KernelRuntime({ deviceId: 'test-device' });
+    await second.boot();
+    expect(second.getState()?.chores?.keys['ticket:BOX-484']?.days).toHaveLength(3);
     await second.shutdown();
   });
 
@@ -371,6 +418,28 @@ describe('Judge → judgement:result (docs/jarvis/02, one effect, one event)', (
     await live.shutdown();
   });
 
+  it('judgeNow with a frame: Jev only, under the frame budget, the image handed to the judge and never logged', async () => {
+    const calls: { assets?: unknown; purpose: string }[] = [];
+    const runtime = new KernelRuntime({ deviceId: 'test-device', judge: async (options) => (calls.push(options), answer) });
+    await runtime.boot();
+    const before = (await getSignalsAfter(null)).length;
+    const assets = { 'frame-1': { type: 'image' as const, data_base64: 'SECRETPIXELS', format: 'jpeg' as const } };
+    const ask = () => runtime.judgeNow({ purpose: 'frame', questionSetId: 'screen-frame', momentId: null, state: { frame: 'frame-1' }, questions: effect.questions, assets });
+    expect(await ask()).not.toBeNull();
+    expect(calls[0]).toMatchObject({ purpose: 'frame', backend: 'jev', assets });
+    expect(runtime.getState()?.budgets.byPurpose.frame.callsToday).toBe(1);
+    process.env.SUNDIAL_SYSTEMONE_BACKEND = 'text-model';
+    try {
+      expect(await ask()).toBeNull();
+    } finally {
+      delete process.env.SUNDIAL_SYSTEMONE_BACKEND;
+    }
+    expect(calls).toHaveLength(1);
+    const logged = JSON.stringify((await getSignalsAfter(null)).slice(before));
+    expect(logged).not.toContain('SECRETPIXELS');
+    await runtime.shutdown();
+  });
+
   it('judgeNow answers a tool inside a turn: budgeted, audited through the injected judge, null when off or failing', async () => {
     const calls: unknown[] = [];
     const runtime = new KernelRuntime({
@@ -620,7 +689,7 @@ describe('a journal shift (hardening S6)', () => {
 });
 
 describe('W1 step 7: the nightly conversation pass reads the log', () => {
-  it('reads the window\'s chat:owner rows (already sanitized), skips a one-word turn, and files a conversation candidate', async () => {
+  it('reads the window\'s chat:owner rows (already sanitized), skips a one-word turn and a rig session\'s turn, and files a conversation candidate', async () => {
     const asked: string[] = [];
     const chat = http.createServer((req, res) => {
       let body = '';
@@ -644,6 +713,9 @@ describe('W1 step 7: the nightly conversation pass reads the log', () => {
       await runtime.appendSignal('chat:owner', { sessionId: 'session-7f', turnId: 't1', text: 'I usually go climbing on Thursdays', chars: 34, images: 0 }, at(1));
       await runtime.appendSignal('chat:owner', { sessionId: 'session-7f', turnId: 't2', text: 'ok', chars: 2, images: 0 }, at(2));
       await runtime.appendSignal('chat:owner', { sessionId: 'session-7f', turnId: 't3', text: 'outside the window: the BOX-484 notes', chars: 37, images: 0 }, at(200));
+      // Round 4: the rig's run thread, on the record through its model row; its turn is never read.
+      await runtime.appendSignal('thread:model', { sessionId: 'session-rig', provider: 'openai', model: 'test-2', rig: true }, at(3));
+      await runtime.appendSignal('chat:owner', { sessionId: 'session-rig', turnId: 't4', text: 'I usually listen to the test album in the music app', chars: 51, images: 0 }, at(4));
       const before = (await getSignalsAfter(null)).length;
       await live.dispatchRunConversationExtraction({ type: 'RunConversationExtraction', since: at(0), ts: at(60) });
       const deadline = Date.now() + 3000;
@@ -659,6 +731,70 @@ describe('W1 step 7: the nightly conversation pass reads the log', () => {
       await new Promise<void>((r) => chat.close(() => r()));
     }
   }, 10_000);
+});
+
+describe('the conversation pass reads the whole window (LongMemEval, 2026-11-17)', () => {
+  it('reads a long day in chunks, oldest turn included, tries a 429 again, and files each fact on the day it was said', async () => {
+    const asked: string[] = [];
+    let calls = 0;
+    const chat = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => {
+        calls += 1;
+        if (calls === 1) {
+          res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '0' });
+          return void res.end('{"error":{"message":"Rate limit exceeded"}}');
+        }
+        const transcript = JSON.parse(body).messages.at(-1).content as string;
+        asked.push(transcript);
+        const fact = transcript.includes('Samsung')
+          ? '{"entityKind":"owner","canonicalName":"Mira Bakker","predicate":"bought","object":"a 55-inch Samsung TV","confidence":80,"at":"2026-09-27"}'
+          : transcript.includes('climbing')
+            ? '{"entityKind":"owner","canonicalName":"Mira Bakker","predicate":"attended","object":"the climbing gym opening with Bob","confidence":80,"at":"2026-09-28"}'
+            : '';
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ choices: [{ message: { content: `[${fact}]` }, finish_reason: 'stop' }], usage: { prompt_tokens: 40, completion_tokens: 12, total_tokens: 52 } }));
+      });
+    });
+    await new Promise<void>((r) => chat.listen(0, '127.0.0.1', () => r()));
+    const env = { ...process.env };
+    process.env.SUNDIAL_LLM_BASE_URL = `http://127.0.0.1:${(chat.address() as { port: number }).port}/v1`;
+    process.env.SUNDIAL_LLM_MODEL = 'qwen/test-local';
+    try {
+      const runtime = new KernelRuntime({ deviceId: 'test-device' });
+      await runtime.boot();
+      const live = runtime as unknown as { state: { config: Record<string, unknown> }; extractReplies: boolean; dispatchRunConversationExtraction: (e: unknown) => Promise<void> };
+      live.state = { ...live.state, config: { ...live.state.config, ownerAliases: ['Mira Bakker'] } };
+      live.extractReplies = true;
+      const at = (min: number) => new Date(Date.parse('2026-09-27T09:00:00.000Z') + min * 60_000).toISOString();
+      const filler = 'and then we talked about the weather for a long while '.repeat(80); // ~4,400 characters a turn
+      await runtime.appendSignal('chat:owner', { sessionId: 's1', turnId: 't0', text: 'I bought a 55-inch Samsung TV this morning', chars: 42, images: 0 }, at(0));
+      for (let i = 1; i <= 6; i++) await runtime.appendSignal('chat:owner', { sessionId: 's1', turnId: `t${i}`, text: `${filler}${i}`, chars: filler.length, images: 0 }, at(i));
+      await runtime.appendSignal('chat:owner', { sessionId: 's2', turnId: 't9', text: 'I went to the climbing gym opening with Bob', chars: 43, images: 0 }, at(24 * 60));
+      await runtime.appendSignal('chat:said', { sessionId: 's2', turnId: 't9', text: 'Try the Boulderhal Sloterdijk next time.', chars: 40, tools: [] }, at(24 * 60 + 1));
+      const before = (await getSignalsAfter(null)).length;
+      await live.dispatchRunConversationExtraction({ type: 'RunConversationExtraction', since: at(-1), ts: at(2 * 24 * 60) });
+      const filed = async () => (await getSignalsAfter(null)).slice(before).filter((s) => s.signalType === 'entity' && s.eventType === 'fact-candidate');
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline && (await filed()).length < 2) await new Promise((r) => setTimeout(r, 50));
+      expect(asked.length, 'the window was read in more than one call').toBeGreaterThanOrEqual(2);
+      expect(asked.some((t) => t.includes('I bought a 55-inch Samsung TV')), 'the oldest turn reaches the model').toBe(true);
+      expect(asked.some((t) => t.includes('(Gnomon) Try the Boulderhal Sloterdijk')), 'a reply is read, marked').toBe(true);
+      expect(calls, 'the 429 was tried again').toBe(asked.length + 1);
+      const rows = (await getRecentLlmAudit(20)).filter((r) => r.purpose === 'extract');
+      expect(rows.some((r) => r.attempt === 2), 'the retry is attempt 2 in the ledger').toBe(true);
+      const facts = (await filed()).map((s) => s.data as { object: string; at: string });
+      expect(facts.map((f) => [f.object, f.at])).toEqual([
+        ['a 55-inch Samsung TV', at(0)],
+        ['the climbing gym opening with Bob', at(24 * 60)],
+      ]);
+      await runtime.shutdown();
+    } finally {
+      process.env = { ...env };
+      await new Promise<void>((r) => chat.close(() => r()));
+    }
+  }, 15_000);
 });
 
 describe('W1 step 8: a deleted thread leaves the log and the ledger', () => {
@@ -856,6 +992,36 @@ describe('W3: action effects and their actors', () => {
     expect(await outcomes('job-work-1')).toEqual([{ type: 'work:closed', jobId: 'job-work-1', outcome: 'failed', note: 'could not start: no work loop is loaded' }]);
   });
 
+  it('S4 (Fable H2): every row about a sandbox job carries its mark: a refused start, the ack, the watchdog\'s close of a dead child, and a stop', async () => {
+    const runtime = new KernelRuntime({ deviceId: 'test-device' });
+    await runtime.boot();
+    const job = { id: 'job-rig-9', kind: 'owner-request' as const, key: 'k', subject: 'crate sum', reason: 'you asked', detail: {}, openedAt: '2026-11-16T09:00:00.000Z', sandbox: 'session-rig' };
+    const exec = (effect: unknown) => (runtime as unknown as Exec).executeEffects(createEventId(), 'work:requested', [{ ruleName: 'sandbox', effect }]);
+    await exec({ type: 'StartSubagent', job });
+    await vi.waitFor(async () => expect(await outcomes('job-rig-9')).toHaveLength(1));
+    expect(await outcomes('job-rig-9')).toEqual([{ type: 'work:closed', jobId: 'job-rig-9', outcome: 'failed', note: 'could not start: no work loop is loaded', sandbox: 'session-rig' }]);
+    // The child ends without a report while the sandbox still holds the job open: the watchdog reads that sandbox, not the owner's workbench.
+    const state = runtime.getState()!;
+    const second = { ...job, id: 'job-rig-10' };
+    // A sandbox of its own (never a copy of the owner's slices: the file shares one database and one snapshot).
+    const blank = createInitialState('sandbox');
+    state.rigSessions = { ...state.rigSessions, 'session-rig': '2026-11-16T09:00:00.000Z' };
+    state.sandbox = { 'session-rig': { loops: blank.loops, ownerAsk: blank.ownerAsk, drafts: blank.drafts, commitments: blank.commitments, watch: blank.watch, workbench: { ...blank.workbench, open: second } } };
+    runtime.registerActor('subagent', { start: async () => ({ childId: 'child-10', done: Promise.resolve() }), stop: async () => {} });
+    await exec({ type: 'StartSubagent', job: second });
+    await vi.waitFor(async () => expect(await outcomes('job-rig-10')).toHaveLength(2));
+    expect(await outcomes('job-rig-10')).toEqual([
+      { type: 'work:started', jobId: 'job-rig-10', childId: 'child-10', sandbox: 'session-rig' },
+      { type: 'work:closed', jobId: 'job-rig-10', outcome: 'failed', note: 'the worker ended without reporting', sandbox: 'session-rig' },
+    ]);
+    await exec({ type: 'StopSubagent', jobId: 'job-rig-11', sandbox: 'session-rig' });
+    await vi.waitFor(async () => expect(await outcomes('job-rig-11')).toHaveLength(1));
+    await runtime.shutdown();
+    expect(await outcomes('job-rig-11')).toEqual([{ type: 'work:closed', jobId: 'job-rig-11', outcome: 'failed', note: 'stopped by owner', sandbox: 'session-rig' }]);
+    // The owner's workbench never saw any of them.
+    expect(JSON.stringify(runtime.getState()!.workbench)).not.toContain('job-rig-');
+  });
+
   it('a replayed StartJob with a started row is abandoned (indeterminate), never started twice', async () => {
     const runtime = new KernelRuntime({ deviceId: 'test-device' });
     await runtime.boot();
@@ -929,14 +1095,18 @@ describe('W3: action effects and their actors', () => {
     await runtime.boot();
     let finish: () => void = () => {};
     const stop = vi.fn(async () => {});
-    runtime.registerActor('subagent', { start: async () => ({ childId: 'child-9', done: new Promise<void>((resolve) => (finish = resolve)) }), stop });
+    // `done` resolves with why the worker ended (the model call's error), and the close carries it. Made-up error.
+    runtime.registerActor('subagent', { start: async () => ({ childId: 'child-9', done: new Promise<string>((resolve) => (finish = () => resolve('error: AUTH 401: Invalid API key.'))) }), stop });
+    // The file shares one database: a job an earlier test opened (and shut down before its close landed) holds the slot.
+    const left = runtime.getState()?.workbench.open;
+    if (left) await runtime.appendSignal('work:closed', { jobId: left.id, outcome: 'failed', note: 'left open by an earlier test' });
     await runtime.appendSignal('work:requested', { subject: 'Read the ledger spec', brief: 'what L1-L7 left open' });
     const open = runtime.getState()?.workbench.open;
     expect(open).not.toBeNull();
     await vi.waitFor(async () => expect((await outcomes(open!.id)).map((o) => o.type)).toEqual(['work:started']));
     finish();
     await vi.waitFor(async () => expect((await outcomes(open!.id)).map((o) => o.type)).toEqual(['work:started', 'work:closed']));
-    expect((await outcomes(open!.id))[1]).toMatchObject({ outcome: 'failed', note: 'the worker ended without reporting' });
+    expect((await outcomes(open!.id))[1]).toMatchObject({ outcome: 'failed', note: 'the worker ended without reporting (error: AUTH 401: Invalid API key.)' });
     await runtime.appendSignal('work:stop-requested', { jobId: 'job-gone' });
     await vi.waitFor(async () => expect(await outcomes('job-gone')).toHaveLength(2));
     await runtime.shutdown();

@@ -107,6 +107,12 @@ export interface FactCandidate {
   projectId: string | null;
   /** See `FactProvenance` — every candidate this rule produces is a heuristic guess, never an owner assertion. */
   provenance: FactProvenance;
+  /**
+   * When what the fact says happened or was said, if not when the candidate was
+   * filed (ISO). The conversation pass files a night's facts at the day boundary;
+   * a fact the owner stated on Tuesday is valid from Tuesday. Never later than the event.
+   */
+  at?: string;
 }
 
 /**
@@ -241,7 +247,7 @@ export function slugifyEntityName(name: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
-function entityId(kind: FactCandidate['entityKind'], canonicalName: string): string {
+export function entityId(kind: FactCandidate['entityKind'], canonicalName: string): string {
   return `${kind}:${slugifyEntityName(canonicalName)}`;
 }
 
@@ -433,7 +439,9 @@ export const entityExtract: Rule = (state, event) => {
   // producer — every one of that path's three recorded failures was about the fact
   // it wrote, not about when it ran. See the header for the full argument: constant
   // object, no project claim, no title read.
-  if (event.type === 'calendar:active') {
+  // Since 2026-10-07 the trigger is `meeting:attended` (meetingFollowup, at the end of a meeting the signals
+  // put the owner in), not `calendar:active`: a calendar entry starting is not the owner meeting anybody.
+  if (event.type === 'meeting:attended') {
     const calendarEvent = (event.payload as { event?: { attendees?: unknown; eventId?: unknown } }).event;
     const rawAttendees = Array.isArray(calendarEvent?.attendees) ? calendarEvent.attendees : [];
     const attendees = [...new Set(rawAttendees.filter((a): a is string => typeof a === 'string' && a.trim().length > 0))].slice(0, MAX_ATTENDEE_CANDIDATES);

@@ -81,9 +81,13 @@ describe('no route skips the guard', () => {
     }
   })
   it('no other plugin registers web routes', () => {
-    for (const plugin of ['sundial-actions', 'sundial-db', 'sundial-kernel', 'sundial-memory', 'sundial-proactive', 'sundial-sensors', 'sundial-tools', 'sundial-web-browser', 'sundial-llm-openai']) {
-      const src = readFileSync(join(HERE, '..', '..', plugin, 'index.js'), 'utf8')
-      expect(src, plugin).not.toMatch(/webServer\.register/)
+    const plugins = join(HERE, '..', '..')
+    const others = readdirSync(plugins).filter((p) => p.startsWith('sundial-') && p !== 'sundial-theme')
+    expect(others).toContain('sundial-nodus')
+    for (const plugin of others) {
+      for (const file of readdirSync(join(plugins, plugin), { recursive: true }).filter((f) => f.endsWith('.js') && !f.endsWith('.test.js') && !f.includes('node_modules'))) {
+        expect(readFileSync(join(plugins, plugin, file), 'utf8'), `${plugin}/${file}`).not.toMatch(/webServer\.register/)
+      }
     }
   })
 })

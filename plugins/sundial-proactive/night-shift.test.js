@@ -4,8 +4,11 @@ import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { APPROVING_MODES, assertWorktree, claudeArgs, createTmuxRunner, installNightShift, worktreeFor } from './night-shift.js'
+import { assertWorktree, claudeArgs, createTmuxRunner, installNightShift, worktreeFor } from './night-shift.js'
 import { jobEnv } from './claude-hand.js'
+
+/** Claude permission modes that approve something by themselves. A job never gets one. */
+const APPROVING_MODES = ['acceptEdits', 'auto', 'bypassPermissions', 'dontAsk']
 
 const HOME = '/Users/mira/.sundial'
 const JOB = { id: 'job-01ABC', repo: '~/Projects/puzzlebox-studio', subject: 'Fix the retry test', brief: 'Make BOX-484 pass.' }

@@ -22,7 +22,7 @@ describe('the MCP call audit (X2)', () => {
 
   it('writes one private line per call, naming the tool and never its arguments', async () => {
     const handlers = new Map<string, (args: unknown) => Promise<unknown>>();
-    registerTools({ tool: (name: string, _d: string, _s: unknown, handler: (args: unknown) => Promise<unknown>) => handlers.set(name, handler) } as never);
+    registerTools({ tool: (name: string, _d: string, _s: unknown, _a: unknown, handler: (args: unknown) => Promise<unknown>) => handlers.set(name, handler) } as never);
     // A tool that refuses bad arguments still counts as a call, and a failed one.
     await handlers.get('gnomon_moment_detail')!({ momentId: 'made-up-secret-id' }).catch(() => null);
 

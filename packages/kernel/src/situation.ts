@@ -1,3 +1,4 @@
+import { attendanceOf } from './attendance.js';
 import type { KernelState, ResumeLine, ResumePieces } from './types.js';
 import { localHour } from '@sundial/helpers/local-day.js';
 import { isMeetingRoom } from '@sundial/helpers/person-name.js';
@@ -223,14 +224,11 @@ function freshResume(state: KernelState, nowMs: number, home: string | null): Si
 export function phaseOf(state: KernelState, calendar: { inMeeting: boolean; nextInMin: number | null }, nowMs = Date.now()): Phase {
   if (!calendar.inMeeting && calendar.nextInMin !== null && calendar.nextInMin <= MEETING_SOON_MIN) return 'meeting-soon';
 
-  // A meeting that just ended — and one the owner was in: hearing awake with
-  // almost nothing said is a room they were not in (`meetingFollowup`'s test).
+  // A meeting that just ended — and one the signals put the owner in (`attendanceOf`).
   const ended = Object.values(state.meetings?.seen ?? {}).some((m) => {
     const since = (nowMs - Date.parse(m.end)) / 60_000;
     if (!(since >= 0 && since <= MEETING_ENDED_MIN)) return false;
-    const minutes = (Date.parse(m.end) - Date.parse(m.start)) / 60_000;
-    const absent = m.listened === true && (m.heard ?? 0) > 0 && (m.heard ?? 0) < minutes;
-    return !absent;
+    return attendanceOf(m) === 'joined';
   });
   if (ended && !calendar.inMeeting) return 'meeting-ended';
 

@@ -5,6 +5,7 @@ import { formatClock } from '@sundial/helpers/local-day.js';
 import { meetingJobKey } from './workbench.js';
 import { directionOf, meetingPromiseId, promiseLine } from './promise-track.js';
 import { openAsk } from '@sundial/helpers/loops.js';
+import { ABSENT_BELOW_PER_MIN, attendanceOf } from '@sundial/kernel/attendance.js';
 
 /** The window after a meeting's end in which the question is worth asking. */
 export const FOLLOWUP_MIN_AFTER_MS = 2 * 60 * 1000;
@@ -15,13 +16,10 @@ export const EXTRACT_WAIT_MS = 8 * 60 * 1000;
 export const SEEN_HORIZON_MS = 2 * 24 * 60 * 60 * 1000;
 /** A work call shorter than this is a quick sync, not something to debrief. */
 export const CALL_FOLLOWUP_MIN_MS = 10 * 60 * 1000;
-/**
- * Fewer utterances per minute than this, with hearing awake, is a room the
- * owner was not in. On the live record (2026-09-11 → 09-23) the two meetings
- * the owner said they skipped heard 1 and 16 utterances; one whose calendar time
- * was wrong heard 34 in an hour; every attended one heard 96 or more.
- */
-export const ABSENT_BELOW_PER_MIN = 1;
+// ABSENT_BELOW_PER_MIN lives with `attendanceOf` (kernel/attendance.ts). On the live record (2026-09-11 →
+// 09-23) the two meetings the owner said they skipped heard 1 and 16 utterances; one whose calendar time was
+// wrong heard 34 in an hour; every attended one heard 96 or more.
+export { ABSENT_BELOW_PER_MIN };
 
 /**
  * Hearing was awake for the meeting and almost nothing was said: the owner was
@@ -29,11 +27,14 @@ export const ABSENT_BELOW_PER_MIN = 1;
  * nothing too, and a quiet room is rarely silent to whisper — so it still asks.
  */
 export function wasAbsent(meeting: { start: string; end: string; listened?: boolean; heard?: number }): boolean {
-  const heard = meeting.heard ?? 0;
-  if (!meeting.listened || heard === 0) return false;
-  const minutes = (Date.parse(meeting.end) - Date.parse(meeting.start)) / 60_000;
-  return heard < minutes * ABSENT_BELOW_PER_MIN;
+  return attendanceOf({ title: '', attendees: [], askedAt: null, ...meeting }) === 'absent';
 }
+
+/** The question's id for a meeting: the same on the way out and when the answer comes back. */
+export const meetingAskId = (key: string, start: string) => `owner-ask:meeting-${deriveId(start, 'meeting-followup', key).slice(0, 12)}`;
+
+const WASNT_THERE = /^(wasn'?t|was not|not there|didn'?t|no\b|nee\b|niet)/i;
+const WAS_THERE = /^(yes|ja|yep|i was|was there)/i;
 
 function isOwner(name: string, aliases: readonly string[]): boolean {
   const needle = name.trim().toLowerCase();
@@ -86,6 +87,16 @@ export const meetingFollowup: Rule = (state, event) => {
     const promised = { ids: owed.map((f) => f.id), lines: [] as string[] };
     return { state: { ...state, meetings: { seen: { ...state.meetings.seen, [key]: { ...meeting, promised } } } }, effects: [] };
   }
+  // The owner answered "Were you in X?": their word is the verdict (`attendanceOf`).
+  if (event.type === 'ask:owner-answered') {
+    const p = event.payload as { askId?: unknown; answer?: unknown };
+    const answer = typeof p.answer === 'string' ? p.answer.trim() : '';
+    const hit = Object.entries(state.meetings.seen).find(([key, m]) => meetingAskId(key, m.start) === p.askId);
+    if (!hit || answer === '') return { state, effects: [] };
+    const confirmed = WASNT_THERE.test(answer) ? 'no' : WAS_THERE.test(answer) ? 'yes' : null;
+    if (!confirmed) return { state, effects: [] };
+    return { state: { ...state, meetings: { seen: { ...state.meetings.seen, [hit[0]]: { ...hit[1], confirmed } } } }, effects: [] };
+  }
   if (event.type !== 'clock:tick') return { state, effects: [] };
   const now = Date.parse(event.ts);
   const aliases = state.config.ownerAliases;
@@ -104,7 +115,7 @@ export const meetingFollowup: Rule = (state, event) => {
       seen = { ...seen };
       changed = true;
     }
-    seen[key] = { title: meeting.title, start: meeting.start, end: meeting.end, attendees: others, askedAt: null };
+    seen[key] = { title: meeting.title, start: meeting.start, end: meeting.end, attendees: others, askedAt: null, ...(meeting.online ? { online: true } : {}) };
   }
 
   // Was hearing awake inside a meeting? Without it, silence says nothing.
@@ -117,6 +128,21 @@ export const meetingFollowup: Rule = (state, event) => {
       }
       seen[key] = { ...meeting, listened: true };
     }
+  }
+
+  // Was the owner in it? One sample a minute while it runs (`attendanceOf`): a call app on the mic or camera,
+  // the owner at the keys, the laptop on the network the owner labelled home.
+  // A personal call (WhatsApp, FaceTime, the phone) during a meeting is not the meeting.
+  const callApp = state.av.call !== null && state.av.call.kind !== 'personal-call';
+  const atKeys = state.lifeEvent?.idle?.isIdle === false;
+  const atHome = state.config.locationLabels?.[state.network?.fingerprint ?? ''] === 'home';
+  for (const [key, meeting] of Object.entries(seen)) {
+    if (event.ts < meeting.start || event.ts > meeting.end) continue;
+    if (!changed) {
+      seen = { ...seen };
+      changed = true;
+    }
+    seen[key] = { ...meeting, ticks: (meeting.ticks ?? 0) + 1, active: (meeting.active ?? 0) + (atKeys ? 1 : 0), home: (meeting.home ?? 0) + (atHome ? 1 : 0), ...(callApp ? { called: true } : {}) };
   }
 
   // Forget the old.
@@ -133,7 +159,7 @@ export const meetingFollowup: Rule = (state, event) => {
         seen = { ...seen };
         changed = true;
       }
-      seen[key] = { title: `the call in ${lastCall.app}`, start: lastCall.since, end: lastCall.until, attendees: [], askedAt: null };
+      seen[key] = { title: `the call in ${lastCall.app}`, start: lastCall.since, end: lastCall.until, attendees: [], askedAt: null, called: true };
     }
   }
 
@@ -148,6 +174,19 @@ export const meetingFollowup: Rule = (state, event) => {
   }
 
   const effects: ReturnType<Rule>['effects'] = [];
+  // Once a meeting the signals put the owner in is over: `meeting:attended`, which `entityExtract` turns into
+  // "met with" facts. They used to be written when the calendar said it STARTED, for meetings never joined too.
+  for (const [key, meeting] of Object.entries(seen)) {
+    if (meeting.metAt || key.startsWith('call|') || meeting.attendees.length === 0 || now < Date.parse(meeting.end)) continue;
+    if (meeting.confirmed !== 'yes' && now - Date.parse(meeting.end) > FOLLOWUP_MAX_AFTER_MS) continue;
+    if (attendanceOf(meeting) !== 'joined') continue;
+    if (!changed) {
+      seen = { ...seen };
+      changed = true;
+    }
+    seen[key] = { ...meeting, metAt: event.ts };
+    effects.push({ type: 'EmitEvent', event: { id: deriveId(event.ts, event.id, 'meeting-attended', key), type: 'meeting:attended', ts: event.ts, payload: { event: { eventId: key, title: meeting.title, start: meeting.start, end: meeting.end, attendees: meeting.attendees } } } });
+  }
   // UC1 (U1-F2): one promise pass per meeting, once it is over and while the
   // question about it is still ahead. Only a meeting something was heard in —
   // or an unscheduled call, whose words were counted before it had a key.
@@ -164,6 +203,8 @@ export const meetingFollowup: Rule = (state, event) => {
     if (meeting.extractAt || since < 0 || since > FOLLOWUP_MAX_AFTER_MS) continue;
     const isCall = key.startsWith('call|');
     if (!isCall && (meeting.voices ?? 0) === 0) continue;
+    // Promises are the owner's only if the owner was there (2026-10-07: the calendar alone no longer says so).
+    if (attendanceOf(meeting) !== 'joined') continue;
     if (!changed) {
       seen = { ...seen };
       changed = true;
@@ -177,7 +218,9 @@ export const meetingFollowup: Rule = (state, event) => {
   }
   if (openAsk(state) === null && state.commitments.promiseAsk === null) {
     const due = Object.entries(seen).find(([, meeting]) => {
-      if (meeting.askedAt !== null || wasAbsent(meeting)) return false;
+      // Asked only about a meeting the signals put the owner in: never one declined, missed, or merely on the calendar.
+      // Joined: how did it go. Unknown (in person, hearing off, no call app): ask whether they were there at all. Absent: nothing.
+      if (meeting.askedAt !== null || attendanceOf(meeting) === 'absent') return false;
       const since = now - Date.parse(meeting.end);
       // UC1-X3: while the promise pass is out, wait for it (a few minutes at
       // most), so the one question can show what it found.
@@ -204,14 +247,17 @@ export const meetingFollowup: Rule = (state, event) => {
       const found = (meeting.promised?.ids ?? []).map((id) => state.commitments.promises.find((c) => c.id === id)).filter((c): c is NonNullable<typeof c> => c !== undefined);
       const lines = found.map((c) => promiseLine(state, c));
       const label = meeting.attendees.length === 0 ? meeting.title : `"${meeting.title}"`;
-      const question =
-        found.length > 0
+      const unsure = attendanceOf(meeting) === 'unknown';
+      const question = unsure
+        ? `Were you in ${label}? If so — did you promise anything?`
+        : found.length > 0
           ? `How did ${label} go? I heard you promise: ${lines.join('; ')}. Keep track of ${found.length === 1 ? 'it' : 'them'}?`
           : meeting.attendees.length === 0
             ? `How did ${label} go? Who was it with — and did you promise anything?`
             : `How did ${label} go — did you promise anything?`;
-      const choices =
-        found.length === 0 ? ['No', 'Yes — tell me', ...points.slice(0, 2).map((point) => `Mostly: ${point}`.slice(0, 48))] : found.length === 1 ? ['Track it', 'Not a promise'] : ['Track them', 'Only the first', 'Not promises'];
+      const choices = unsure
+        ? ["Wasn't there", 'Yes — nothing promised', 'Yes — tell me']
+        : found.length === 0 ? ['No', 'Yes — tell me', ...points.slice(0, 2).map((point) => `Mostly: ${point}`.slice(0, 48))] : found.length === 1 ? ['Track it', 'Not a promise'] : ['Track them', 'Only the first', 'Not promises'];
       effects.push({
         type: 'EmitEvent',
         event: {
@@ -219,7 +265,7 @@ export const meetingFollowup: Rule = (state, event) => {
           type: 'ask:owner-opened',
           ts: event.ts,
           payload: {
-            askId: `owner-ask:meeting-${deriveId(meeting.start, 'meeting-followup', key).slice(0, 12)}`,
+            askId: meetingAskId(key, meeting.start),
             question,
             reason: `ended ${formatClock(meeting.end, state.config.timezone)} with ${who}`,
             choices,

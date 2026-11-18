@@ -362,6 +362,8 @@ function sightingFor(thread: Commitment, event: SanitizedEvent): Sighting | null
     const line = `${str(p.commitLine)} ${str(p.branch)}`;
     return namesDeliverable(keys, line) ? said('commit', `commit ${str(p.commitLine).slice(0, 60)}`) : null;
   }
+  // Plan 15 4.1: the reflog's exact push is a sighting too.
+  if (event.type === 'git:push') return namesDeliverable(keys, str(p.branch)) ? said('push', `pushed ${str(p.branch)}`) : null;
   if (event.type === 'git:status') return namesDeliverable(keys, str(p.branch)) ? said('branch', `branch ${str(p.branch)}`) : null;
   if (event.type === 'git:pr-status') return namesDeliverable(keys, `${str(p.title)} ${str(p.branch)}`) ? said('pr', `PR #${String(p.number ?? '?')} ${str(p.title)}`) : null;
   if (event.type === 'file:changed') {
@@ -686,6 +688,8 @@ function answerMeeting(state: KernelState, pending: NonNullable<KernelState['com
     for (const id of ids) result = chain(result, (s) => closePromise(s, id, 'dropped', event.ts));
     return result;
   }
+  // "Wasn't there", "Yes — nothing promised": the answer says there is no promise; it is not one.
+  if (/nothing promised|no promises?|wasn'?t there|not there|^no\b|^nee\b/i.test(answer)) return result;
   const stated = parseStatedPromise(answer, { ts: event.ts, tz: state.config.timezone, attendees: pending.attendees, ownerAliases: state.config.ownerAliases });
   if (!stated) return result;
   return openPromise(state, event.ts, {
@@ -937,13 +941,5 @@ export const promiseTrack: Rule = (state, event) => {
   if (event.type === 'commitment:closed') return closeByOwner(state, event);
   if (event.type === 'ask:owner-opened') return rememberAsk(state, event);
   if (event.type === 'ask:owner-answered') return answerAsk(state, event);
-  // The fan-out's resolve slot, with its second key (`applyMomentJudgement`): the model judge, kept as the fallback to the evidence below.
-  if (event.type === 'commitment:resolved') {
-    const p = event.payload as { id?: unknown; p?: unknown };
-    const thread = state.commitments.promises.find((c) => c.id === str(p.id));
-    if (!thread?.promise) return { state, effects: [] };
-    const evidence = [...thread.promise.evidence, { kind: 'judge' as const, at: event.ts, strong: true, text: `a moment judged it kept (p ${typeof p.p === 'number' ? p.p.toFixed(2) : '?'})` }].slice(-6);
-    return closePromise(state, thread.id, 'kept', event.ts, { evidence });
-  }
   return { state, effects: [] };
 };

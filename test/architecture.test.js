@@ -5,7 +5,7 @@
 // commit that earned it and the review shows it.
 import { describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -31,9 +31,12 @@ function ratchet(actual, recorded, { ceiling = false } = {}) {
 // that frees lines leaves room under it, and the number is lowered when a split lands.
 const MAX_LINES = 1200
 const OVER = {
-  'plugins/sundial-theme/shell/app.js': 3741, // 2026-10-03: the composer's slow-turn timer and the walk/question pause (31 lines)
-  'packages/harness-runtime/src/runtime.ts': 2199,
-  'plugins/sundial-theme/shell/stage.js': 1696,
+  'plugins/sundial-theme/shell/app.js': 3769, // 2026-11-15: the step and eye frames, a screen step's words on its screen_act row and the newest look's key for the slip (12 lines; both are pushed by host/server.js); 2026-11-15: the slip's correction mid-turn, gnomon:correct (5 lines; the host side lives in api-sessions.js); 2026-11-15: a notice's offer on the strip (1 line; the chip lives in verdicts.js); 2026-11-15: the Routes card (1 line; it lives in view-routes.js); 2026-11-14: lowered, the live strip moved to live-strip.js and the reading line to reading-line.js; 2026-11-13: the thread pill's wiring, its import and the live frame that follows a thread picked elsewhere (8 lines; the pill itself lives in thread-pill.js); 2026-11-12: the model chip's thread, chipThread (3 lines); 2026-11-12: lowered, the approval's argument text moved to tool-line.js; 2026-10-03: the composer's slow-turn timer and the walk/question pause (31 lines); 2026-11-03: the catalogue's entry in the thread list (3 lines, over one line already staged); 2026-11-03: the thread bar's mode switch, its import (1 line; the switch lives in mode-switch.js); 2026-11-11: the summon's turn place, its import (1 line; the rule lives in pointing.js); 2026-11-11: the About you card (1 line; it lives in view-beliefs.js)
+  'packages/harness-runtime/src/runtime.ts': 2165, // 2026-11-17: a refunded journal call releases its route slot (4 lines); 2026-11-17: the conversation pass moved to conversation-pass.ts (-46); 2026-11-17: a boot with no chore counters folds them from the log (3 lines; the fold lives in chores-rebuild.ts); 2026-11-16: a sandbox job's rows carry the rig chat's mark, and its watchdog reads that sandbox (4 lines; the predicate lives in helpers sandbox.ts); 2026-11-15: the conversation pass skips the rig's sessions, its import (1 line; the rule lives in kernel read/rig-session.ts)
+  'plugins/sundial-theme/shell/stage.js': 1703, // 2026-11-02: the Nodus card's branch in materialize (7 lines)
+  'packages/helpers/src/sundial-config.ts': 1266, // 2026-11-17: offerBar (S6), its line, doc, resolved type, default and parse (5 lines). 2026-11-17: audio.whisperUrl refused off the loopback, loopbackWhisperUrl (7 lines). 2026-11-16: browser.pageTextAx and privacy.privateHosts, their lines, default and resolve (4 lines). 2026-11-16: web.knownHosts, its import, field, default and resolve (4 lines; the list and its resolver live in web-config.ts). 2026-11-15: llm.connectMs, its line and doc (1 line). 2026-11-15: llm.compactKeepFront, its doc (2 lines). 2026-11-15: choreDays, its line, doc, default and parse (5 lines). 2026-11-15: workdays, its line, doc, default and parse (5 lines). 2026-11-13: appNotes, its line, doc and default (6 lines). 2026-11-13: ownerEmails, its line, doc and default (5 lines). 2026-11-12: llm.hedgeAfterMs, its line and its doc (2 lines). 2026-11-12: llm.compactAt, its line and its doc (2 lines). 2026-11-12: llm.chatReasoning, its line and its doc (2 lines). 2026-11-11: experiments.witnessPairs, voiceKnock, quietSummon, stuckSigns, holdToTalk and the three screen switches (6 lines); `voice`, its type and resolver in voice-config.ts (5 lines)
+  'packages/nodus/src/kit.js': 1476, // 2026-11-04: Plate mode's picture parts (trace, solids, meshes) came in with the lab; split them out to lower this
+  'packages/nodus/vendor/GLTFLoader.js': 4779, // 2026-11-03: three.js r160's glTF loader, vendored as it is for Atlas mode (MIT): not ours to split
 }
 // W4's acceptance sizes, held as ceilings once reached (Phase 5): the host's entry, the shell mount, the
 // views' index. `KernelState` itself is its slice interfaces (state/<domain>.ts), at most 90 lines.
@@ -41,6 +44,8 @@ const BUDGET = {
   'plugins/sundial-theme/index.js': 400,
   'plugins/sundial-theme/host/server.js': 700,
   'plugins/sundial-theme/shell/views.js': 150,
+  // Set 3 R3: the action gate, its finals, shell reading and tool table split out (gate-finals.js, gate-shell.js, gate-tools.js).
+  'plugins/sundial-actions/gate.js': 1000,
 }
 
 // F2: no loopback fetch in the tools, the theme's host code or the kernel; no internal token outside the fence.
@@ -56,7 +61,7 @@ const DB_IMPORTS = {}
 const HOST_FILES = FILES.filter((f) => f.startsWith('plugins/') && f.endsWith('.js') && !isTest(f) && !f.includes('/shell/'))
 const HOST_STATE = {
   'plugins/sundial-kernel/index.js': 1,
-  'plugins/sundial-llm-openai/index.js': 7,
+  'plugins/sundial-llm-openai/index.js': 8, // 2026-11-12: hedge()'s winner, a let inside the function the two-space rule also counts
   'plugins/sundial-proactive/delivery.js': 1,
   'plugins/sundial-proactive/index.js': 2,
   'plugins/sundial-proactive/night-shift.js': 1,
@@ -69,6 +74,19 @@ const HOST_STATE = {
   'plugins/sundial-web-browser/launcher.js': 3,
   'plugins/sundial-web-browser/page-session.js': 1,
 }
+
+// Set 2 R3: side state in the loop's files. A module or plugin-scope `new Map(`/`new Set(` is state the fold does not
+// hold, so a restart forgets it; these counts may only go down. 2026-11-15: index.js `shells` became the fold's
+// `state.shells`; voice-turn.js `turns` keeps only the stream buffer and timers (what a turn said is `state.voice.said`).
+const SIDE_STATE_FILES = ['plugins/sundial-actions/screen-tools.js', 'plugins/sundial-actions/index.js', 'plugins/sundial-theme/host/voice-turn.js', 'plugins/sundial-theme/host/server.js']
+const SIDE_STATE = {
+  'plugins/sundial-actions/screen-tools.js': 7, // SLOW (a constant), two per-call locals, and the four bounded caches below
+  'plugins/sundial-actions/index.js': 0,
+  'plugins/sundial-theme/host/voice-turn.js': 1,
+  'plugins/sundial-theme/host/server.js': 10,
+}
+/** The screen tools' prompt caches and the unwritten-Send fallback: each must be held to a size. */
+const SCREEN_CACHES = ['mapped', 'unwritten', 'told', 'looked']
 
 // F5: the kernel's tools (and read/, when it lands) take their clock as an argument.
 const CLOCK_SCOPE = FILES.filter((f) => !isTest(f) && /^packages\/kernel\/src\/(read|tools)\//.test(f))
@@ -95,30 +113,52 @@ const SOURCE = FILES.filter((f) => !isTest(f)).map((f) => [f, read(f)])
 const lits = (text) => [...text.matchAll(new RegExp(`['"\`](${TYPE})['"\`]`, 'g'))].map((m) => m[1])
 /** A line that writes an event: every type literal on it is produced there. `type: '…'` builds one. */
 const PRODUCING = /\b(appendSignal|toDaemonEvent|handleSensorEvent|ingestAndApply|fold|emit|record)\(|\btype:\s*['"`]/
-const produced = new Set(SOURCE.flatMap(([, t]) => t.split('\n').filter((line) => PRODUCING.test(line)).flatMap(lits)))
+/** The Mac app is a producer outside packages/ and plugins/: it writes its events to app-events.jsonl (`emit`, `answer`). */
+const APP_PRODUCED = readdirSync(join(REPO, 'apps/macos')).filter((f) => f.endsWith('.swift')).flatMap((f) => read(`apps/macos/${f}`).split('\n')).filter((line) => /\b(emit|answer)\(/.test(line)).flatMap(lits)
+const produced = new Set([...SOURCE.flatMap(([, t]) => t.split('\n').filter((line) => PRODUCING.test(line)).flatMap(lits)), ...APP_PRODUCED])
 /** `board:${action}`: a templated producer covers its prefix. */
 const templated = new Set(SOURCE.flatMap(([, t]) => [...t.matchAll(/`([a-z][a-z0-9-]*):\$\{/g)].map((m) => m[1])))
 const consumed = new Set(SOURCE.filter(([f]) => /^packages\/(rules|kernel)\/src\//.test(f)).flatMap(([, t]) => [...t.matchAll(new RegExp(`(?:\\b(?:event|e|ev|evt)\\.type\\s*[!=]==?\\s*|case\\s+)['"\`](${TYPE})['"\`]`, 'g'))].map((m) => m[1])))
-/** Read anywhere: the literal appears on a line that does not write it. */
-const mentioned = new Set(SOURCE.flatMap(([, t]) => t.split('\n').filter((line) => !PRODUCING.test(line)).flatMap(lits)))
+/** Read anywhere: the literal appears on a code line that does not write it. A comment that names a type is not a read. */
+const mentioned = new Set(SOURCE.flatMap(([, t]) => code(t).split('\n').filter((line) => !PRODUCING.test(line)).flatMap(lits)))
+/** A family in a signal-type list (`OWNER_EVIDENCE_TYPES = ['web', …]`, gnomon_signals) reads every `web:*`. */
+const families = new Set(SOURCE.flatMap(([, t]) => [...code(t).matchAll(/_TYPES\s*=\s*\[([^\]]*)\]/g)].flatMap((m) => [...m[1].matchAll(/['"]([a-z][a-z0-9-]*)['"]/g)].map((x) => x[1]))))
 
 // F9: read by a rule, produced by nothing in this repository.
 const NO_PRODUCER = {
   // The phone door: Shortcuts on the owner's phone send these; no sender exists yet (P15, the owner decides).
+  // The phone ingest listener and the presence scan were dropped on 2026-10-14 with their rules.
   'health:hr': '2026-09-29 P15', 'health:sleep': '2026-09-29 P15', 'health:steps': '2026-09-29 P15',
-  'phone:motion': '2026-09-29 P15', 'phone:place': '2026-09-29 P15', 'phone:sleep': '2026-09-29 P15',
-  // The presence scan's consent has no UI (P7, the owner decides); `sundial migrate` carried the old grant.
-  'presence:consent': '2026-09-29 P7',
+  'phone:sleep': '2026-09-29 P15',
+  // 2026-11-03: the phone inbox receives these from the phone's own Shortcuts; no Sundial sensor produces them.
+  'phone:motion': '2026-11-03 phone inbox', 'phone:place': '2026-11-03 phone inbox',
 }
 
 // F10: written, and read by nothing: log-only by design.
 const LOG_ONLY = {
-  // Audit trails: the judge's second key on a call, the approval prompts and their answers (W3).
-  'action:classified': 'audit', 'approval:asked': 'audit', 'approval:answered': 'audit',
+  // Audit trails: the judge's second key on a call (W3).
+  'action:classified': 'audit',
   // Countable in the log: a quiet day's skipped model pass.
   'llm:skipped': 'audit',
+  // Plan 15 step 8 (2026-11-11): a value put back, counted in the log beside the act it undid.
+  'action:undone': 'audit',
+  // Set 2 Round 1 (2026-11-15): a pull-up's start and end, read beside its screen:mark-placed row for the 5 s number.
+  'screen:pull-up': 'measure',
+  // Set 2 Round 2 (2026-11-15): a replayed route's steps, offered and run, read by the rig (suite3.sh replayed) beside llm_audit's model steps.
+  'screen:replayed': 'measure',
   // W2: what became of a loop, a record (the loop's own state is in `state.loops`).
   'loop:expired': 'record', 'loop:resolved': 'record',
+  // Set 4 (2026-11-16): named only in comments until F10 stopped counting a comment as a read.
+  // A chore offer shown, for the go rate (lab/chores/report.mjs: notice:offer-taken over offers).
+  'chore:offered': 'measure',
+  // The label calibrate folds where it detects it; the logged copy is its audit trail.
+  'feedback:implicit': 'audit',
+  // screen_act waited on a loading window: the rig's slow-app check reads it (suite3.sh).
+  'screen:waited': 'measure',
+  // The day line the slip said with no turn (overlay.js daySaid): the rig's evening answer (run.sh), a record beside the summon's rows.
+  'overlay:day-said': 'measure',
+  // Doc 29 (2026-11-17): who pressed a Stop (the slip's button or key, the run bar, another caller), for the rig to tell its own from a hand's.
+  'chat:stop': 'measure',
 }
 
 describe('architecture fences (W4)', () => {
@@ -143,6 +183,12 @@ describe('architecture fences (W4)', () => {
 
   it('F4: no module or apply-scope let, no setInterval, in host files', () => {
     ratchet(tally(HOST_FILES, (t) => count(t, /^ {0,2}let /gm) + count(t, /\bsetInterval\(/g)), HOST_STATE)
+  })
+
+  it('Set 2 R3: module and plugin-scope Maps and Sets in the loop files only go down, and every screen cache is bounded', () => {
+    ratchet(tally(SIDE_STATE_FILES, (t) => count(t, /^ {0,2}(?:const|let) [\w$]+ = new (?:Map|Set)\(/gm)), SIDE_STATE)
+    const screen = read('plugins/sundial-actions/screen-tools.js')
+    expect(SCREEN_CACHES.filter((name) => !new RegExp(`const ${name} = new Map\\(`).test(screen) || !new RegExp(`\\b${name}\\.size > \\d+`).test(screen))).toEqual([])
   })
 
   it('F6: the companion id, the verdict set and the entity-kind sets appear only in vocab.ts', () => {
@@ -179,7 +225,7 @@ describe('architecture fences (W4)', () => {
   })
 
   it('F10: every event type written is read somewhere, or is log-only by design', () => {
-    const unread = [...produced].filter((t) => !consumed.has(t) && !mentioned.has(t)).sort()
+    const unread = [...produced].filter((t) => !consumed.has(t) && !mentioned.has(t) && !families.has(t.split(':')[0])).sort()
     expect(unread).toEqual(Object.keys(LOG_ONLY).sort())
   })
 

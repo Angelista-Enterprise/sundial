@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { ASK_TOOL_REGISTRY, TOOL_REGISTRY, gnomonToolDefinitions } from './index.js';
+import { TOOL_REGISTRY, gnomonToolDefinitions } from './index.js';
 import { ToolArgumentError, UnknownToolError, executeTool, type GnomonTool } from './registry.js';
 import type { KernelState } from '../types.js';
 
@@ -36,8 +36,13 @@ describe('the tool registry', () => {
       // What Gnomon's own thinking costs, and what its failures cost — the
       // ledger along one axis at a time, so a lens can card any of them.
       'gnomon_llm_ledger',
+      // Every open PR the owner authored, in any repo, so a PR question never needs gh in the shell.
+      'gnomon_pull_requests',
       // Every coding-agent session in one call, so an audit never reads raw transcripts with the shell (2026-10-05).
       'gnomon_agent_sessions',
+      // The notices already delivered, paged on time, so a Claude Code mod can be told one landed (2026-10-05).
+      'gnomon_changes',
+      'gnomon_notices',
       'gnomon_anomalies',
       // The roster, so "who do I work with" is answerable without the owner
       // naming anyone first. Before it, 18 of this record's 39 people were
@@ -80,7 +85,6 @@ describe('the tool registry', () => {
    */
   it('advertises nothing that writes — the shared list is what MCP exposes to other local clients', () => {
     expect(TOOL_REGISTRY.every((tool) => tool.readOnly)).toBe(true);
-    expect(ASK_TOOL_REGISTRY.every((tool) => tool.readOnly)).toBe(true);
   });
 
   it('derives a JSON Schema object for every tool', () => {
@@ -158,5 +162,12 @@ describe('executeTool', () => {
     const at = (iso: string) => executeTool(TOOL_REGISTRY, 'gnomon_tickets', { days: 2 }, { now: new Date(iso), state: async () => state }) as Promise<{ count: number }>;
     expect((await at('2026-03-04T09:00:00Z')).count).toBe(1);
     expect((await at('2026-03-09T09:00:00Z')).count).toBe(0);
+  });
+
+  it('gnomon_tickets with ids keeps only those keys (a chore offer names them)', async () => {
+    const thread = (id: string) => ({ id, days: ['2026-03-03'], lastSeen: '2026-03-03T10:00:00Z', stage: 'seen', sources: {}, commits: 0, pr: null });
+    const state = { tickets: { 'BOX-1': thread('BOX-1'), 'BOX-2': thread('BOX-2'), 'BOX-3': thread('BOX-3') } } as unknown as KernelState;
+    const out = (await executeTool(TOOL_REGISTRY, 'gnomon_tickets', { ids: ['box-1', 'BOX-3'] }, { now: new Date('2026-03-04T09:00:00Z'), state: async () => state })) as { threads: { id: string }[] };
+    expect(out.threads.map((t) => t.id)).toEqual(['BOX-1', 'BOX-3']);
   });
 });

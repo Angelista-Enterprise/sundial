@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   getSignalsInRange: vi.fn(),
   countSignalsInRange: vi.fn(),
   getCodeActivityForDate: vi.fn(),
+  getLatestSnapshot: vi.fn(async () => null),
 }));
 
 vi.mock('@sundial/db/index.js', () => mocks);
@@ -27,7 +28,7 @@ vi.mock('@sundial/helpers/sundial-config.js', () => ({
   canonicalProjectName: (name: string) => name,
 }));
 
-const { DEFAULT_PAGE_ROWS, EVIDENCE_TOOLS, pageWithinBudget, RESULT_BUDGET_CHARS } = await import('./evidence-tools.js');
+const { DEFAULT_PAGE_ROWS, EVIDENCE_TOOLS, pageWithinBudget, RESULT_BUDGET_CHARS, slimSignalData } = await import('./evidence-tools.js');
 
 const tool = (name: string) => EVIDENCE_TOOLS.find((t) => t.name === name)!;
 
@@ -101,6 +102,17 @@ describe('pageWithinBudget', () => {
     expect(page.total).toBe(50);
   });
 
+  it('ends the paging when the budget keeps nothing, rather than pointing at the same page again', () => {
+    // An offset that does not move is a loop for any caller that follows it.
+    const fat = Array.from({ length: 5 }, (_, i) => ({ i, blob: 'x'.repeat(200) }));
+    const page = pageWithinBudget(fat, { offset: 1, limit: 5, budget: 10 });
+    expect(page.rows).toEqual([]);
+    expect(page.total).toBe(5);
+    expect(page.offset).toBe(1);
+    expect(page.nextOffset).toBeUndefined();
+    expect(page.note).toContain('size budget held no more rows');
+  });
+
   it('defaults to a small page, because the total is what makes a small page safe', () => {
     const page = pageWithinBudget(Array.from({ length: 500 }, (_, i) => i), { budget });
     expect(page.rows).toHaveLength(DEFAULT_PAGE_ROWS);
@@ -128,6 +140,17 @@ describe('gnomon_signals paging', () => {
     expect(call[4]).toBe(0);
     expect(out.total).toBe(412);
     expect(out.count).toBe(2);
+  });
+
+  it('S4 (Fable M5): a rig chat\'s row (its sessionId, session or sandbox mark) is left out, and the next page starts past it in the record', async () => {
+    mocks.countSignalsInRange.mockResolvedValue(100);
+    const rig = (i: number, data: Record<string, unknown>) => ({ ...signal(i), signalType: 'assistant', eventType: 'draft', data });
+    mocks.getSignalsInRange.mockResolvedValue([signal(0), rig(1, { subject: 'Crates', sessionId: 'session-rig' }), rig(2, { noticeKey: 'x', sandbox: 'session-rig' }), signal(3), rig(4, { session: 'session-rig' }), signal(5)]);
+    const env = { now: new Date('2026-09-12T12:00:00.000Z'), state: async () => ({ rigSessions: { 'session-rig': 't' } }) as never };
+    const out = (await tool('gnomon_signals').handler({ date: '2026-09-12', limit: 6 } as never, env)) as { count: number; nextOffset?: number } & Record<string, unknown>;
+    expect(out.count).toBe(3);
+    expect(JSON.stringify(out)).not.toMatch(/Crates|session-rig/);
+    expect(out.nextOffset).toBe(6);
   });
 
   it('names the next page rather than telling the model to ask the day again', async () => {
@@ -190,6 +213,12 @@ describe('gnomon_signals paging', () => {
     const out = await tool('gnomon_signals').handler({ date: '2026-09-12', limit: 200 } as never, toolEnv());
 
     expect(JSON.stringify(out).length).toBeLessThan(RESULT_BUDGET_CHARS + 1_000);
+  });
+});
+
+describe('slimSignalData', () => {
+  it('a look in a list of rows says how many things it holds, not the things', () => {
+    expect(slimSignalData({ id: 'look-1', processName: 'Notes', screenText: ['File'], elements: [{ ref: 'e1' }, { ref: 'e2' }] })).toEqual({ id: 'look-1', processName: 'Notes', screenText: ['File'], elements: 2 });
   });
 });
 

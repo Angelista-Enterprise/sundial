@@ -6,8 +6,10 @@
  * whom. On `clock:tick` it looks at the calendar:
  *
  *   - A standup-like meeting (a short morning series with others, told by its
- *     shape: `isStandupLike`) about ten minutes out: the three-line draft,
- *     once a day, as a plain phasic notice.
+ *     shape: `isStandupLike`): nothing on the tick. Its three-line draft goes
+ *     to Today on the owner's first touch of the day (`owner:first-touch`) and
+ *     rides the workbench's morning packet: said ten minutes out, it reached
+ *     an owner who on most mornings had not touched the Mac before the call.
  *   - Any other meeting with others about ten minutes out: the prep, as a
  *     plain tonic line, only when the record holds something on those people.
  *   - A meeting a promise is due at (UC1-X1), an hour out: the prep, led by
@@ -20,7 +22,7 @@
  */
 import { deriveId } from '@sundial/helpers/derive-id.js';
 import { localDate } from '@sundial/helpers/local-day.js';
-import { briefHeader, briefKey, briefsOf, isStandupLike, meetingPrepKey, othersIn, prepLines, silenced, standupLines, weekReviewDue, type PrepMeeting } from '@sundial/kernel/briefs.js';
+import { briefHeader, briefsOf, isStandupLike, meetingPrepKey, othersIn, prepLines, silenced, standupToday, weekReviewDue, type PrepMeeting } from '@sundial/kernel/briefs.js';
 import type { BriefDay, BriefState, Commitment, Effect, KernelState, Rule, SanitizedEvent, UpcomingEvent } from '@sundial/kernel/types.js';
 import { fadingWeight, fadingWords, SPEAK_BEFORE_MS } from './promise-track.js';
 import { samePerson } from './promise-terms.js';
@@ -145,9 +147,13 @@ function meetingsAhead(state: KernelState): (PrepMeeting & { end: string; event:
   return out;
 }
 
+/** Round 4: every brief looks ahead (`anticipatory`: the gate keeps it past a spent budget, FORESIGHT 4d). */
 function candidate(event: SanitizedEvent, payload: Record<string, unknown>): Effect {
-  return { type: 'EmitEvent', event: { id: deriveId(event.ts, event.id, 'brief-clock', String(payload.key)), type: 'notice:candidate', ts: event.ts, payload: { timestamp: event.ts, shape: 'transition', plain: true, concerns: [], ...payload } } };
+  return { type: 'EmitEvent', event: { id: deriveId(event.ts, event.id, 'brief-clock', String(payload.key)), type: 'notice:candidate', ts: event.ts, payload: { timestamp: event.ts, shape: 'anticipatory', plain: true, concerns: [], ...payload } } };
 }
+
+/** Round 4: a meeting's prep offers itself whole, in one press (`gnomon_brief`, the same lines). */
+const openPrep = (m: PrepMeeting) => ({ offer: { tool: 'gnomon_brief', args: { kind: 'meeting', title: m.title.slice(0, 120) }, label: 'Open the prep' } });
 
 function remember(state: KernelState, keys: string[], ts: string, latest: BriefState['latest']): KernelState {
   const briefs = briefsOf(state);
@@ -156,7 +162,6 @@ function remember(state: KernelState, keys: string[], ts: string, latest: BriefS
 
 function onTick(state: KernelState, event: SanitizedEvent): Result {
   const now = Date.parse(event.ts);
-  const tz = state.config.timezone;
   const done = briefsOf(state).done;
   let result: Result = { state, effects: [] };
   for (const m of meetingsAhead(state)) {
@@ -172,24 +177,15 @@ function onTick(state: KernelState, event: SanitizedEvent): Result {
       const words = owed.map((c) => fadingWords(s, c, event.ts, c.promise!.due!, true));
       const lines = prepLines(s, m, event.ts, { lead: words.map((w) => w.observation).join(' '), leadIds: owed.map((c) => c.id) });
       const weight = owed.map((c) => fadingWeight(c, event.ts, c.promise!.due!, true)).sort((a, b) => b.surprise * b.precision - a.surprise * a.precision)[0]!;
-      const notice = candidate(event, { kind: 'meeting-prep', key: prepKey, ...weight, valueHalfLifeMs: SPEAK_BEFORE_MS, observation: lines.join(' '), evidence: [briefHeader(s, m), ...words.flatMap((w) => w.evidence)].slice(0, 8), concerns: owed.map((c) => c.id) });
+      const notice = candidate(event, { kind: 'meeting-prep', key: prepKey, ...weight, ...openPrep(m), valueHalfLifeMs: SPEAK_BEFORE_MS, observation: lines.join(' '), evidence: [briefHeader(s, m), ...words.flatMap((w) => w.evidence)].slice(0, 8), concerns: owed.map((c) => c.id) });
       result = { state: remember(s, [prepKey], event.ts, { kind: 'meeting-prep', title: m.title, start: m.start, end: m.end, lines, at: event.ts }), effects: [...result.effects, notice] };
       continue;
     }
     if (lead > PREP_LEAD_MS) continue;
 
-    // A standup: the day's draft, once a day, even when two standups share the morning.
+    // A standup's draft is not said here any more: it rides the morning packet on the first touch (`onFirstTouch`).
     if (m.event && isStandupLike(s, m.event)) {
-      const dayKey = briefKey({ kind: 'standup-draft', title: m.title, start: m.start }, tz);
-      // A fold that holds no earlier day (just deployed) cannot say what yesterday was: stay quiet rather than say "no work".
-      const heldBefore = Object.keys(s.briefs?.days ?? {}).some((d) => d < localDate(m.start, tz));
-      if (s.briefs?.done[dayKey] || silenced(s, 'standup-draft') || !heldBefore) {
-        result = { state: remember(s, [prepKey], event.ts, null), effects: result.effects };
-        continue;
-      }
-      const lines = standupLines(s, event.ts, m);
-      const notice = candidate(event, { kind: 'standup-draft', key: dayKey, surprise: 1.7, precision: 1, valueHalfLifeMs: PREP_LEAD_MS, observation: `${briefHeader(s, m)} ${lines.join(' ')}`, evidence: [briefHeader(s, m), 'commits, pull requests and agent sessions as the sensors saw them; Slack and tickets you did not open are not read'] });
-      result = { state: remember(s, [prepKey, dayKey], event.ts, { kind: 'standup-draft', title: m.title, start: m.start, end: m.end, lines, at: event.ts }), effects: [...result.effects, notice] };
+      result = { state: remember(s, [prepKey], event.ts, null), effects: result.effects };
       continue;
     }
 
@@ -199,10 +195,22 @@ function onTick(state: KernelState, event: SanitizedEvent): Result {
       result = { state: remember(s, [prepKey], event.ts, null), effects: result.effects };
       continue;
     }
-    const notice = candidate(event, { kind: 'meeting-prep', key: prepKey, surprise: 1, precision: 1, valueHalfLifeMs: null, observation: `${briefHeader(s, m)} ${lines.join(' ')}`, evidence: ['promises, the calendar, tickets and mail subjects already on the record; mail bodies, Slack and chat are not read'] });
+    const notice = candidate(event, { kind: 'meeting-prep', key: prepKey, surprise: 1, precision: 1, ...openPrep(m), valueHalfLifeMs: null, observation: `${briefHeader(s, m)} ${lines.join(' ')}`, evidence: ['promises, the calendar, tickets and mail subjects already on the record; mail bodies, Slack and chat are not read'] });
     result = { state: remember(s, [prepKey], event.ts, { kind: 'meeting-prep', title: m.title, start: m.start, end: m.end, lines, at: event.ts }), effects: [...result.effects, notice] };
   }
   return result;
+}
+
+/**
+ * The first touch of the day (`owner:first-touch`): today's standup draft goes
+ * to Today, said by no notice of its own. The workbench's morning packet carries
+ * the same lines to the shelf, and its shelving is the one notice.
+ */
+function onFirstTouch(state: KernelState, event: SanitizedEvent): Result {
+  const standup = standupToday(state, event.ts);
+  if (!standup || briefsOf(state).done[standup.key]) return { state, effects: [] };
+  const m = standup.meeting;
+  return { state: remember(state, [standup.key], event.ts, { kind: 'standup-draft', title: m.title, start: m.start, end: m.end, lines: standup.lines, at: event.ts }), effects: [] };
 }
 
 /** How often the week in review is composed again while it is due, so Friday afternoon's work reaches it. */
@@ -227,6 +235,8 @@ export const briefClock: Rule = (state, event) => {
   switch (event.type) {
     case 'clock:tick':
       return askWeek(onTick(state, event), event);
+    case 'owner:first-touch':
+      return onFirstTouch(state, event);
     case 'brief:week-composed':
       return onWeekComposed(state, event);
     case 'git:commit':

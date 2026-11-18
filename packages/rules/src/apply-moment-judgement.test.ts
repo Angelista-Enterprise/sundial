@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createInitialState } from '@sundial/kernel/initial-state.js';
 import type { SanitizedEvent } from '@sundial/kernel/types.js';
-import { applyMomentJudgement, GOAL_ADVANCE_DEFAULT_THRESHOLD, inTheOwnersLanguage, PROMISE_RESOLVE_DEFAULT_THRESHOLD } from './apply-moment-judgement.js';
+import { applyMomentJudgement, GOAL_ADVANCE_DEFAULT_THRESHOLD, inTheOwnersLanguage } from './apply-moment-judgement.js';
 import { THRESHOLD_MIN_N } from './judgement-track.js';
 import { questionId } from './questions/index.js';
 import { GOAL_ADVANCE_QUESTIONS } from './questions/moment-fanout.js';
@@ -119,12 +119,9 @@ describe('applyMomentJudgement (J1.2, option A)', () => {
       expect(inTheOwnersLanguage('Ja, dan zit ik zo meteen even met Alex — café om 10:30?')).toBe(true);
     });
 
-    it('a promise slot at θ closes THAT promise only with the second key (non-text evidence on the moment)', () => {
-      const answers = { resolves_promise_p0: { type: 'noul', noul: 0.4 }, resolves_promise_p1: { type: 'noul', noul: PROMISE_RESOLVE_DEFAULT_THRESHOLD } };
-      const withKey = emitted(applyMomentJudgement(createInitialState('d1'), result({ metadata: { promises: ['commitment:speech:a', 'commitment:speech:b'], nonText: true }, answers })).effects);
-      expect(withKey).toHaveLength(1);
-      expect(withKey[0]).toMatchObject({ type: 'commitment:resolved', payload: { id: 'commitment:speech:b', momentId: 'm-1', p: 0.7 } });
-      expect(emitted(applyMomentJudgement(createInitialState('d1'), result({ metadata: { promises: ['commitment:speech:a', 'commitment:speech:b'], nonText: false }, answers })).effects)).toHaveLength(0);
+    it('a logged promise slot closes nothing on replay: the resolve question was dropped (2026-11-16)', () => {
+      const answers = { resolves_promise_p0: { type: 'noul', noul: 0.9 } };
+      expect(emitted(applyMomentJudgement(createInitialState('d1'), result({ metadata: { promises: ['commitment:speech:a'], nonText: true }, answers })).effects)).toHaveLength(0);
     });
   });
 });

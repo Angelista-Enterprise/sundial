@@ -39,3 +39,43 @@ describe('gnomon_export_rule (U4-F30)', () => {
     await expect(exporter(async () => ({ unavailable: true })).execute({ id: 'ci-failed' })).rejects.toThrow('not available')
   })
 })
+
+describe('flows in the chat tools (observatory §2)', () => {
+  const step1 = { id: 'r1', title: 'R1', when: { type: 'shell:command' }, emit: 'custom:one', say: 'x', cooldownMin: 60 }
+  const state = () => ({ watch: { rules: [step1, { id: 'r9', title: 'R9', when: { type: 'git:push' }, say: 'y', cooldownMin: 60 }], stats: { r1: { flow: { id: 'fl', title: 'Fl', step: 1 } } } } })
+  it('a later step is adopted with its flow and held against the joint backtest of the steps before it', async () => {
+    const appended = []
+    const tested = []
+    const [adopt] = watchTools(
+      async (type, payload) => appended.push({ type, payload }),
+      state,
+      async (rule) => (tested.push(rule), Array.isArray(rule) ? { valid: true, days: 30, steps: [{ fired: 4, heard: 0 }, { fired: 2, heard: 1 }] } : { valid: true, rule, fired: 0, days: 30, gate: { phasic: 0, tonic: 0 } }),
+    )
+    const out = await adopt.execute({ rule: { title: 'R2', when: { type: 'custom:one' }, say: 'z' }, flow: { id: 'fl', title: 'Fl', step: 2 } })
+    expect(tested[1].map((r) => r.id)).toEqual(['r1', 'r2'])
+    expect(appended).toEqual([{ type: 'rule:adopted', payload: { rule: expect.objectContaining({ id: 'r2' }), predicted: { fired: 2, days: 30, heard: 1 }, flow: { id: 'fl', title: 'Fl', step: 2 } } }])
+    expect(out.predicted).toEqual({ fired: 2, days: 30, heard: 1 })
+  })
+  it('pause, resume and drop take one rule or a whole flow, one event per rule', async () => {
+    const appended = []
+    const tools = watchTools(async (type, payload) => appended.push([type, payload.id]), state, async () => ({}))
+    const by = (name) => tools.find((t) => t.name === name)
+    expect(await by('gnomon_pause_rule').execute({ flow: 'fl' })).toEqual({ paused: 'r1' })
+    await by('gnomon_resume_rule').execute({ id: 'r9' })
+    await by('gnomon_drop_rule').execute({ id: 'r9' })
+    expect(appended).toEqual([['rule:paused', 'r1'], ['rule:resumed', 'r9'], ['rule:dropped', 'r9']])
+    await expect(by('gnomon_pause_rule').execute({})).rejects.toThrow('name one rule')
+    await expect(by('gnomon_pause_rule').execute({ flow: 'nope' })).rejects.toThrow('no flow "nope"')
+  })
+})
+
+describe('a reach is adopted only when the action gate knows its tool (observatory §3)', () => {
+  it('refuses an unmounted integration and takes a mounted one', async () => {
+    const appended = []
+    const reach = { title: 'Publish', when: { type: 'git:push' }, do: [{ reach: { tool: 'mcp__github__create_release', brief: 'Draft it' } }], say: 'x' }
+    const tools = (integrations) => watchTools(async (type, payload) => appended.push(type), () => ({ watch: { rules: [] } }), async (rule) => ({ valid: true, rule, fired: 1, days: 30, gate: { phasic: 0, tonic: 1 } }), undefined, () => integrations)
+    await expect(tools([])[0].execute({ rule: reach })).rejects.toThrow('not a tool the action gate knows')
+    await tools([{ name: 'github' }])[0].execute({ rule: reach })
+    expect(appended).toEqual(['rule:adopted'])
+  })
+})

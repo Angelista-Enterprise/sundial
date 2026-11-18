@@ -1,3 +1,4 @@
+import { sessionStore } from '../browser/session-store.js';
 import { readWindowSidecar, type WindowRef } from './window-capture.js';
 
 export interface WindowChangedPayload {
@@ -5,7 +6,17 @@ export interface WindowChangedPayload {
   windowTitle: string;
   windowId: string;
   documentPath: string | null;
+  /** S5R2: a sheet or dialog in front of the window; `previousWindow.sheet` is the app as it was left. */
+  sheet?: true;
   previousWindow: WindowRef | null;
+  /**
+   * `focus` when another window (or app) took the front; `title` when the same
+   * window renamed itself (a terminal running a build, an agent rewriting its
+   * title, an editor moving between files). 44% of the record's events were
+   * title changes with no reason attached, so every switch count measured the
+   * terminal. Count `focus` for switches; read `title` for progress.
+   */
+  reason: 'focus' | 'title';
 }
 
 export interface SensorEvent {
@@ -51,18 +62,36 @@ export function pollWindowChange(current: WindowRef | null, sensorState: WindowS
   sensorState.staleReadCount = 0;
 
   const { lastWindow } = sensorState;
-  if (lastWindow && lastWindow.windowId === current.windowId && lastWindow.windowTitle === current.windowTitle) {
+  // A document that arrives after its title (a session file is up to 15 s late) is said once; one that goes away is not.
+  const documentArrived = lastWindow?.documentPath === null && current.documentPath !== null;
+  if (lastWindow && lastWindow.windowId === current.windowId && lastWindow.windowTitle === current.windowTitle && !documentArrived) {
+    // S5R2: a sheet that came or went emits nothing; the switch away says it, as its `previousWindow` (opened-track.ts).
+    if (lastWindow.sheet !== current.sheet) sensorState.lastWindow = current;
     return null;
   }
 
   const previousWindow = lastWindow;
   sensorState.lastWindow = current;
-  return { type: 'window:changed', payload: { ...current, previousWindow } };
+  const reason = lastWindow && lastWindow.windowId === current.windowId && lastWindow.processName === current.processName ? 'title' : 'focus';
+  return { type: 'window:changed', payload: { ...current, previousWindow, reason } };
 }
 
 const sensorState = createWindowSensorState();
 
+/** The app in front as of the last poll, for a sensor that needs a second witness. */
+export const frontProcessName = (): string | null => sensorState.lastWindow?.processName ?? null;
+
+/**
+ * W6 D8: a Firefox-family window has no page URL (Accessibility gives none), so no URL rule could
+ * place it in a project. Its session file names the page with the window's own title.
+ */
+export function withPageUrl(current: WindowRef | null, urlOf: (app: string, windowTitle: string) => string | null): WindowRef | null {
+  if (!current || current.documentPath !== null) return current;
+  const url = urlOf(current.processName, current.windowTitle);
+  return url === null ? current : { ...current, documentPath: url };
+}
+
 /** Called once per poll tick by the daemon. */
 export function pollWindowSensor(): SensorEvent | null {
-  return pollWindowChange(readWindowSidecar(), sensorState);
+  return pollWindowChange(withPageUrl(readWindowSidecar(), (app, title) => sessionStore.urlOf(app, title)), sensorState);
 }

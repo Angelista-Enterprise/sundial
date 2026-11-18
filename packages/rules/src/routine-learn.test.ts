@@ -93,4 +93,17 @@ describe('a full table can still learn a new habit', () => {
     expect(Object.keys(s.routines.learned)).toHaveLength(MAX_ROUTINES);
     expect(confirmedRoutines(s).find((r) => r.key.startsWith('Mail/') && r.steps.length === 3)?.support).toBe(3);
   });
+
+  it("forgets a routine on the owner's wrong verdict (feedback:verdict, kind routine), and only then", () => {
+    let state = createInitialState('d1');
+    for (let round = 0; round < 3; round++) state = walk(state, ['Code', 'Warp', 'Chrome'], Date.parse('2026-08-14T09:00:00.000Z') + round * 3_600_000);
+    const key = confirmedRoutines(state)[0]!.key;
+    const verdict = (artifactKind: string, verdict: string): SanitizedEvent => ({ id: `v-${artifactKind}-${verdict}`, type: 'feedback:verdict', ts: '2026-08-14T12:00:00.000Z', payload: { artifactKind, artifactId: key, verdict }, sanitized: true });
+    expect(routineLearn(state, verdict('routine', 'not-now')).state).toBe(state);
+    expect(routineLearn(state, verdict('entity_fact', 'wrong')).state).toBe(state);
+    const after = routineLearn(state, verdict('routine', 'wrong')).state;
+    expect(after.routines.learned[key]).toBeUndefined();
+    expect(Object.keys(after.routines.learned)).toHaveLength(Object.keys(state.routines.learned).length - 1);
+    expect(after.routines.trail).toBe(state.routines.trail);
+  });
 });

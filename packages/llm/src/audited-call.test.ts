@@ -9,8 +9,10 @@ vi.mock('@sundial/db/index.js', () => ({
 
 const callChatCompletion = vi.fn();
 vi.mock('./transport.js', () => ({ callChatCompletion: (...args: unknown[]) => callChatCompletion(...args) }));
-let configured = { model: 'qwen/qwen3.8-flash-next', baseUrl: 'https://api.tensorx.ai/v1' };
-vi.mock('./config.js', () => ({ modelForPurpose: () => configured.model, getLlmConfig: () => configured }));
+let configured: Record<string, unknown> = { model: 'qwen/qwen3.8-flash-next', baseUrl: 'https://api.tensorx.ai/v1', route: 'openai', access: 'api' };
+let candidates: Record<string, unknown>[] | null = null;
+let held = new Set<string>();
+vi.mock('./config.js', () => ({ modelForPurpose: () => configured.model, getLlmConfig: () => configured, resolveRole: () => candidates ?? [configured], isRouteHeld: (route: string) => held.has(route) }));
 
 const { runAuditedLlmCall } = await import('./audited-call.js');
 const { auditIdOf } = await import('./types.js');
@@ -21,6 +23,49 @@ beforeEach(() => {
   recordLlmAudit.mockReset().mockResolvedValue(undefined);
   updateLlmAudit.mockReset().mockResolvedValue(undefined);
   callChatCompletion.mockReset();
+  candidates = null;
+  held = new Set();
+});
+
+describe('the router (step 3): a limit moves to the next source', () => {
+  const far = { route: 'far', source: 'far', access: 'api', model: 'big-model', baseUrl: 'https://llm.example.com/v1', protocol: 'openai-chat' };
+  const near = { route: 'near', source: 'near', access: 'api', model: 'small', baseUrl: 'http://127.0.0.1:11434/v1', protocol: 'openai-chat' };
+  const ok = { content: 'hi', statusCode: 200, promptTokens: 1, completionTokens: 1, totalTokens: 2, toolCalls: [], finishReason: 'stop' };
+  const limit = (status: number) => { const { LlmHttpError } = { LlmHttpError: class extends Error { constructor(public status: number, public retryAfterMs: number | null, m: string) { super(m); this.name = 'LlmHttpError'; } } }; return new LlmHttpError(status, 500, `LLM endpoint returned ${status}`); };
+
+  it('a 429 on the first source answers on the second, two rows chained by parentCallId, each under its own source', async () => {
+    candidates = [far, near];
+    callChatCompletion.mockRejectedValueOnce(limit(429)).mockResolvedValueOnce(ok);
+    const out = await runAuditedLlmCall({ ...options, callId: 'call-1' });
+    expect(out.content).toBe('hi');
+    expect(recordLlmAudit.mock.calls.map((c) => [c[0].id, c[0].source, c[0].attempt, c[0].parentCallId])).toEqual([['call-1', 'far', 1, null], [expect.any(String), 'near', 2, 'call-1']]);
+    expect(callChatCompletion.mock.calls.map((c) => c[1].config.route)).toEqual(['far', 'near']);
+    expect(updateLlmAudit.mock.calls[0][1]).toMatchObject({ success: false, errorClass: 'rate-limit' });
+  });
+
+  it('a 402 falls through too; a 500 stops at the source it hit; the last source has nowhere to go', async () => {
+    candidates = [far, near];
+    callChatCompletion.mockRejectedValueOnce(limit(402)).mockResolvedValueOnce(ok);
+    expect((await runAuditedLlmCall(options)).content).toBe('hi');
+    callChatCompletion.mockReset().mockRejectedValueOnce(limit(500));
+    await expect(runAuditedLlmCall(options)).rejects.toThrow(/500/);
+    expect(callChatCompletion).toHaveBeenCalledTimes(1);
+    callChatCompletion.mockReset().mockRejectedValueOnce(limit(429)).mockRejectedValueOnce(limit(429));
+    await expect(runAuditedLlmCall(options)).rejects.toThrow(/429/);
+    expect(callChatCompletion).toHaveBeenCalledTimes(2);
+  });
+
+  it('a held source is skipped before the call; when every source is held, the first is tried anyway', async () => {
+    candidates = [far, near];
+    held = new Set(['far']);
+    callChatCompletion.mockResolvedValueOnce(ok);
+    await runAuditedLlmCall(options);
+    expect(callChatCompletion.mock.calls[0][1].config.route).toBe('near');
+    held = new Set(['far', 'near']);
+    callChatCompletion.mockReset().mockResolvedValueOnce(ok);
+    await runAuditedLlmCall(options);
+    expect(callChatCompletion.mock.calls[0][1].config.route).toBe('far');
+  });
 });
 
 describe('billed tokens on a failed row', () => {

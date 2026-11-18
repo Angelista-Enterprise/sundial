@@ -261,7 +261,8 @@ export const contradictionCheck: Rule = (state, event) => {
       object: candidate.object,
       confidence: candidate.confidence,
       sourceEventId: candidate.sourceEventId,
-      ts: event.ts,
+      // Valid from when it was said, when the producer knows (a fact told on Tuesday, filed at Wednesday's boundary).
+      ts: typeof candidate.at === 'string' && Number.isFinite(Date.parse(candidate.at)) && candidate.at < event.ts ? candidate.at : event.ts,
       provenance,
     };
     // D3 — embedded so `ask`/`search` retrieve graph knowledge, not just episodic moments/knowledge entries.

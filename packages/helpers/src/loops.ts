@@ -84,3 +84,25 @@ export const openAsk = (state: WithLoops | null | undefined): AskLike | null => 
   const loop = loopsOf(state, 'owner-ask')[0];
   return loop === undefined ? null : askOf(loop);
 };
+
+/**
+ * The watch rule behind a question, read off the question's own id: a watch
+ * rule's `do: [{ask}]` (and its reach, §3) mints `owner-ask:watch-<rule>-<tag>-<minute>`
+ * (`watchActions` in `@sundial/kernel/watch.ts`). Null for any other question.
+ * Read from the id rather than from the open ask, so a late or stale answer
+ * still names its rule, and every writer of the answer agrees without a lookup.
+ */
+const WATCH_ASK = /^owner-ask:watch-([a-z0-9-]+)-[0-9a-f]{8}-\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
+export const watchAskRule = (askId: string): string | null => WATCH_ASK.exec(askId)?.[1] ?? null;
+
+/**
+ * The `ask:owner-answered` payload, one shape for every writer (the seat's tap,
+ * the chat's `gnomon_owner_answer`, the MCP write): the ask, the answer as
+ * given, and for a watch rule's question `rule`, so another rule can branch on
+ * it — `when: {type: 'ask:owner-answered', where: [{field: 'rule', op: 'eq',
+ * value: '<rule>'}, {field: 'answer', op: 'eq', value: '<choice>'}]}`.
+ */
+export function answerPayload(askId: string, answer: string): { askId: string; answer: string; rule?: string } {
+  const rule = watchAskRule(askId);
+  return { askId, answer, ...(rule === null ? {} : { rule }) };
+}

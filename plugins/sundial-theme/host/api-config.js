@@ -1,8 +1,11 @@
 // Setup and Settings: model providers, services, settings, back-fills, permissions, hearing and
 // speech-to-text. Config writes go through config.json and the log (W3).
-import { readJson, sendJson } from './http.js'
+import { post, readJson, sendJson } from './http.js'
+import { applyPrivacyConfig, DEFAULT_PRIVATE_HOSTS, DEFAULT_SENSITIVE_APPS, privacyConfig } from '@sundial/helpers/privacy-config.js'
+import { editPrivacy, privacyView } from '../shell/privacy.js'
+import { readSeen } from './read-privacy.js'
 import { withConfigLock, writeConfigAtomic } from '@sundial/helpers/config.js'
-import { isHttpUrl, isLocalUrl, parseProviders, parseUse, providerKeyEnv, providerLabel, setEnvValues } from '@sundial/helpers/llm-providers.js'
+import { isHttpUrl, isLocalUrl, isProtocol, parseProviders, parseUse, providerKeyEnv, providerLabel, setEnvValues } from '@sundial/helpers/llm-providers.js'
 import { readFile, stat } from 'node:fs/promises'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -12,13 +15,20 @@ import { homedir } from 'node:os'
 import { existsSync } from 'node:fs'
 import { NOTICE_GROUPS } from '@sundial/kernel/notice-groups.js'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import { resolveSundialConfig } from '@sundial/helpers/sundial-config.js'
+import { parseRoles, resolveSundialConfig } from '@sundial/helpers/sundial-config.js'
 import { configChange, restartPaths } from '@sundial/kernel/config-log.js'
 import { readSundialEnvFile } from '@sundial/helpers/sundial-env.js'
 import { readFreshness } from './read-freshness.js'
 import { allowed, describe, SERVICES, setPath, textValue } from '../shell/services.js'
 
 const execFileP = promisify(execFile)
+
+/** Plan 15 step 3: the mean word probability (null without words) and the language whisper named. */
+export function heardHow(body) {
+  const words = (Array.isArray(body?.segments) ? body.segments : []).flatMap((s) => (Array.isArray(s?.words) ? s.words : [])).filter((w) => typeof w?.probability === 'number')
+  const confidence = words.length === 0 ? null : Math.round((words.reduce((n, w) => n + w.probability, 0) / words.length) * 100) / 100
+  return { confidence, language: typeof body?.language === 'string' ? body.language : null }
+}
 
 export function mountConfig(ctx, shell) {
   const { PLUGIN, agentFor, api, broadcast, home, snapshot } = shell
@@ -35,10 +45,12 @@ export function mountConfig(ctx, shell) {
    * API keys are written, never read back: a GET says only whether one is set.
    *
    * POST `{op}`:
-   *   check   `{baseUrl, apiKey?, target?}` → the models the endpoint lists
-   *   save    `{target: 'default' | 'new' | <id>, label?, baseUrl, model, apiKey?}` (empty apiKey keeps the saved one)
+   *   check   `{baseUrl, apiKey?, target?, protocol?}` → the models the endpoint lists
+   *   save    `{target: 'default' | 'new' | <id>, label?, baseUrl, model, apiKey?, protocol?}` (empty apiKey keeps the saved one;
+   *           protocol `openai-chat` (default) | `anthropic-messages` | `openai-responses`, not for the default)
    *   remove  `{target}`
    *   use     `{purpose: 'default' | <purpose>, target: 'openai' | <id> | ''}` — which model does that work ('' = the default)
+   *   role    `{role: 'chat' | 'background' | 'judge' | 'jobs', list: ['<source>[:<model>]', …]}` — the ordered sources for that role; [] clears it
    *   restart → the LaunchAgent restarts Sundial; without one, the command to run
    */
   const envPath = join(home, '.env')
@@ -53,14 +65,18 @@ export function mountConfig(ctx, shell) {
   }
   const savedProviders = async () => {
     const [env, config] = await Promise.all([readEnvFile(), readConfigFile()])
-    const row = (id, baseUrl, model, label) => ({ id, label: label ?? providerLabel(baseUrl), baseUrl, model, hasKey: (env[providerKeyEnv(id)] ?? '') !== '', local: isLocalUrl(baseUrl) })
+    const row = (id, baseUrl, model, label, protocol = 'openai-chat') => ({ id, label: label ?? providerLabel(baseUrl), baseUrl, model, protocol, hasKey: (env[providerKeyEnv(id)] ?? '') !== '', local: isLocalUrl(baseUrl) })
     const base = env.SUNDIAL_LLM_BASE_URL ?? ''
     return {
       default: base !== '' ? row('openai', base.replace(/\/+$/, ''), env.SUNDIAL_LLM_MODEL ?? '') : null,
-      providers: parseProviders(config?.llm?.providers).map((p) => row(p.id, p.baseUrl, p.model, p.label)),
+      providers: parseProviders(config?.llm?.providers).map((p) => row(p.id, p.baseUrl, p.model, p.label, p.protocol)),
       use: parseUse(config?.llm?.use),
+      roles: parseRoles(config?.llm?.roles),
     }
   }
+  // The roles /setup lists sources for, and the sources a role may name beside the saved providers.
+  const ROLES = ['chat', 'background', 'judge', 'jobs']
+  const EXTRA_SOURCES = { judge: ['jev', 'claude', 'copilot'], background: ['claude', 'copilot'], jobs: ['claude', 'copilot'], chat: [] }
   // The background work /setup can send to one provider or another (the chat is chosen in its own picker).
   const USE_PURPOSES = ['default', 'intent', 'companion', 'extract', 'journal', 'reflect', 'refute', 'goal', 'transcript']
   // W3: every write to config.json (or .env) is also a `config:changed` in the log, inside the same lock.
@@ -84,12 +100,18 @@ export function mountConfig(ctx, shell) {
     const text = (v, max = 300) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
     const baseUrl = text(body.baseUrl).replace(/\/+$/, '')
     const target = text(body.target, 40)
+    // Gnomon's own route is Sundial's adapter and speaks OpenAI chat completions only.
+    const protocol = target !== 'default' && isProtocol(body.protocol) ? body.protocol : 'openai-chat'
 
     if (body.op === 'check') {
       if (!isHttpUrl(baseUrl)) return sendJson(res, 200, { ok: false, error: 'That is not an http(s) address.' })
       const key = text(body.apiKey, 400) || (await readEnvFile())[providerKeyEnv(target === 'default' || target === '' ? 'openai' : target)] || 'gnomon-local'
       try {
-        const answer = await fetch(`${baseUrl}/models`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(8000) })
+        // An Anthropic-messages client adds `/v1/messages` to the address itself, so the address is the API root;
+        // its model list lives at `/v1/models`, with its own headers. The other protocols take the `/v1` address.
+        const anthropic = protocol === 'anthropic-messages'
+        const headers = anthropic ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' } : { authorization: `Bearer ${key}` }
+        const answer = await fetch(`${anthropic && !/\/v1$/.test(baseUrl) ? `${baseUrl}/v1` : baseUrl}/models`, { headers, signal: AbortSignal.timeout(8000) })
         if (answer.status === 401 || answer.status === 403) return sendJson(res, 200, { ok: false, error: 'The provider refused the key.' })
         if (!answer.ok) return sendJson(res, 200, { ok: false, error: `The provider answered ${answer.status}.` })
         const data = await answer.json().catch(() => null)
@@ -117,14 +139,15 @@ export function mountConfig(ctx, shell) {
           const stem = /^[a-z]/.test(slug) && slug.length > 1 && slug !== 'openai' && slug !== 'tensorx' ? slug : `p-${slug}`
           id = stem
           for (let n = 2; list.some((p) => p.id === id); n++) id = `${stem}-${n}`
-          list.push({ id, label, baseUrl, model })
+          list.push({ id, label, baseUrl, model, protocol })
         } else {
           const at = list.findIndex((p) => p.id === target)
           if (at < 0) return sendJson(res, 404, { unavailable: 'No provider by that name.' })
-          list[at] = { id, label, baseUrl, model }
+          list[at] = { ...list[at], id, label, baseUrl, model, protocol }
         }
         if (apiKey) setEnvValues(envPath, { [providerKeyEnv(id)]: apiKey })
-        await writeConfig(config, { ...config, llm: { ...(config.llm ?? {}), providers: list } }, apiKey ? ['llm.providers'] : [])
+        // A route is registered at start (Sundial's adapter, or the pi-ai instance): a new or changed one waits for a restart.
+        await writeConfig(config, { ...config, llm: { ...(config.llm ?? {}), providers: list } }, ['llm.providers'])
       }
       return sendJson(res, 200, { ...(await savedProviders()), restartNeeded: modelsWaiting() })
     }
@@ -151,6 +174,19 @@ export function mountConfig(ctx, shell) {
       const use = { ...parseUse(config?.llm?.use), [purpose]: target }
       if (target === '') delete use[purpose]
       await writeConfig(config, { ...config, llm: { ...(config.llm ?? {}), use } })
+      return sendJson(res, 200, { ...(await savedProviders()), restartNeeded: modelsWaiting() })
+    }
+
+    if (body.op === 'role') {
+      const role = text(body.role, 20)
+      const config = await readConfigFile()
+      const ids = new Set(['openai', ...parseProviders(config?.llm?.providers).map((p) => p.id), ...(EXTRA_SOURCES[role] ?? [])])
+      const list = Array.isArray(body.list) ? body.list.filter((e) => typeof e === 'string').map((e) => e.trim()).filter((e) => e !== '') : null
+      if (!ROLES.includes(role) || list === null || list.length > 4 || list.some((e) => !ids.has(e.split(':')[0]) || !/^[a-z][a-z0-9-]{1,30}(:[a-z0-9][a-z0-9./:_-]{0,80})?$/.test(e))) return sendJson(res, 400, { unavailable: 'No such role, or a source that is not set up.' })
+      const roles = { ...(config?.llm?.roles ?? {}), [role]: list }
+      if (list.length === 0) delete roles[role]
+      // `background` and `judge` apply live through the log; `jobs` is read at start (RESTART_PATHS).
+      await writeConfig(config, { ...config, llm: { ...(config.llm ?? {}), roles } })
       return sendJson(res, 200, { ...(await savedProviders()), restartNeeded: modelsWaiting() })
     }
 
@@ -229,6 +265,24 @@ export function mountConfig(ctx, shell) {
     sendJson(res, 200, { services, restartNeeded: waiting.length > 0, waiting, bootedAt, noticeGroups: NOTICE_GROUPS.map(({ id, label, what }) => ({ id, label, what })) })
    }
 
+  // Private apps and hosts (Settings, shell/privacy.js). A save writes config.json and applies at once, no restart:
+  // every reader of the two lists (the screen tools, the sensors, the page-text gate) reads them at call time.
+  const BUILT_IN = { apps: [...DEFAULT_SENSITIVE_APPS], hosts: [...DEFAULT_PRIVATE_HOSTS] }
+  const privacy = async () => privacyView(await readConfigFile(), BUILT_IN, await readSeen())
+  api('/gnomon/api/privacy', async (_req, res) => sendJson(res, 200, await privacy()))
+  post(ctx, '/gnomon/api/privacy/edit', { limit: 1024, method: 'A privacy edit takes a POST.' }, (body) =>
+    withConfigLock(async () => {
+      const edit = editPrivacy(await readConfigFile(), BUILT_IN, body)
+      if (edit.error) return edit.error
+      await writeConfigAtomic(configPath, edit.next)
+      const own = resolveSundialConfig(edit.next).privacy
+      // Only the two lists move: the tier, the hidden apps and the patterns keep what this process booted with.
+      applyPrivacyConfig({ redactionTier: privacyConfig.redactionTier, extraHiddenApps: privacyConfig.hiddenApps, extraShellRedactPatterns: privacyConfig.shellRedactPatterns, extraSensitiveApps: own.extraSensitiveApps, extraPrivateHosts: own.extraPrivateHosts })
+      console.log(`[${PLUGIN}] privacy: ${body.op} ${body.kind} (live)`)
+      return { ...(await privacy()), saved: edit.value }
+    }),
+  )
+
   let backfilling = false
   api('/gnomon/api/backfill', async (req, res) => {
     const backfill = ctx.gnomonKernel.backfill
@@ -254,7 +308,9 @@ export function mountConfig(ctx, shell) {
     if (req.method !== 'POST') return sendJson(res, 200, read())
     const body = await readJson(req, 4096)
     if (body === null || typeof body !== 'object') return sendJson(res, 400, { unavailable: 'The settings could not be read.' })
-    if (typeof body.capability === 'string') await ctx.gnomonKernel.appendSignal(body.grant === true ? 'autonomy:granted' : 'autonomy:set', { capability: body.capability, ...(body.grant === true ? {} : { level: body.level }), by: 'owner' })
+    // Round 3: `{reset: app}` (or `true`, every app) clears the ladder there: every plain act in it asks again.
+    if (body.reset === true || typeof body.reset === 'string') await ctx.gnomonKernel.appendSignal('autonomy:set', { reset: body.reset === true ? true : String(body.reset).slice(0, 80), by: 'owner' })
+    else if (typeof body.capability === 'string') await ctx.gnomonKernel.appendSignal(body.grant === true ? 'autonomy:granted' : 'autonomy:set', { capability: body.capability, ...(body.grant === true ? {} : { level: body.level }), by: 'owner' })
     else await ctx.gnomonKernel.appendSignal('settings:set', { ...body, by: 'owner' })
     ctx.emit('gnomon/settings', read())
     sendJson(res, 200, read())
@@ -376,15 +432,20 @@ export function mountConfig(ctx, shell) {
       }
       const form = new FormData()
       form.append('file', new Blob([audio], { type: 'audio/wav' }), 'speech.wav')
-      form.append('response_format', 'json')
+      // Plan 15 step 3: the words carry their probability; their mean is how sure the transcriber was.
+      form.append('response_format', 'verbose_json')
       const got = await fetch(WHISPER, { method: 'POST', body: form })
       if (!got.ok) {
         sendJson(res, 502, { unavailable: `The local transcriber answered ${got.status}.` })
         return
       }
       const body = await got.json()
-      sendJson(res, 200, { text: String(body?.text ?? '').trim() })
+      // whisper puts a line break between segments, and a segment can end mid-word ("Harman and K" / "ardon"):
+      // a segment that starts a word carries its own leading space, so dropping the break joins them right.
+      sendJson(res, 200, { text: String(body?.text ?? '').replace(/\n/g, '').replace(/\s+/g, ' ').trim(), ...heardHow(body) })
     } catch (error) {
+      // whisper.cpp 1.9.x segfaults on a clip its VAD finds no speech in; the helper restarts it.
+      if (error?.cause?.code === 'UND_ERR_SOCKET') return void sendJson(res, 200, { text: '', unavailable: 'Nothing was heard.' })
       // Not running is the ordinary case, not a fault: the hearing sensor owns
       // that process, and the owner may have it off.
       sendJson(res, 503, { unavailable: `The local transcriber is not answering on 8771. ${error instanceof Error ? error.message : ''}`.trim() })

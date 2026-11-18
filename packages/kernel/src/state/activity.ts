@@ -1,5 +1,7 @@
 // The present moment and where it sits: the window, the open moment, the project, the resume line, the day's coverage, presence and hearing.
-import type { AgentFleetState, LocatorSource, TicketThread } from '../types.js';
+import type { AppNotesSlice } from '@sundial/helpers/app-notes.js';
+import type { TaskOutcome } from '@sundial/helpers/task-of.js';
+import type { AgentFleetState, LocatorSource, ScreenFact, TicketThread } from '../types.js';
 
 /** KernelState's Activity fields; `KernelState` extends this. */
 export interface ActivitySlices {
@@ -10,21 +12,28 @@ export interface ActivitySlices {
     /** Per-window project attribution, recomputed on each `window:changed`. `momentClose` reads the same resolution (via the shared `resolveAttribution` helper) to stamp a moment's `projectId`. */
     attribution: WindowAttribution;
   };
-  moment: {
-    id: string;
-    sessionId: string;
-    startTime: string;
-    /** W6 D1: where the dropped sub-20-s predecessors merged into it began; the written row starts there. */
-    carriedFrom?: string | null;
-    processName: string;
-    projectId: string | null;
-    rollup: MomentRollup;
-    intent: {
-      status: 'none' | 'scheduled' | 'inflight' | 'done';
-      text?: string;
-      analyzedAt?: string;
-    };
-  } | null;
+  /** The task in flight: the owner's newest request in any chat, as `taskBoundary` folds `task:started`. The mark the screen tools key "this task" on; null before the first one. A chat's own task is in `tasks` (read it with helpers task-of.ts `taskOf`). */
+  task: ChatTask | null;
+  /**
+   * Set 5 R1: each chat's own task by session id (`task:started`, and a side thread's `task:aside`), the newest `TASKS_KEEP` (owner and rig apart) by
+   * start; `task` is the same object for its chat. Optional: a snapshot from before it holds only `task`, which `taskOf` reads as its chat's.
+   */
+  tasks?: Record<string, ChatTask>;
+  /** Set 3 R3: per chat (`''`: a look no chat asked for), its newest private read since that chat's last request, and which chat asked for each of the newest looks and acts (`screen:asked`), as `privateReads` folds them. */
+  privateReads?: { chats: Record<string, { at: string; kind: 'file' | 'screen' | 'integration' | 'record' }>; asked: Record<string, string> };
+  /** Background shell jobs Gnomon started, by id, as `shellJobs` folds `shell:exited`: the newest few, so a wait can end the moment one does. */
+  jobs: Record<string, { exitCode: number; lastLine: string; at: string; ms: number }>;
+  /** Set 2 R3: per chat, its last gnomon_run_shell as `shellJobs` folds `shell:started`: the job it started (running while `jobs` lacks it), or that it failed to start. The newest few chats. */
+  shells?: Record<string, { at: string; failed: boolean; job: string | null }>;
+  /** Set 4 R2: the job waits Gnomon put on the shelf (`await:shelved`, a gnomon_await past a minute), as `awaitShelf` folds them; each ends with a knock in its chat when the job's `shell:exited` lands. The newest few. */
+  awaits?: { job: string; session: string; about: string; at: string }[];
+  /** What the owner's apps are, counted from window titles by `appLearn`: how often each came to the front, and the workspaces an app names in its title (a vault). Capped, so it never grows with the log. */
+  apps: { used: Record<string, { n: number; last: string }>; workspaces: Record<string, Record<string, number>> };
+  /** Set 5 R2: what an app does to Gnomon's own steps (a failure, then the same fix, in 3 tasks), owner's and rig's apart, as `appNotes` folds `screen:step`. Bounded. Optional: an older snapshot has none. */
+  appNotes?: AppNotesSlice;
+  /** Which rows Gnomon caused, as `byGnomon` folds its screen acts: the owner-learning rules skip a marked row. Bounded: one run, four apps, one mark. */
+  byGnomon: ByGnomon;
+  moment: OpenMoment | null;
   /**
    * The timestamp of the last event the daemon folded — i.e. the most recent
    * instant it is known to have been running.
@@ -97,7 +106,12 @@ export interface ActivitySlices {
      * `durationMs` (J2.2) let a rule folded AFTER `momentClose` see the close on
      * the same event via `endedAt === event.ts`; absent on older snapshots.
      */
-    lastClosedMoment: { projectId: string | null; confidence: AttributionConfidence | null; endedAt?: string; durationMs?: number } | null;
+    /**
+     * `open` is the written moment itself, kept so a flick away and back can REOPEN
+     * it instead of starting a touching twin: before this, 71% of same-app touching
+     * pairs had a sub-20-s excursion between them and no moment ran past 31 min.
+     */
+    lastClosedMoment: { projectId: string | null; confidence: AttributionConfidence | null; endedAt?: string; durationMs?: number; open?: OpenMoment } | null;
   };
   /**
    * Where the active coding agent (Claude Code) is working, from its own session
@@ -171,6 +185,21 @@ export interface ActivitySlices {
        * counting them hid the long breaks. Optional: older snapshots predate it.
        */
       lastActiveAt?: string | null;
+      /**
+       * The waking day (`wakingDate`, from 04:00) whose first touch was already
+       * raised as `owner:first-touch`, so the trigger fires once a day. Only the
+       * owner's own input counts: a row `byGnomon` marked never does. Optional:
+       * older snapshots predate it.
+       */
+      firstTouchDay?: string | null;
+      /**
+       * Set 2 R4 (the owner's hand wins): the end of the last `input:activity` window with an owner key or click
+       * (a row `byGnomon` marked never counts). A row is a ~10 s window, so this is when that window closed, not
+       * the keystroke itself; the screen tools hold an act while it is under 2 s old. Optional: older snapshots predate it.
+       * Set 2 R5: from an input helper that writes hardware-only times (`ownerOnly`), it is the keystroke or click
+       * itself (`lastKeyAt`/`lastClickAt`), still learned only when its ~10 s window lands.
+       */
+      ownerHandAt?: string | null;
     };
   };
   /**
@@ -184,6 +213,21 @@ export interface ActivitySlices {
   routines: {
     trail: string[];
     learned: Record<string, { steps: string[]; support: number; firstSeenAt: string; lastSeenAt: string }>;
+  };
+  /**
+   * Round 5 (FORESIGHT 4a): the owner's chores, with an object in them, which routines lack. `keys` counts
+   * DISTINCT owner-local days per chore key (`host:<host>` first seen on a workday morning, `ticket:<id>`
+   * opened), with the minute of the day's first visit beside each day; at most `MAX_CHORES` keys and
+   * `MAX_CHORE_DAYS` days each. `offered`: the local day an offer was made, per offer (`prs`, `tickets`),
+   * so one a day. `crossed`: the newest host chore that reached its count, the rule miner's seed.
+   * Single writer: `choreLearn`. Optional: older snapshots predate it.
+   */
+  chores?: {
+    keys: Record<string, ChoreCounter>;
+    offered: Record<string, string>;
+    crossed: { key: string; days: number; at: string } | null;
+    /** Set 5 R3: the offers the owner said not again to on the proposals card (`prs`, `tickets`): never offered again. */
+    dismissed?: string[];
   };
   /** `name` is the custom/named mode's display name when `state` is `'custom'` (or a system mode's own name, if the sidecar reports one) — `null` otherwise. Written by `focusModeTrack` (C1); previously dead — no rule wrote this at all. */
   focusMode: { state: FocusModeState; name: string | null; since: string };
@@ -316,12 +360,43 @@ export interface WindowRef {
  * and derived life-events — so the LLM analyzing a moment sees more than
  * one window title. See `packages/rules/src/moment-rollup.ts`.
  */
+/** The moment `momentClose` has open. One per state; the written row is its close. */
+export interface OpenMoment {
+  id: string;
+  sessionId: string;
+  startTime: string;
+  /** W6 D1: where the dropped sub-20-s predecessors merged into it began; the written row starts there. */
+  carriedFrom?: string | null;
+  processName: string;
+  projectId: string | null;
+  rollup: MomentRollup;
+  intent: {
+    status: 'none' | 'scheduled' | 'inflight' | 'done';
+    text?: string;
+    analyzedAt?: string;
+  };
+}
+
+/** A sub-20-s excursion to another app that the moment stayed open across. */
+export interface MomentInterruption {
+  processName: string;
+  at: string;
+  durationMs: number;
+}
+
 export interface MomentRollup {
   processName: string;
+  /** Flicks to another app the moment absorbed instead of closing on (capped at `MAX_INTERRUPTIONS`). */
+  interruptions?: MomentInterruption[];
+  /** Set on the second half of a 30-minute split: the row this one continues. */
+  continuesMomentId?: string;
   windowTitles: string[];
   shellCommandCount: number;
   notableCommands: string[];
   gitCommitCount: number;
+  /** Lines the moment's commits added and removed (`git:commit` insertions and deletions). Absent on rows from before 2026-10-14. */
+  linesAdded?: number;
+  linesRemoved?: number;
   gitBranch: string | null;
   calendarActive: boolean;
   /**
@@ -387,6 +462,8 @@ export interface MomentRollup {
    * hard fact downstream.
    */
   micActive: boolean;
+  /** The app that held the microphone (the last named non-Sundial holder), beside `audioApp` for playback. Absent on rows from before 2026-10-14. */
+  micApp?: string | null;
   cameraActive: boolean;
   meetingTitle: string | null;
   meetingAttendees: string[];
@@ -485,10 +562,42 @@ export interface MomentRollup {
   screenRefs?: string[];
   /** J3.3 — what a local vision model said was on screen during this moment (≤ 6 short facts, sanitized at ingest). */
   screenFacts?: string[];
+  /** What the screen showed during the moment, typed, on this Mac (`state.screen.facts`, deduplicated, ≤ 12, most recent last). */
+  screenSeen?: ScreenFact[];
   /** J3.4 — the text of the last page read in the browser during this moment (clipped), for the fan-out's subject evidence. */
   pageExcerpt?: string | null;
   /** Identifiers the owner edited during the moment (from `symbol:edited`), most recent last, capped. Used to be reduced to a count. */
   symbolsEdited?: string[];
+  /** File (relative to its repo) → lines its uncommitted diff adds plus removes, as of the last `symbol:edited` in the moment. Capped at 30 files. Absent before 2026-10-14. */
+  editedLines?: Record<string, number>;
+  /** What Gnomon itself did during the moment: its screen steps that ran and its own acts (`action:performed` detail rows), the apps it acted in (at most 5) and the goals it gave (at most 10, sanitized at ingest). Never a typed value. Absent before 2026-11-15 and on a moment Gnomon did nothing in. */
+  acts?: MomentActs;
+}
+
+/** Why a row is not the owner's: Gnomon's own screen act caused it, or it happened in the screen rig's test window. */
+export type NotOwners = 'act' | 'rig';
+
+export interface ByGnomon {
+  /** Gnomon is acting on screen until this time (event time): its last act row plus the settle. Null before the first act. */
+  until: string | null;
+  /** When the current run of acts began: an input window wholly inside [since, until] is Gnomon's. */
+  since: string | null;
+  /** The apps this run acted in (at most 4). */
+  apps: string[];
+  /** The run was opened by an allowed decision: until it names an app, a focus change in any app is Gnomon's. */
+  anyApp: boolean;
+  /** Why the last `window:changed` was not the owner's (null: it was): a project row that follows it inherits the mark. */
+  focus: NotOwners | null;
+  /** The last row marked, by id: `byGnomonMarked` compares it with the event being folded. */
+  marked: { id: string; why: NotOwners } | null;
+  /** How many rows were marked, by why: the evidence. */
+  n: Record<NotOwners, number>;
+}
+
+export interface MomentActs {
+  n: number;
+  apps: string[];
+  goals: string[];
 }
 
 /** Why Gnomon is listening right now — or, when `listening` is false, nothing. */
@@ -680,4 +789,48 @@ export interface ResumeLine {
   pieces: ResumePieces;
   /** The owner was back on its project within 10 minutes (U2-F37). */
   followed?: boolean;
+}
+
+/** One chore's count: the distinct owner-local days it was done, newest last, and the minute of each day's first visit. */
+export interface ChoreCounter {
+  days: string[];
+  minutes: number[];
+}
+
+/** One chat's task: the owner's request, and its own steps folded by `taskBoundary`. */
+export interface ChatTask {
+  id: string;
+  at: string;
+  session: string;
+  said: string;
+  /**
+   * The chat's newest dsh turn number when the owner's words arrived (`task:started`, `task:aside`): every turn numbered above it
+   * is this task's (helpers task-of.ts `taskOfTurn`, `ownTurn`). Absent on a task from before it: those bind by clock.
+   */
+  afterTurn?: number;
+  /** Set 2 R4: the owner's newest words sent while a turn of this task still ran (`task:corrected`, sanitized at ingest). */
+  corrected?: { at: string; session: string; text: string };
+  /**
+   * Set 4 R1: the task object, folded by `taskBoundary` from this task's own steps (its chat's `screen:step`, `screen:looked`,
+   * `shell:started`, `shell:exited`, `shell:command`): one short line each, the newest `TASK_KEEP` per list. The brief and the chat adapter print
+   * it in place of the steps it stands for. Absent until a step lands.
+   */
+  known?: string[];
+  did?: string[];
+  failed?: string[];
+  /** Background jobs this task started that have not ended, as `job-… running`. */
+  open?: string[];
+  /** Set 5 R1: a side thread's parent chat (`task:aside`). */
+  parent?: string;
+  /** Set 5 R1: the list the newest step went to, so "refused after the last thing done" is one read. */
+  newest?: 'did' | 'failed';
+  /**
+   * Review S5R1: a refusal the model may not be pushed past (the owner's own text, a private app, the owner's hand ...) was folded
+   * into `failed` (task-of.ts `recoverable`). Sticky: `failed` keeps only the newest lines, so the line itself can scroll out.
+   */
+  guarded?: true;
+  /** Set 5 R1: when a turn of this task got the finish nudge (`task:nudged`): once per task. */
+  nudged?: string;
+  /** Set 5 R1: how this chat's newest turn ended (`task:ended`). */
+  ended?: { at: string; outcome: TaskOutcome };
 }

@@ -34,6 +34,20 @@
         </p>
       </header>
 
+      <section class="setup-section" id="search-ask" aria-labelledby="h-search" hidden>
+        <h2 id="h-search">One question first</h2>
+        <p class="setup-prose">
+          Download the search model? One file of about 90 MB from huggingface.co, once. No text from your record is
+          sent; Hugging Face sees your IP address. Without it, search matches words only. Nothing downloads until you
+          answer.
+        </p>
+        <div class="fill-acts" id="search-acts">
+          <button type="button" class="setup-button" data-primary id="search-yes">Download it</button>
+          <button type="button" class="setup-button" id="search-no">Words only</button>
+        </div>
+        <p class="fill-note" id="search-said" role="status" aria-live="polite"></p>
+      </section>
+
       <section class="setup-section" aria-labelledby="h-record">
         <h2 id="h-record">The record</h2>
         <p class="setup-record" id="record" role="status" aria-live="polite">Reading the record…</p>

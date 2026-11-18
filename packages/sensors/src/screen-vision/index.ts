@@ -24,6 +24,10 @@ export interface ScreenVisionConfig {
   intervalMs: number;
   framePath?: string;
   ollamaUrl?: string;
+  /** Ollama `keep_alive` (default 0: unload right after the answer; the model held 9-14 GB between frames). */
+  keepAlive?: number | string;
+  /** Context window (default 4096; one frame and a short prompt need no more). */
+  numCtx?: number;
   fetchImpl?: typeof fetch;
   /** W3: the one `llm_audit` writer (`openLlmAudit`), injected by the sensor runtime so this package needs no model package. */
   /** W5: the one budget gate (`reserveLlmCall('vision')`), injected likewise: the call id, or null when refused. */
@@ -93,7 +97,7 @@ export class ScreenVisionSensor {
       const response = await this.fetchImpl(this.ollamaUrl, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ model: this.config.model, prompt: PROMPT, images: [image], stream: false, format: 'json', options: { temperature: 0 } }),
+        body: JSON.stringify({ model: this.config.model, prompt: PROMPT, images: [image], stream: false, format: 'json', keep_alive: this.config.keepAlive ?? 0, options: { temperature: 0, num_ctx: this.config.numCtx ?? 4096 } }),
         signal: controller.signal,
       });
       if (!response.ok) throw new Error(`ollama ${response.status}`);

@@ -433,16 +433,79 @@ describe('commitmentTrack', () => {
     // eviction, and a fixture that also exercises ticket parsing would fail for
     // the wrong reason.
     const names = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel', 'india', 'juliet',
-                   'kilo', 'lima', 'mike', 'november', 'oscar', 'papa', 'quebec', 'romeo', 'sierra', 'tango',
+                   'kilo', 'lima', 'mike', 'november', 'orbit', 'papa', 'quebec', 'romeo', 'sierra', 'tango',
                    'uniform', 'victor', 'whiskey', 'xray', 'yankee', 'zulu', 'anchor', 'beacon', 'cinder', 'dune'];
     let state: KernelState = createInitialState('d1');
+    const closedRows: CommitmentRow[] = [];
     for (const [i, name] of names.entries()) {
       state = withMoment(state, `feat/${name}`);
-      state = commitmentTrack(state, windowChanged(localTs(2026, 8, 1, 10, i), `e${i}`)).state;
+      const out = commitmentTrack(state, windowChanged(localTs(2026, 8, 1, 10, i), `e${i}`));
+      state = out.state;
+      closedRows.push(...out.effects.flatMap((e) => (e.type === 'WriteDB' && e.table === 'commitments' && e.row.closedAt ? [e.row] : [])));
     }
 
     expect(state.commitments.open).toHaveLength(20);
     // Oldest evicted, newest kept.
     expect(state.commitments.open.at(-1)?.name).toBe('dune');
+    // An evicted thread closes in the table too, or its row stays open with nothing left to close it.
+    expect(closedRows.map((r) => [r.name, r.closedBecause])).toEqual(names.slice(0, 10).map((n) => [n, 'went-quiet']));
+  });
+
+  it('closes a thread when its branch\'s pull request merges, with no moment on the branch', () => {
+    const opened = commitmentTrack(withMoment(createInitialState('d1'), 'feature/BOX-484'), windowChanged(localTs(2026, 8, 1, 10), 'e1')).state;
+    const pr = (state: string, branch = 'feature/BOX-484'): SanitizedEvent => ({ id: `pr-${state}-${branch}`, type: 'git:pr-status', ts: localTs(2026, 8, 1, 11), payload: { cwd: '~/puzzlebox-studio', branch, number: 7, state }, sanitized: true });
+
+    expect(commitmentTrack(opened, pr('OPEN')).state.commitments.open).toHaveLength(1);
+    expect(commitmentTrack(opened, pr('MERGED', 'feature/BOX-485')).state.commitments.open).toHaveLength(1);
+
+    const { state: next, effects } = commitmentTrack(opened, pr('MERGED'));
+    expect(next.commitments.open).toHaveLength(0);
+    expect(next.commitments.recentClosed[0]).toMatchObject({ id: 'commitment:box-484', closedBecause: 'merged' });
+    expect(rowOf(effects)).toMatchObject({ closedBecause: 'merged', closedAt: localTs(2026, 8, 1, 11) });
+  });
+
+  it('closes a thread no longer in state from the row the owner close carried', () => {
+    const row: CommitmentRow = { id: 'commitment:old', name: 'old', source: 'git-branch', branch: 'feat/old', projectId: null, projectName: null, openedAt: localTs(2026, 7, 1), lastTouchedAt: localTs(2026, 7, 2), touches: 9, activeDays: 2, closedAt: null, closedBecause: null, promise: null };
+    const ts = localTs(2026, 10, 5);
+    const close = (payload: Record<string, unknown>) => commitmentTrack(createInitialState('d1'), { id: 'c1', type: 'commitment:closed', ts, payload, sanitized: true });
+
+    expect(rowOf(close({ id: row.id, by: 'owner', row }).effects)).toEqual({ ...row, closedAt: ts, closedBecause: 'owner' });
+    expect(close({ id: row.id, by: 'owner' }).effects).toEqual([]);
+    expect(close({ id: 'commitment:other', by: 'owner', row }).effects).toEqual([]);
+  });
+});
+
+describe('the outcome ask (plan 15 4.1)', () => {
+  const DAY = 86_400_000;
+  const t0 = Date.parse(localTs(2026, 8, 1, 10));
+  const at = (d: number) => new Date(t0 + d * DAY).toISOString();
+  const quiet = (touches = 5): KernelState => {
+    const { state } = commitmentTrack(withMoment(createInitialState('d1'), 'feat/onboarding-merge'), windowChanged(localTs(2026, 8, 1, 10), 'e1'));
+    return { ...state, commitments: { ...state.commitments, open: state.commitments.open.map((c) => ({ ...c, touches, lastTouchedAt: at(0) })) } };
+  };
+  const boundary = (ts: string, id = 'b1'): SanitizedEvent => ({ id, type: 'boundary:reached', ts, payload: { kind: 'commit' }, sanitized: true });
+  const answer = (ts: string, askId: string, text: string): SanitizedEvent => ({ id: 'a1', type: 'ask:owner-answered', ts, payload: { askId, answer: text }, sanitized: true });
+  const asks = (effects: Effect[]) => effects.flatMap((e) => (e.type === 'EmitEvent' && e.event.type === 'ask:owner-opened' ? [e.event.payload as { askId: string; question: string; choices: string[] }] : []));
+
+  it('asks once, at a boundary, after ten quiet days and before the fourteen-day sweep', () => {
+    const state = quiet();
+    expect(asks(commitmentTrack(state, boundary(at(9))).effects)).toEqual([]);
+    const first = commitmentTrack(state, boundary(at(11)));
+    expect(asks(first.effects)).toEqual([{ askId: expect.stringMatching(/^owner-ask:thread-/), question: expect.stringMatching(/quiet for 11 days\. How did it end\?$/), reason: '5 sessions in gnomon', choices: ['Done', 'Dropped', 'Still open'] }]);
+    expect(asks(commitmentTrack(first.state, boundary(at(12), 'b2')).effects)).toEqual([]);
+    expect(asks(commitmentTrack(state, boundary(at(15))).effects)).toEqual([]);
+  });
+
+  it('a thread touched once is not asked about', () => {
+    expect(asks(commitmentTrack(quiet(1), boundary(at(11))).effects)).toEqual([]);
+  });
+
+  it('Done closes it as kept, Dropped as dropped, Still open starts the quiet clock again', () => {
+    const state = quiet();
+    const { askId } = asks(commitmentTrack(state, boundary(at(11))).effects)[0];
+    expect(commitmentTrack(state, answer(at(11), askId, 'Done')).state.commitments.recentClosed.at(-1)?.closedBecause).toBe('kept');
+    expect(commitmentTrack(state, answer(at(11), askId, 'Dropped')).state.commitments.recentClosed.at(-1)?.closedBecause).toBe('dropped');
+    expect(commitmentTrack(state, answer(at(11), askId, 'Still open')).state.commitments.open[0].lastTouchedAt).toBe(at(11));
+    expect(commitmentTrack(state, answer(at(11), 'owner-ask:who-x', 'Done')).state).toBe(state);
   });
 });

@@ -149,9 +149,15 @@ export const MEMORY_TOOLS: GnomonTool[] = [
   {
     name: 'gnomon_semantic_search',
     description:
-      'Free-text query -> ranked moments/knowledge entries/entity facts by relevance + recency + importance. Good for "remind me about <topic>" where you do not know the date. It cannot filter or aggregate — for "which files on <date>" or "how many X" use gnomon_code_activity, gnomon_signals, or gnomon_today_summary, which take real filters.',
-    schema: { query: z.string().describe('Free-text search query'), limit: z.number().int().positive().max(50).optional() },
+      'Free-text query -> ranked memory by relevance + recency + importance: what the owner told you in chat (each fact with `at`, the day they said it), moments and knowledge entries. Use it first for anything the owner told you before: what they did, bought, own, prefer, who, where, when. For "how many" or "which ones", search each wording with limit 30 and count the distinct items across days. Two answers for the same thing: the later `at` is the current one. since/until (YYYY-MM-DD) keep only hits in that period ("in March"); count days between events from their `at`. For activity counts (files, commits, apps on a date) use gnomon_code_activity, gnomon_signals or gnomon_today_summary.',
+    schema: {
+      query: z.string().describe('Free-text search query'),
+      limit: z.number().int().positive().max(50).optional(),
+      since: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Only hits on or after this day, YYYY-MM-DD'),
+      until: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Only hits on or before this day, YYYY-MM-DD'),
+    },
     readOnly: true,
-    handler: async ({ query, limit }) => scoredSearch(query as string, (limit as number | undefined) ?? 10),
+    handler: async ({ query, limit, since, until }) =>
+      since || until ? scoredSearch(query as string, (limit as number | undefined) ?? 10, undefined, { since: since as string | undefined, until: until as string | undefined }) : scoredSearch(query as string, (limit as number | undefined) ?? 10),
   },
 ];

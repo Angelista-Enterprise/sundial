@@ -1,7 +1,10 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { createInitialState } from '@sundial/kernel/initial-state.js';
 import type { KernelState, SanitizedEvent } from '@sundial/kernel/types.js';
-import { momentRollup } from './moment-rollup.js';
+import { reduce } from '@sundial/kernel/reduce.js';
+import { RULE_MANIFEST } from './manifest.js';
+import { addActs, momentRollup } from './moment-rollup.js';
 
 function withMoment(state: KernelState): KernelState {
   return {
@@ -289,5 +292,74 @@ describe('momentRollup dev-activity evidence (devActivityByProject)', () => {
       expect(withPage.moment?.rollup.pageExcerpt).toHaveLength(600);
       expect(momentRollup(withPage, { id: 'q', type: 'page:text', ts: '2026-09-22T10:03:00.000Z', payload: { text: '   ' }, sanitized: true }).state).toBe(withPage);
     });
+  });
+});
+
+describe('editedLines', () => {
+  it('keeps the latest uncommitted size per file, not a sum over saves', async () => {
+    const { createInitialState } = await import('@sundial/kernel/initial-state.js');
+    const { momentRollup } = await import('./moment-rollup.js');
+    const base = createInitialState('d1');
+    let state = { ...base, moment: { id: 'm', sessionId: 's', startTime: '2026-10-14T09:00:00.000Z', processName: 'Code', projectId: null, rollup: { ...base.moment?.rollup, processName: 'Code', windowTitles: [], shellCommandCount: 0, notableCommands: [], gitCommitCount: 0, gitBranch: null, calendarActive: false, typingEventCount: 0, lifeEvents: [], projectSource: null, projectConfidence: null, micActive: false, cameraActive: false, meetingTitle: null, meetingAttendees: [], screenTopics: [], screenExcerpt: null }, intent: { status: 'none' } } } as never;
+    const save = (edits: unknown[]) => ({ id: 'e', type: 'symbol:edited', ts: '2026-10-14T09:01:00.000Z', payload: { edits, totalSymbolCount: 0 }, sanitized: true }) as never;
+    state = momentRollup(state, save([{ file: 'src/a.ts', symbols: [], added: 4, removed: 1 }])).state as never;
+    state = momentRollup(state, save([{ file: 'src/a.ts', symbols: [], added: 9, removed: 2 }, { file: 'src/b.ts', symbols: [], added: 1, removed: 0 }])).state as never;
+    expect((state as { moment: { rollup: { editedLines: unknown } } }).moment.rollup.editedLines).toEqual({ 'src/a.ts': 11, 'src/b.ts': 1 });
+  });
+});
+
+describe("momentRollup: Gnomon's own acts (Round 2, item 3)", () => {
+  const step = (payload: Record<string, unknown>) => event('screen:step', { verb: 'press', screenText: ['Send'], ok: true, changed: true, ...payload });
+
+  it('counts the steps that ran, with their apps and goals, bounded, and never the typed value', () => {
+    let state = withMoment(createInitialState('d1'));
+    for (let i = 0; i < 12; i++) state = momentRollup(state, step({ processName: `App${i % 7}`, goal: `file note ${i}`, verb: 'set-value', typed: 42 })).state;
+    const acts = state.moment?.rollup.acts;
+    expect(acts?.n).toBe(12);
+    expect(acts?.apps).toEqual(['App0', 'App1', 'App2', 'App3', 'App4']);
+    expect(acts?.goals).toHaveLength(10);
+    expect(acts?.goals.at(-1)).toBe('file note 11');
+    expect(JSON.stringify(acts)).not.toMatch(/42|typed/);
+  });
+
+  it('copies the goal as stored: redaction happened once, at ingest', () => {
+    const state = momentRollup(withMoment(createInitialState('d1')), step({ processName: 'Mail', goal: 'mail [email] about BOX-484' })).state;
+    expect(state.moment?.rollup.acts?.goals).toEqual(['mail [email] about BOX-484']);
+    expect(readFileSync(new URL('./moment-rollup.ts', import.meta.url), 'utf8')).not.toMatch(/redactPii/);
+  });
+
+  it('skips a refused step, a placeholder app or goal, and the outcome rows every tool call writes', () => {
+    let state = withMoment(createInitialState('d1'));
+    state = momentRollup(state, step({ processName: 'Notes', goal: 'add the BOX-484 line', ok: false })).state;
+    expect(state.moment?.rollup.acts).toBeUndefined();
+    state = momentRollup(state, step({ processName: '[private]', goal: '[private]' })).state;
+    state = momentRollup(state, event('action:performed', { tool: 'screen_act', action: 'screen_act', outcome: 'ok' })).state;
+    state = momentRollup(state, event('action:performed', { tool: 'run_shell', refused: 'destructive', command: 'rm -rf x' })).state;
+    state = momentRollup(state, event('action:performed', { tool: 'run_shell', command: 'pnpm test' })).state;
+    expect(state.moment?.rollup.acts).toEqual({ n: 2, apps: [], goals: [] });
+  });
+
+  it('lands in the stored moment, through the whole manifest', () => {
+    let state = createInitialState('d1');
+    const writes: { data: { acts?: unknown } }[] = [];
+    const at = (s: number) => new Date(Date.parse('2026-09-29T08:00:00.000Z') + s * 1000).toISOString();
+    const events: SanitizedEvent[] = [
+      { id: 'w0', type: 'window:changed', ts: at(0), payload: { processName: 'Notes', windowTitle: 'Notes' }, sanitized: true },
+      { id: 's1', type: 'screen:step', ts: at(30), payload: { processName: 'Notes', verb: 'press', screenText: ['New Note'], goal: 'file the BOX-484 notes', ok: true, changed: true }, sanitized: true },
+      { id: 's2', type: 'screen:step', ts: at(40), payload: { processName: 'Notes', verb: 'type', screenText: ['body'], goal: 'file the BOX-484 notes', typed: 19, ok: true, changed: true }, sanitized: true },
+      ...[60, 120].map((s) => ({ id: `t${s}`, type: 'clock:tick', ts: at(s), payload: {}, sanitized: true }) as SanitizedEvent),
+      { id: 'w1', type: 'window:changed', ts: at(150), payload: { processName: 'Code', windowTitle: 'Code' }, sanitized: true },
+    ];
+    for (const e of events) {
+      const out = reduce(state, e, RULE_MANIFEST);
+      state = out.state;
+      for (const { effect } of out.effects) if (effect.type === 'WriteDB' && effect.table === 'moments') writes.push(effect.row as never);
+    }
+    expect(writes.map((w) => w.data.acts)).toEqual([{ n: 2, apps: ['Notes'], goals: ['file the BOX-484 notes'] }]);
+  });
+
+  it('adds two tallies the way a dropped flick carries over', () => {
+    expect(addActs({ n: 2, apps: ['Notes'], goals: ['a'] }, { n: 1, apps: ['Mail', 'Notes'], goals: ['b'] })).toEqual({ n: 3, apps: ['Mail', 'Notes'], goals: ['a', 'b'] });
+    expect(addActs(undefined, { n: 1, apps: [], goals: [] })).toEqual({ n: 1, apps: [], goals: [] });
   });
 });

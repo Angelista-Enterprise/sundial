@@ -174,6 +174,8 @@ export function serializeDailyContext(ctx: DailyContext): string {
     lines.push('ANOMALIES:');
     lines.push(...ctx.anomalies.map((a) => `- ${a.title}: ${a.body}`));
   }
+  // Gnomon's own work, named as its own so the journal never credits the owner with it.
+  if (ctx.acts) lines.push(`GNOMON (the assistant's own acts, not the owner's work): ${ctx.acts.n} step${ctx.acts.n === 1 ? '' : 's'}${ctx.acts.apps.length ? ` in ${ctx.acts.apps.join(', ')}` : ''}${ctx.acts.goals.length ? `, for: ${ctx.acts.goals.slice(0, 5).map((g) => `"${g}"`).join('; ')}` : ''}`);
   if (ctx.continuity.length) lines.push(`CONTINUITY: ${ctx.continuity.map((c) => `${c.project} (from ${c.carriedFrom})`).join(', ')}`);
 
   const timeline = condenseTimeline(ctx.timeline);

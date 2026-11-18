@@ -116,10 +116,34 @@ export interface StartSubagentEffect {
 export interface StopSubagentEffect {
   type: 'StopSubagent';
   jobId: string;
+  /** S4: the rig chat whose sandbox's job this is (set by the `sandbox` lane): the close it answers carries the mark. */
+  sandbox?: string;
 }
 
 /** W3: the effects that act rather than record. */
 export type ActionEffect = RunRejudgeEffect | StartJobEffect | StopJobEffect | StartSubagentEffect | StopSubagentEffect;
+
+/** Round 2: one approval asked of the owner (`approval:asked`), joined to its call's `action:decided` by `callId`. */
+export interface ApprovalAsk {
+  id: string;
+  sessionId: string;
+  tool: string;
+  callId: string | null;
+  /** The final's kind the gate named (`send`, `pay`, `delete`, ...), else `plain`. */
+  kind: string;
+  /** Round 3: the one app a plain act is in (never a final's, never a private app's), for the ladder. */
+  app?: string;
+  /** The step as the owner reads it, never a final's To, Path or Command. */
+  line: string | null;
+  at: string;
+}
+
+/** Round 2: an ask that closed: who answered, with what, when. `timeout` with no row of its own: it outlived the ask by the fold's clock (a restart). */
+export interface ApprovalAnswer extends ApprovalAsk {
+  answer: string;
+  by: string;
+  answeredAt: string;
+}
 
 /** KernelState's Actions fields; `KernelState` extends this. */
 export interface ActionsSlices {
@@ -130,4 +154,10 @@ export interface ActionsSlices {
    * enters it, and nothing starts, while `config.jobs.enabled` is off.
    */
   nightShift?: NightShiftState;
+  /**
+   * Round 2: the approvals Gnomon is waiting on, and the last 50 answered.
+   * Single writer: `approvalTrack`. `decided`: the last 20 calls' tool and
+   * kind by `callId`, for the ask that follows its `action:decided`.
+   */
+  approvals?: { open: ApprovalAsk[]; recent: ApprovalAnswer[]; decided: { callId: string; tool: string; kind: string; app?: string }[] };
 }

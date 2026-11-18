@@ -39,6 +39,8 @@ const PHRASES = {
   gnomon_propose: (a) => ['Proposing', a.title ?? a.summary ?? null],
   gnomon_record_outcome: () => ['Recording how it went', null],
   gnomon_run_shell: (a) => ['Running', a.command ?? null],
+  // run200: "Await · job-0acb1c8e" named the wait by its id. What is waited for, in words.
+  gnomon_await: (a) => [a.job ? 'Waiting for the background job' : a.file ? 'Waiting for a file' : a.app ? `Waiting for ${a.app}` : 'Waiting', a.gone ? `until "${a.gone}" is gone` : a.window ?? null],
   gnomon_compose_figure: (a) => ['Drawing a figure', a.title ?? a.kind ?? null],
   gnomon_lens: (a) => ['Building a lens', a.title ?? null],
   gnomon_ask_owner: (a) => ['Asking you', a.question ?? null],
@@ -62,6 +64,12 @@ const PHRASES = {
   job_list: () => ['Listing background work', null],
   job_kill: () => ['Stopping background work', null],
   present: () => ['Handing you a file', null],
+  screen_look: (a) => ['Looking at', [a.app, a.window].filter(Boolean).join(', ') || 'the app in front'],
+  // Without a goal, the app it works in (run202: "Doing a step" read like a log line).
+  screen_act: (a) => [a.goal ? capital(String(a.goal)) : a.app ? `Working in ${a.app}` : 'Working on the screen', a.because ?? (Array.isArray(a.steps) ? `${a.steps.length} steps` : [a.action, a.label].filter(Boolean).join(' ') || null)],
+  screen_mark: (a) => ['Pointing at it', a.label ?? null],
+  screen_guide: (a) => ['Walking you through', a.task ?? null],
+  screen_undo: () => ['Putting the old value back', null],
 }
 const BOARD_VERBS = { place: 'Putting a card on the board', focus: 'Showing you a card', move: 'Moving a card', remove: 'Taking a card off', step: 'Walking you through', walk: 'Laying out a walk-through', clear: 'Clearing the board', note: 'Leaving a note', span: 'Changing the board’s days' }
 
@@ -105,6 +113,22 @@ export function resultGist(text, failed = false) {
   }
   // Markup (a loaded skill, a page) says nothing in a few words.
   return raw.startsWith('<') ? null : clip(raw, 70)
+}
+
+/** A call's arguments, from the rows drawn by call id. A call made through gnomon_call is drawn under the outer id, holding {name, args}; its own id is `<outer>:<name>`. */
+export function callArgs(rows, callId) {
+  const id = String(callId ?? '')
+  const own = rows.get(id)?._args
+  if (own !== undefined || !id.includes(':')) return own
+  const inner = rows.get(id.slice(0, id.lastIndexOf(':')))?._args?.args
+  return typeof inner === 'string' ? safeParse(inner) ?? undefined : inner
+}
+
+/** A call's arguments as readable JSON, bounded, or null when it has none. */
+export function argsText(args) {
+  if (args === undefined || args === null || (typeof args === 'object' && Object.keys(args).length === 0)) return null
+  const text = JSON.stringify(args, null, 2)
+  return text.length > 1200 ? `${text.slice(0, 1200)}\n…` : text
 }
 
 /** Seconds, the way a person says them: "0.4s", "12s", "2m 5s". */
