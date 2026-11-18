@@ -7,13 +7,20 @@
 //
 // Register once, user-wide:
 //   claude mcp add --scope user sundial -- node <repo>/packages/mcp/bin/sundial-mcp.js
-// or run `sundial mcp`.
+// or run `sundial mcp`. With `--http` it listens on http://127.0.0.1:3090/mcp
+// (SUNDIAL_MCP_PORT) instead, for VS Code, Cursor, Codex and Goose; the bearer
+// token they need is in $SUNDIAL_HOME/.daemon/mcp-token. `--http --owner <name>`
+// also accepts $SUNDIAL_HOME/.daemon/mcp-owner-token, whose sessions are the
+// owner's own hand for the rule writes (an app on this machine they click in).
 import { getDbUrl } from '@sundial/helpers/config.js';
 import { startMcpServer } from '../dist/index.js';
 
 process.env.DATABASE_URL ||= getDbUrl();
 
-startMcpServer().catch((error) => {
+const ownerAt = process.argv.indexOf('--owner');
+const owner = ownerAt < 0 ? undefined : (process.argv[ownerAt + 1] ?? '');
+
+startMcpServer({ http: process.argv.includes('--http'), owner }).catch((error) => {
   console.error('[sundial-mcp] failed to start:', error instanceof Error ? error.message : String(error));
   process.exit(1);
 });

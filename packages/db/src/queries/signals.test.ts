@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { getDb, resetDb } from '../db-client.js';
-import { insertSignal, getRecentSignals, getSignalFreshness, getSignalsForDate, getSignalsInRange, getSignalsAfter } from './signals.js';
+import { insertSignal, getRecentSignals, getSeenNames, getSignalFreshness, getSignalsForDate, getSignalsInRange, getSignalsAfter } from './signals.js';
 
 async function setupTestDb() {
   resetDb();
@@ -39,6 +39,27 @@ describe('getSignalFreshness', () => {
 
   it('returns an empty array when no signals exist', async () => {
     expect(await getSignalFreshness()).toEqual([]);
+  });
+});
+
+describe('getSeenNames', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+  });
+
+  it('names each app and host once, newest first, with the app\'s newest window id, and skips older rows and blank names', async () => {
+    const win = (id: string, at: string, data: Record<string, unknown>) => insertSignal({ id, signalType: 'window', eventType: 'changed', data, capturedAt: at });
+    await win('w1', '2026-01-01T00:00:00.000Z', { processName: 'Mailbox', windowId: 'com.example.mailbox:1' });
+    await win('w2', '2026-01-03T00:00:00.000Z', { processName: 'Mailbox', windowId: 'com.example.mailbox:2' });
+    await win('w3', '2026-01-02T00:00:00.000Z', { processName: 'Editor', windowId: 'editor:main' });
+    await win('w4', '2026-01-02T00:00:00.000Z', { processName: '' });
+    await win('w0', '2025-12-01T00:00:00.000Z', { processName: 'Old App' });
+    await insertSignal({ id: 'b1', signalType: 'browser', eventType: 'tab', data: { host: 'bank.example' }, capturedAt: '2026-01-02T00:00:00.000Z' });
+    await insertSignal({ id: 'b2', signalType: 'browser', eventType: 'tab', data: { host: 'bank.example' }, capturedAt: '2026-01-03T00:00:00.000Z' });
+    expect(await getSeenNames('2026-01-01T00:00:00.000Z')).toEqual({
+      apps: [{ name: 'Mailbox', windowId: 'com.example.mailbox:2' }, { name: 'Editor', windowId: 'editor:main' }],
+      hosts: ['bank.example'],
+    });
   });
 });
 

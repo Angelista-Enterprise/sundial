@@ -225,6 +225,10 @@ export const llmAudit = sqliteTable(
     requestedAt: text('requested_at').notNull(),
     respondedAt: text('responded_at'),
     latencyMs: integer('latency_ms'),
+    /** Plan 15 I16: from the request to the first text of a streamed reply. NULL when nothing streamed, and on rows from before it. */
+    firstTokenMs: integer('first_token_ms'),
+    /** Set 4 R1: the host the route says served the call (OpenRouter's `provider`), so a slow hour names its upstream. NULL when the route names none, and on rows from before it. */
+    upstream: text('upstream'),
     statusCode: integer('status_code'),
     success: integer('success', { mode: 'boolean' }).notNull().default(false),
     responseContent: text('response_content'),
@@ -270,6 +274,10 @@ export const llmAudit = sqliteTable(
     attempt: integer('attempt').notNull().default(1),
     /** The `llm_audit.id` of the attempt this one is retrying. NULL on a first attempt and on every row written before the column existed. */
     parentCallId: text('parent_call_id'),
+    /** The source that served the call (a route id: `openai`, a provider, `claude`, `jev`); null on rows from before 2026-10-05. */
+    source: text('source'),
+    /** `api` (a key or a local server, priced per token), `runtime` (a vendor's binary on the owner's plan: no dollars), `judge` (Jev). */
+    access: text('access'),
   },
   (table) => [index('idx_llm_audit_requested').on(table.requestedAt), index('idx_llm_audit_purpose').on(table.purpose)],
 );
@@ -543,7 +551,7 @@ export const commitments = sqliteTable(
     /** Distinct LOCAL days seen — the measure of "spanning", as opposed to elapsed clock time. */
     activeDays: integer('active_days').notNull().default(1),
     closedAt: text('closed_at'),
-    /** Why it closed: `went-quiet`, `seen-done`, `owner`, and (UC1) `kept`, `broken`, `dropped`. */
+    /** Why it closed: `went-quiet`, `seen-done`, `owner`, `merged`, and (UC1) `kept`, `broken`, `dropped`. */
     closedBecause: text('closed_because'),
     /**
      * UC1: a promise's terms as JSON (`PromiseTerms`: direction, counterparty,

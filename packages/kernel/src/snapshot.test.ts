@@ -214,12 +214,12 @@ describe('hydrateSnapshot', () => {
     const fresh = createInitialState('device-1');
     const persisted: Partial<KernelState> = {
       ...fresh,
-      predictions: { ...fresh.predictions, calibration: { 'day-ending': { n: 3, hits: 3, brierSum: 0.2 } } },
+      predictions: { ...fresh.predictions, calibration: { 'hour-fragmented': { n: 3, hits: 3, brierSum: 0.2 } } },
     };
 
     const hydrated = hydrateSnapshot('device-1', persisted);
 
-    expect(hydrated.predictions.calibration).toEqual({ 'day-ending': { n: 3, hits: 3, brierSum: 0.2 } });
+    expect(hydrated.predictions.calibration).toEqual({ 'hour-fragmented': { n: 3, hits: 3, brierSum: 0.2 } });
   });
 
   /**
@@ -235,23 +235,26 @@ describe('hydrateSnapshot', () => {
       ...fresh,
       predictions: {
         ...fresh.predictions,
-        calibration: { 'project-continuity': { n: 2362, hits: 1084, brierSum: 590.2 }, 'day-ending': { n: 3, hits: 3, brierSum: 0.2 } },
+        // `day-ending` joined the retired kinds on 2026-10-14; `hour-fragmented` is the live one here.
+        calibration: { 'project-continuity': { n: 2362, hits: 1084, brierSum: 590.2 }, 'day-ending': { n: 3, hits: 3, brierSum: 0.2 }, 'hour-fragmented': { n: 3, hits: 3, brierSum: 0.2 } },
         open: [
           { id: 'pc1', createdAt: '2026-07-28T09:00:00.000Z', kind: 'project-continuity', predictedProjectId: 'proj:g', priorProb: 0.46 },
           { id: 'de1', createdAt: '2026-07-28T09:00:00.000Z', kind: 'day-ending', hour: 9, priorProb: 0.1 },
+          { id: 'hf1', createdAt: '2026-07-28T09:00:00.000Z', kind: 'hour-fragmented', hour: 9, priorProb: 0.1 },
         ] as unknown as KernelState['predictions']['open'],
         recentResolved: [
           { kind: 'project-continuity', priorProb: 0.46, hit: false, surprise: 0.62, resolvedAt: '2026-07-28T09:05:00.000Z' },
           { kind: 'day-ending', priorProb: 0.1, hit: true, surprise: 2.3, resolvedAt: '2026-07-28T23:05:00.000Z' },
+          { kind: 'hour-fragmented', priorProb: 0.1, hit: true, surprise: 2.3, resolvedAt: '2026-07-28T23:05:00.000Z' },
         ],
       },
     };
 
     const hydrated = hydrateSnapshot('device-1', persisted);
 
-    expect(hydrated.predictions.calibration).toEqual({ 'day-ending': { n: 3, hits: 3, brierSum: 0.2 } });
-    expect(hydrated.predictions.open.map((p) => p.kind)).toEqual(['day-ending']);
-    expect(hydrated.predictions.recentResolved.map((p) => p.kind)).toEqual(['day-ending']);
+    expect(hydrated.predictions.calibration).toEqual({ 'hour-fragmented': { n: 3, hits: 3, brierSum: 0.2 } });
+    expect(hydrated.predictions.open.map((p) => p.kind)).toEqual(['hour-fragmented']);
+    expect(hydrated.predictions.recentResolved.map((p) => p.kind)).toEqual(['hour-fragmented']);
   });
 
   it('back-fills a new nested key inside a once-optional slice (F1)', () => {

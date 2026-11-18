@@ -51,7 +51,7 @@ export const ACTIONS: { kind: (kind: string) => boolean; withinMs: number; by: (
 const actionOf = (kind: string) => ACTIONS.find((a) => a.kind(kind));
 
 /** The signal types this rule reads from the log (the boot backfill pages exactly these). */
-export const CALIBRATE_SOURCE_TYPES = ['feedback:verdict', 'input:activity', 'window:changed', 'agent:hook', 'resume:opened', 'git:commit', 'chat:owner', 'ask:owner-answered', 'action:verified', 'action:performed', 'notice:seen', 'clock:tick'] as const;
+export const CALIBRATE_SOURCE_TYPES = ['feedback:verdict', 'input:activity', 'window:changed', 'agent:hook', 'resume:opened', 'git:commit', 'chat:owner', 'ask:owner-answered', 'action:verified', 'action:performed', 'notice:seen', 'voice:go', 'clock:tick'] as const;
 
 /** What a kind's action would touch, from the candidate's own evidence (the record's candidates carry no field for it). */
 function subjectOf(kind: string, evidence: string[]): string | null {
@@ -75,7 +75,10 @@ function bumpDay(c: CalibratedState, kind: string, day: string, fields: Partial<
   return { ...c, noticeByKind: { ...c.noticeByKind, [kind]: { ...kept, [day]: row } } };
 }
 
-function implicit(event: SanitizedEvent, w: WatchedNotice, signal: 'seen' | 'acted'): Effect {
+/** The misses a delivery stands for until the owner replies: the kind's own action, and a question's answer. */
+const standingMisses = (w: WatchedNotice) => [...(actionOf(w.kind) ? [`notice.acted:${w.kind}`] : []), ...(w.kind === 'owner-question' && w.askId ? [`gate.answered:${w.cost >= HIGH_COST ? 'high' : 'low'}`] : [])];
+
+function implicit(event: SanitizedEvent, w: WatchedNotice, signal: 'seen' | 'acted' | 'unknown'): Effect {
   return {
     type: 'EmitEvent',
     event: { id: deriveId(event.ts, event.id, 'calibrate', w.key, w.at, signal), type: 'feedback:implicit', ts: event.ts, payload: { noticeKey: w.key, kind: w.kind, signal, lagMs: Math.max(0, Date.parse(event.ts) - Date.parse(w.at)) } },
@@ -141,25 +144,34 @@ function behaviour(state: KernelState, c: CalibratedState, event: SanitizedEvent
   const now = Date.parse(event.ts);
   const present = event.type === 'input:activity' && !isZeroActivity(event.payload);
   // W6 P18: the client's own word that a line was in view (`notice:seen`), for that notice only.
-  const inView = event.type === 'notice:seen' ? String(event.payload.noticeKey ?? '') : null;
+  // Plan 15 step 1: the owner's go on a knock (`voice:go`, not the app's own) says the same.
+  const inView = event.type === 'notice:seen' || (event.type === 'voice:go' && event.payload.auto !== true) ? String(event.payload.noticeKey ?? '') : null;
   const app = event.type === 'window:changed' && typeof event.payload.processName === 'string' ? event.payload.processName : null;
   let out = app !== null && app !== c.app ? { ...c, app } : c;
   for (let i = 0; i < out.watch.length; i++) {
     const w = out.watch[i]!;
     const lag = now - Date.parse(w.at);
     if (lag < 0) continue;
+    // A reply after the miss was taken back counts whole (n and hit); else it turns the standing miss into a hit.
+    const hit = w.unknown ? (params: CalibratedState['params'], id: string, ts: string) => observe(params, id, true, ts) : credit;
     if ((present || inView === w.key) && !w.seen && lag <= SEEN_WITHIN_MS) {
       out = label({ ...out, params: credit(credit(out.params, `notice.seen:${w.kind}`, event.ts), 'notice.seen', event.ts) }, i, { seen: true }, { seen: 1 });
       effects.push(implicit(event, w, 'seen'));
     }
     const action = actionOf(w.kind);
     if (action && !w.acted && lag <= action.withinMs && action.by(event, w)) {
-      out = label({ ...out, params: credit(out.params, `notice.acted:${w.kind}`, event.ts) }, i, { acted: true }, { acted: 1 });
+      out = label({ ...out, params: hit(out.params, `notice.acted:${w.kind}`, event.ts) }, i, { acted: true }, { acted: 1 });
       effects.push(implicit(event, w, 'acted'));
     }
     if (event.type === 'ask:owner-answered' && w.askId !== null && event.payload.askId === w.askId && !w.answered) {
-      const params = lag <= ANSWERED_WITHIN_MS ? credit(out.params, `gate.answered:${w.cost >= HIGH_COST ? 'high' : 'low'}`, event.ts) : out.params;
+      const params = lag <= ANSWERED_WITHIN_MS ? hit(out.params, `gate.answered:${w.cost >= HIGH_COST ? 'high' : 'low'}`, event.ts) : out.params;
       out = { ...out, params, watch: out.watch.map((x, j) => (j === i ? { ...x, answered: true } : x)) };
+    }
+    // The 5 minutes passed with the owner away and no reply: nobody knows if it was seen. Its misses are taken back, so away is not read as ignored.
+    const cur = out.watch[i]!;
+    if (lag > SEEN_WITHIN_MS && !cur.seen && !cur.unknown && !cur.acted && !cur.answered && !cur.verdict) {
+      out = { ...out, params: standingMisses(cur).reduce((params, id) => adjust(params, id, -1, 0, event.ts), out.params), watch: out.watch.map((x, j) => (j === i ? { ...x, unknown: true } : x)) };
+      effects.push(implicit(event, cur, 'unknown'));
     }
     if (app !== null && w.app !== null && w.returned === undefined) {
       const patch: Partial<WatchedNotice> | null =
@@ -199,7 +211,7 @@ export const calibrate: Rule = (state, event) => {
   let c = start;
   const effects: Effect[] = [];
   const last = state.notices.lastDelivered;
-  if (last?.at === event.ts && (event.type === 'notice:candidate' || event.type === 'clock:tick' || event.type === 'input:activity')) c = deliveries(c, last.items, event.ts, state.config.timezone);
+  if (last?.at === event.ts && (event.type === 'notice:candidate' || event.type === 'clock:tick' || event.type === 'input:activity' || event.type === 'boundary:reached')) c = deliveries(c, last.items, event.ts, state.config.timezone);
   if (event.type === 'feedback:verdict') c = verdict(state, c, event);
   else if (event.type === 'action:verified' && typeof event.payload.tool === 'string' && event.payload.outward === true) c = { ...c, params: observe(c.params, `action.outward:${event.payload.tool}`, event.payload.failed !== true, event.ts) };
   else if (event.type === 'action:performed' && typeof event.payload.tool === 'string') {

@@ -67,7 +67,7 @@ describe('momentSentence', () => {
 describe('projectName', () => {
   it('gives the name, never the storage', () => {
     expect(projectName('named:sundial')).toBe('sundial')
-    expect(projectName('~/Projects/doe/familybudget-backend')).toBe('familybudget-backend')
+    expect(projectName('~/Projects/doe/tidepool-backend')).toBe('tidepool-backend')
     expect(projectName(null)).toBeNull()
   })
 })

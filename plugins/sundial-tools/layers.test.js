@@ -2,7 +2,7 @@
 // the registered set never changes shape, and nothing gated slips through the
 // dispatcher (it re-enters dsh's pipeline under the inner tool's own name).
 import { describe, it, expect, vi } from 'vitest';
-import { ASK_TOOL_REGISTRY } from '@sundial/kernel/tools/index.js';
+import { TOOL_REGISTRY } from '@sundial/kernel/tools/index.js';
 import { toolDefinitions } from '@sundial/kernel/tools/registry.js';
 import { DISCOVER_TOOL_NAME, DISPATCH_TOOL_NAME, HOT_TOOL_NAMES, MENU_CONTEXT_NAME, hideColdTools, layerTools, menuOf, menuText, oneLine, splitByHeat } from './layers.js';
 
@@ -14,7 +14,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 
 // What dsh's registry would hand back: the read tools, an action tool, a dsh built-in, the two fixed entries.
 const SCHEMAS = [
-  ...toolDefinitions(ASK_TOOL_REGISTRY),
+  ...toolDefinitions(TOOL_REGISTRY),
   { name: 'gnomon_draft', description: 'Write a draft for the owner to send. It never sends.', parameters: { type: 'object', properties: {} } },
   { name: 'todo_write', description: 'Write the plan.', parameters: { type: 'object', properties: {} } },
   { name: DISCOVER_TOOL_NAME, description: 'discover', parameters: {} },
@@ -55,6 +55,12 @@ describe('the menu', () => {
   it('groups by purpose, and a tool nobody filed lands in More', () => {
     const groups = menuOf([{ name: 'gnomon_draft', description: 'x' }, { name: 'gnomon_brand_new', description: 'y' }]);
     expect(groups.map((g) => g.group)).toEqual(['Act for the owner (needs their yes)', 'More']);
+  });
+
+  it('the screen tools come with their first call: look, then a ref', () => {
+    const text = menuText([{ name: 'screen_act', description: 'x' }, { name: 'screen_look', description: 'y' }, { name: 'screen_mark', description: 'z' }]);
+    expect(menuOf([{ name: 'screen_act', description: 'x' }])[0].group).toBe("On the owner's screen, in their other apps");
+    for (const call of ['screen_look {app: "Notes"}', 'screen_act {ref: "e7", action: "press"', 'screen_mark {ref: "e7"}']) expect(text).toContain(call);
   });
 
   it('is a menu, not a second copy of every schema', () => {
@@ -147,6 +153,20 @@ describe('gnomon_call (dispatch)', () => {
     expect(await dispatch.execute({ name: 'gnomon_llm_ledger' }, exec)).toEqual({ rows: 3 });
   });
 
+  it('returns the tool\'s own rendered text, not its raw value, when it renders text', async () => {
+    const { dispatch } = build({ isError: false, value: { hits: [{ day: '2026-11-13', text: 'lunch with Mira Bakker' }] }, content: [{ type: 'text', text: '2026-11-13: lunch with Mira Bakker' }] });
+    const out = await dispatch.execute({ name: 'gnomon_semantic_search', args: { query: 'lunch' } }, exec);
+    expect(out).toBe('2026-11-13: lunch with Mira Bakker');
+    expect(dispatch.output.render({}, out)).toEqual([{ type: 'text', text: '2026-11-13: lunch with Mira Bakker' }]);
+  });
+
+  it('answers a wrong argument with the tool\'s schema, so no read is needed first', async () => {
+    const { dispatch } = build({ isError: true, error: { code: 'INVALID', message: 'Invalid arguments: expected number, received string' } });
+    const out = await dispatch.execute({ name: 'gnomon_draft', args: { days: '1' } }, exec);
+    expect(out.error).toMatch(/expected number/);
+    expect(out.schema?.parameters).toBeDefined();
+  });
+
   it('turns a failed or refused call into an error the model can read', async () => {
     const { dispatch } = build({ isError: true, error: { code: 'DENIED', message: 'The owner said no.' } });
     expect(await dispatch.execute({ name: 'gnomon_draft' }, exec)).toEqual({ error: 'The owner said no.' });
@@ -163,5 +183,73 @@ describe('gnomon_call (dispatch)', () => {
     expect((await dispatch.execute({ name: 'gnomon_not_a_tool' }, exec)).available).toContain('gnomon_draft');
     expect((await dispatch.execute({ name: DISPATCH_TOOL_NAME }, exec)).error).toMatch(/directly/);
     expect(tools.execute).not.toHaveBeenCalled();
+  });
+
+  it('runs a name within two edits of one tool as that tool (gnomondid_i, gnonon_what_if on the record)', async () => {
+    const { tools, dispatch } = build();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    expect(await dispatch.execute({ name: 'gnomondid_i', args: { what: 'water the plants' } }, exec)).toEqual({ ok: true });
+    expect(tools.execute).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'gnomon_did_i', arguments: { what: 'water the plants' } }));
+    await dispatch.execute({ name: 'gnonon_what_if' }, exec);
+    expect(tools.execute).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'gnomon_what_if' }));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('no tool named gnomondid_i, ran gnomon_did_i'));
+    log.mockRestore();
+    // Three edits away is not a guess: refused, naming the nearest.
+    tools.execute.mockClear();
+    const out = await dispatch.execute({ name: 'gnomon_activity' }, exec);
+    expect(out.error).toMatch(/^No tool named gnomon_activity\. The nearest: /);
+    expect(tools.execute).not.toHaveBeenCalled();
+  });
+
+  it('two tools as near as each other is a guess, and is refused', async () => {
+    const twins = [{ name: 'tool_ab', parameters: {} }, { name: 'tool_ba', parameters: {} }];
+    const tools = { schemas: vi.fn(() => twins), execute: vi.fn() };
+    const { dispatch } = layerTools({ tools, defineTool });
+    expect((await dispatch.execute({ name: 'tool_aa' }, exec)).error).toBe('No tool named tool_aa. The nearest: tool_ab, tool_ba.');
+    expect(tools.execute).not.toHaveBeenCalled();
+  });
+
+  it('an empty name is refused naming the tools that take the arguments sent', async () => {
+    const pick = { name: 'screen_look', description: 'Look.', parameters: { type: 'object', properties: { app: { type: 'string' } } } };
+    const tools = { schemas: vi.fn(() => [...SCHEMAS, pick]), execute: vi.fn() };
+    const { dispatch } = layerTools({ tools, defineTool });
+    const out = await dispatch.execute({ args: { app: 'Notes' } }, exec);
+    expect(out.error).toMatch(/Name the tool to run.*The tools that take these arguments: .*screen_look/);
+    expect(out.available).toBeUndefined();
+    expect(tools.execute).not.toHaveBeenCalled();
+  });
+
+  it('a call missing a required field is refused naming it (run 36 T01)', async () => {
+    const shell = { name: 'gnomon_run_shell', description: 'Run a command.', parameters: { type: 'object', properties: { command: { type: 'string' }, background: { type: 'boolean' } }, required: ['command'] } };
+    // dsh's own validation refuses it in the pipeline, so the call stays on the record (and an await beside it hears of it).
+    const tools = { schemas: vi.fn(() => [...SCHEMAS, shell]), execute: vi.fn(async () => ({ isError: true, error: { code: 'INVALID', message: 'Invalid arguments: command is required' } })) };
+    // gnomon_run_shell is hot now; the refusal is about a deferred tool, so nothing is hot here.
+    const { dispatch } = layerTools({ tools, defineTool, hot: [] });
+    const out = await dispatch.execute({ name: 'gnomon_run_shell', args: {} }, exec);
+    expect(out.error).toBe('gnomon_run_shell needs command in args: nothing was run. Send gnomon_call {"name": "gnomon_run_shell", "args": {"command": ...}}.');
+    expect(out.schema.parameters.required).toEqual(['command']);
+    // Another failure of a call that had its fields keeps the tool's own words.
+    tools.execute.mockResolvedValueOnce({ isError: true, error: { code: 'INVALID', message: 'Invalid arguments: expected number' } });
+    expect((await dispatch.execute({ name: 'gnomon_run_shell', args: { command: 'ls' } }, exec)).error).toBe('Invalid arguments: expected number');
+  });
+
+  it('forwards gnomon_tools through the pipeline: the answer of a direct call, and a no from the gate stays a no (run 19)', async () => {
+    const { tools, discover, dispatch } = build();
+    tools.execute.mockImplementation(async (call) => ({ isError: false, value: await discover.execute(call.arguments, exec) }));
+    expect(await dispatch.execute({ name: DISCOVER_TOOL_NAME, args: { name: 'gnomon_draft' } }, exec)).toEqual(await discover.execute({ name: 'gnomon_draft' }, exec));
+    expect(tools.execute).toHaveBeenCalledWith(expect.objectContaining({ name: DISCOVER_TOOL_NAME, arguments: { name: 'gnomon_draft' }, agent: exec.agent, parent: 'tok' }));
+    tools.execute.mockResolvedValueOnce({ isError: true, error: { code: 'DENIED', message: 'The gate said no.' } });
+    expect(await dispatch.execute({ name: DISCOVER_TOOL_NAME }, exec)).toEqual({ error: 'The gate said no.' });
+  });
+});
+
+describe('the envelope a model actually sends (run 12)', () => {
+  it('unwraps gnomon_call inside gnomon_call, and takes the arguments from wherever they sat', async () => {
+    const { unwrap } = await import('./layers.js');
+    expect(unwrap({ name: 'gnomon_call', args: { name: 'screen_look', args: { app: 'Spotify' } } })).toEqual({ name: 'screen_look', args: { app: 'Spotify' } });
+    expect(unwrap({ name: 'screen_look', args: { app: 'Spotify' } })).toEqual({ name: 'screen_look', args: { app: 'Spotify' } });
+    // No name anywhere: the caller gets an example back, so nothing is guessed here.
+    expect(unwrap({ args: { app: 'Spotify' } })).toEqual({ name: '', args: { app: 'Spotify' } });
+    expect(unwrap({ app: 'Spotify' })).toEqual({ name: '', args: { app: 'Spotify' } });
   });
 });

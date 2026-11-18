@@ -17,6 +17,12 @@ export interface InputActivityAccumulator {
   /** The grant flags of the newest snapshot in this window. */
   listenAccessGranted?: boolean;
   tapActive?: boolean;
+  /** Set 2 R5: a snapshot in this window carried the owner-only (hardware) fields; their sums and newest times. */
+  ownerOnly?: boolean;
+  ownerKeyDownCount?: number;
+  ownerClickCount?: number;
+  lastKeyAt?: string;
+  lastClickAt?: string;
 }
 
 export function createInputActivityAccumulator(now = Date.now()): InputActivityAccumulator {
@@ -47,6 +53,13 @@ export function accumulateInputActivity(
     acc.fresh = true;
     if (snapshot.listenAccessGranted !== undefined) acc.listenAccessGranted = snapshot.listenAccessGranted;
     if (snapshot.tapActive !== undefined) acc.tapActive = snapshot.tapActive;
+    if (snapshot.ownerOnly) {
+      acc.ownerOnly = true;
+      acc.ownerKeyDownCount = (acc.ownerKeyDownCount ?? 0) + (snapshot.ownerKeyDownCount ?? 0);
+      acc.ownerClickCount = (acc.ownerClickCount ?? 0) + (snapshot.ownerClickCount ?? 0);
+      if (snapshot.lastKeyAt) acc.lastKeyAt = snapshot.lastKeyAt;
+      if (snapshot.lastClickAt) acc.lastClickAt = snapshot.lastClickAt;
+    }
   }
 
   const elapsed = now - acc.windowStartedAt;
@@ -69,6 +82,17 @@ export function accumulateInputActivity(
       ...(acc.fresh ? {} : { stale: true }),
       ...(acc.fresh && acc.listenAccessGranted !== undefined ? { listenAccessGranted: acc.listenAccessGranted } : {}),
       ...(acc.fresh && acc.tapActive !== undefined ? { tapActive: acc.tapActive } : {}),
+      // Set 2 R5: the owner's own keys and clicks (hardware only), and the last of each the helper saw. A newer
+      // helper only; `ownerOnly` tells a reader these need no by-Gnomon filtering.
+      ...(acc.fresh && acc.ownerOnly
+        ? {
+            ownerOnly: true,
+            ownerKeyDownCount: acc.ownerKeyDownCount ?? 0,
+            ownerClickCount: acc.ownerClickCount ?? 0,
+            ...(acc.lastKeyAt ? { lastKeyAt: acc.lastKeyAt } : {}),
+            ...(acc.lastClickAt ? { lastClickAt: acc.lastClickAt } : {}),
+          }
+        : {}),
     },
   };
 
@@ -78,6 +102,11 @@ export function accumulateInputActivity(
   acc.mouseMoveCount = 0;
   acc.scrollCount = 0;
   acc.fresh = false;
+  delete acc.ownerOnly;
+  delete acc.ownerKeyDownCount;
+  delete acc.ownerClickCount;
+  delete acc.lastKeyAt;
+  delete acc.lastClickAt;
 
   return event;
 }

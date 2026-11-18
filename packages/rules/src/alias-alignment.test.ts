@@ -14,7 +14,7 @@ describe('nightlyAliasAlignment — the exact leg', () => {
     const state: KernelState = {
       ...base,
       config: { ...base.config, projectAliases: { 'PB-Games': 'puzzlebox-studio' } },
-      project: { ...base.project, known: known({ 'named:puzzlebox-studio': 'puzzlebox-studio', '~/acme/puzzlebox-studio': 'puzzlebox-studio', 'named:pb-games': 'PB-Games', '~/a/fb': 'familybudget-backend', '~/b/fb': 'familybudget-backend', '~/x/solo': 'solo' }) },
+      project: { ...base.project, known: known({ 'named:puzzlebox-studio': 'puzzlebox-studio', '~/acme/puzzlebox-studio': 'puzzlebox-studio', 'named:pb-games': 'PB-Games', '~/a/fb': 'tidepool-backend', '~/b/fb': 'tidepool-backend', '~/x/solo': 'solo' }) },
     };
     const { state: next, effects } = nightlyAliasAlignment(state, ev('day:boundary'));
     expect(merges(effects)).toEqual([

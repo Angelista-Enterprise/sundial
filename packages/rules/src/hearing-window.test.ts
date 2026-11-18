@@ -24,38 +24,18 @@ const auto = (): KernelState => {
 
 const run = (state: KernelState, ...events: ReturnType<typeof event>[]) => events.reduce((s, e) => hearingWindow(s, e).state, state);
 
-describe('hearingWindow — a meeting in progress', () => {
-  it('wakes, names the window, and stays open past the scheduled end', () => {
-    const state = run(auto(), event('calendar:active', { event: meeting() }));
-    expect(state.hearing.listening).toBe(true);
-    expect(state.hearing.reason).toBe('meeting');
-    expect(state.hearing.title).toBe('Bijpraat');
-    // Meetings overrun; a calendar end is a plan, not an observation.
-    expect(state.hearing.until).toBe('2026-09-12T09:40:00.000Z');
-  });
-
-  it('ignores an all-day block with nobody in it', () => {
-    const state = run(auto(), event('calendar:active', { event: meeting({ isAllDay: true, attendees: [] }) }));
+describe('hearingWindow — the calendar', () => {
+  // A day-long event with attendees held the microphone open all day.
+  it('does not open the microphone, in progress or about to start', () => {
+    const state = run(auto(), event('calendar:active', { event: meeting() }), event('calendar:upcoming', { events: [meeting()] }, '2026-09-12T08:58:00.000Z'));
     expect(state.hearing.listening).toBe(false);
   });
-});
 
-describe('hearingWindow — a meeting about to start', () => {
-  it('wakes a few minutes early, because people join before the hour', () => {
-    const soon = run(auto(), event('calendar:upcoming', { events: [meeting()] }, '2026-09-12T08:58:00.000Z'));
-    expect(soon.hearing.listening).toBe(true);
-    expect(soon.hearing.reason).toBe('meeting-soon');
-    expect(soon.hearing.title).toBe('Bijpraat');
-  });
-
-  it('stays asleep for a meeting that is still hours away', () => {
-    const later = run(auto(), event('calendar:upcoming', { events: [meeting()] }, '2026-09-12T06:00:00.000Z'));
-    expect(later.hearing.listening).toBe(false);
-  });
-
-  it('ignores one that already finished', () => {
-    const past = run(auto(), event('calendar:upcoming', { events: [meeting()] }, '2026-09-12T11:00:00.000Z'));
-    expect(past.hearing.listening).toBe(false);
+  it('a window the calendar opened before the change closes on the next tick', () => {
+    const base = auto();
+    const old = { ...base, hearing: { listening: true, reason: 'meeting' as const, until: '2026-09-12T19:40:00.000Z', title: 'Camp', mutedUntil: null } };
+    const state = run(old, event('clock:tick', {}, AT));
+    expect(state.hearing.listening).toBe(false);
   });
 });
 
@@ -69,7 +49,7 @@ describe('hearingWindow — a call', () => {
   // opens the microphone, the rule reads that as a call, and it never sleeps.
   // The first guard missed it — live, the AV sensor reports the helper under the
   // BUNDLE's display name, "Sundial", not the binary's.
-  it.each(['sundial-audio-helper', 'Sundial', 'gnomon-daemon', 'coreaudiod'])('does not mistake %s for a call', (process) => {
+  it.each(['sundial-audio-helper', 'Sundial', 'gnomon-daemon', 'coreaudiod', 'FineTune'])('does not mistake %s for a call', (process) => {
     const state = run(auto(), event('media:state', { audioInput: true, audioInputProcess: process }));
     expect(state.hearing.listening).toBe(false);
   });
@@ -80,35 +60,22 @@ describe('hearingWindow — a call', () => {
   });
 });
 
-describe('hearingWindow — overlap and closing', () => {
-  it('lets a call inside a meeting extend the window without renaming it', () => {
+describe('hearingWindow — closing', () => {
+  it('a call that goes on keeps pushing the window out', () => {
     const state = run(
       auto(),
-      event('calendar:active', { event: meeting() }),
-      event('media:state', { audioInput: true, audioInputProcess: 'zoom.us' }, '2026-09-12T09:35:00.000Z'),
+      event('media:state', { audioInput: true, audioInputProcess: 'zoom.us' }),
+      event('media:state', { audioInput: true, audioInputProcess: 'zoom.us' }, '2026-09-12T09:30:00.000Z'),
     );
-    // The meeting keeps the name the transcript files under…
-    expect(state.hearing.reason).toBe('meeting');
-    expect(state.hearing.title).toBe('Bijpraat');
-    // …and the furthest reach wins, so neither cuts the other short.
-    expect(state.hearing.until).toBe('2026-09-12T09:40:00.000Z');
-  });
-
-  it('a call running past the meeting pushes the window out', () => {
-    const state = run(
-      auto(),
-      event('calendar:active', { event: meeting() }),
-      event('media:state', { audioInput: true, audioInputProcess: 'zoom.us' }, '2026-09-12T09:39:00.000Z'),
-    );
-    expect(state.hearing.until).toBe('2026-09-12T09:41:00.000Z');
+    expect(state.hearing.until).toBe('2026-09-12T09:32:00.000Z');
   });
 
   // Nothing happening produces no events, so the close has to ride the clock.
   it('sleeps again once the window has passed', () => {
-    let state = run(auto(), event('calendar:active', { event: meeting() }));
-    state = run(state, event('clock:tick', {}, '2026-09-12T09:39:00.000Z'));
+    let state = run(auto(), event('media:state', { audioInput: true, audioInputProcess: 'zoom.us' }));
+    state = run(state, event('clock:tick', {}, '2026-09-12T09:01:00.000Z'));
     expect(state.hearing.listening).toBe(true);
-    state = run(state, event('clock:tick', {}, '2026-09-12T09:41:00.000Z'));
+    state = run(state, event('clock:tick', {}, '2026-09-12T09:03:00.000Z'));
     expect(state.hearing).toEqual({ listening: false, reason: null, mutedUntil: null, until: null, title: null });
   });
 
@@ -134,18 +101,14 @@ describe('hearingWindow — the owner\'s own hand', () => {
     expect(greedy.hearing.until).toBe('2026-09-12T13:00:00.000Z');
   });
 
-  // The whole point of the mute. Without it the calendar poll a few seconds
-  // later reopens the window and the button reads as broken.
-  it('a manual stop is not undone by the meeting that is still on', () => {
-    let state = run(auto(), event('calendar:active', { event: meeting() }));
+  // The whole point of the mute. Without it the next sample of the call a few
+  // seconds later reopens the window and the button reads as broken.
+  it('a manual stop is not undone by the call that is still on', () => {
+    let state = run(auto(), event('media:state', { audioInput: true, audioInputProcess: 'zoom.us' }));
     expect(state.hearing.listening).toBe(true);
-    state = run(state, event('hearing:set', { listen: false }, '2026-09-12T09:10:00.000Z'));
+    state = run(state, event('hearing:set', { listen: false }, '2026-09-12T09:01:00.000Z'));
     expect(state.hearing.listening).toBe(false);
-    state = run(
-      state,
-      event('calendar:active', { event: meeting() }, '2026-09-12T09:11:00.000Z'),
-      event('media:state', { audioInput: true, audioInputProcess: 'zoom.us' }, '2026-09-12T09:12:00.000Z'),
-    );
+    state = run(state, event('media:state', { audioInput: true, audioInputProcess: 'zoom.us' }, '2026-09-12T09:02:00.000Z'));
     expect(state.hearing.listening).toBe(false);
   });
 
@@ -156,11 +119,11 @@ describe('hearingWindow — the owner\'s own hand', () => {
     expect(state.hearing.mutedUntil).toBeNull();
   });
 
-  it('the mute runs out on the clock, and a meeting wakes it again', () => {
+  it('the mute runs out on the clock, and a call wakes it again', () => {
     let state = run(auto(), event('hearing:set', { listen: false }));
     state = run(state, event('clock:tick', {}, '2026-09-12T10:01:00.000Z'));
     expect(state.hearing.mutedUntil).toBeNull();
-    state = run(state, event('calendar:active', { event: meeting({ endDate: '2026-09-12T10:30:00.000Z' }) }, '2026-09-12T10:02:00.000Z'));
+    state = run(state, event('media:state', { audioInput: true, audioInputProcess: 'zoom.us' }, '2026-09-12T10:02:00.000Z'));
     expect(state.hearing.listening).toBe(true);
   });
 
@@ -174,12 +137,7 @@ describe('hearingWindow — the owner\'s own hand', () => {
 });
 
 describe('hearingWindow — audio.autoMeetings off (the default)', () => {
-  it('a meeting with attendees does not open the microphone by itself', () => {
-    const state = run(createInitialState('d1'), event('calendar:active', { event: meeting() }), event('calendar:upcoming', { events: [meeting()] }, '2026-09-12T08:58:00.000Z'));
-    expect(state.hearing.listening).toBe(false);
-  });
-
-  it('nor does a call', () => {
+  it('a call does not open the microphone by itself', () => {
     const state = run(createInitialState('d1'), event('media:state', { audioInput: true, audioInputProcess: 'Google Chrome' }));
     expect(state.hearing.listening).toBe(false);
   });

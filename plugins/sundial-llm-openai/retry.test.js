@@ -66,6 +66,13 @@ describe('stream retries', () => {
   })
 })
 
+describe('a prompt longer than the window', () => {
+  it("is dsh's context overflow, so its guard compacts and retries", async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: "This model's maximum context length is 262144 tokens." } }), { status: 400 })))
+    await expect(drain(adapter().stream({ messages: [] }))).rejects.toMatchObject({ code: 'CONTEXT_WINDOW_EXCEEDED' })
+  })
+})
+
 describe('a model that cannot stop reasoning', () => {
   const refusal = () => new Response(JSON.stringify({ error: { message: 'Disabling thinking is not supported.' } }), { status: 400 })
 

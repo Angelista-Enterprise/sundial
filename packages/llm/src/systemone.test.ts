@@ -72,6 +72,21 @@ describe('callSystemOne', () => {
     }
   });
 
+  it('sends an image only as an asset, with the images header, and never without one', async () => {
+    const calls: { headers: Record<string, string>; body: Record<string, unknown> }[] = [];
+    const fetchImpl = (async (_url: string, init: { headers: Record<string, string>; body: string }) => {
+      calls.push({ headers: init.headers, body: JSON.parse(init.body) });
+      return new Response(JSON.stringify({ answers: { same: { type: 'noul', noul: 0.5 } } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const assets = { 'frame-1': { type: 'image' as const, data_base64: 'AAAA', format: 'jpeg' as const } };
+    await callSystemOne({ frame: 'frame-1' }, QUESTIONS, { fetchImpl, assets });
+    await callSystemOne({ a: 'x' }, QUESTIONS, { fetchImpl });
+    expect(calls[0]!.headers['TypeSafe-Danger-Zone-Images']).toBe('true');
+    expect(calls[0]!.body.assets).toEqual(assets);
+    expect(calls[1]!.headers['TypeSafe-Danger-Zone-Images']).toBeUndefined();
+    expect(calls[1]!.body).not.toHaveProperty('assets');
+  });
+
   it('names ~/.sundial/.env when the key is missing, before any network', async () => {
     delete process.env.TYPESAFE_API_KEY;
     process.env.SUNDIAL_SYSTEMONE_URL = 'http://127.0.0.1:1/never';

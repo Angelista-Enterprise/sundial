@@ -147,6 +147,6 @@ describe('computeMomentKind ad-hoc meetings (no calendar event)', () => {
   });
 
   it('Google Meet tab title counts as a call for audio context when playing', () => {
-    expect(computeAudioContext(rollup({ processName: 'Google Chrome', windowTitles: ['Meet - Pat / Marlou - Overture FE check (online)'], playbackActive: true }))).toBe('call');
+    expect(computeAudioContext(rollup({ processName: 'Google Chrome', windowTitles: ['Meet - Pat / Mira - Puzzlebox FE check (online)'], playbackActive: true }))).toBe('call');
   });
 });

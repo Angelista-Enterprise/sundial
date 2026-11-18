@@ -25,7 +25,7 @@ describe('getLlmConfig: which provider does what (llm.use)', () => {
 
   it('sends a purpose to its provider, with that provider key, and the rest to the .env model', async () => {
     const { getLlmConfig } = await import('./config.js');
-    expect(getLlmConfig('journal')).toEqual({ route: 'far', baseUrl: 'https://llm.example.com/v1', apiKey: 'k-far', model: 'big-model' });
+    expect(getLlmConfig('journal')).toEqual({ route: 'far', source: 'far', access: 'api', baseUrl: 'https://llm.example.com/v1', apiKey: 'k-far', model: 'big-model', protocol: 'openai-chat' });
     expect(getLlmConfig('intent')?.model).toBe('local-model');
     expect(getLlmConfig('reflect')?.route).toBe('openai');
     // A provider that was removed falls back to the .env model instead of stopping the call.
@@ -34,7 +34,7 @@ describe('getLlmConfig: which provider does what (llm.use)', () => {
 
   it('W3: reads llm.use from its source (the kernel\'s state.config), so a change applies without a restart', async () => {
     const { getLlmConfig, setLlmConfigSource } = await import('./config.js');
-    let llm = { providers: [{ id: 'far', label: 'Far', baseUrl: 'https://llm.example.com/v1', model: 'big-model' }], use: {} as Record<string, string> };
+    let llm = { providers: [{ id: 'far', label: 'Far', baseUrl: 'https://llm.example.com/v1', model: 'big-model', protocol: 'openai-chat' as const }], use: {} as Record<string, string>, sources: {}, roles: {} };
     setLlmConfigSource(() => llm);
     try {
       expect(getLlmConfig('reflect')?.route).toBe('openai');

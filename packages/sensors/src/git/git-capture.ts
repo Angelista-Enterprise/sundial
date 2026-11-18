@@ -18,6 +18,8 @@ export interface GitStatus {
 }
 
 export interface CommitStats {
+  /** The commit's author time (ISO 8601), so a commit found late by the 60-s sweep, or after a restart, is filed on its own day; null when git could not say. */
+  authoredAt?: string | null;
   insertions: number;
   deletions: number;
   filesChanged: number;
@@ -95,10 +97,25 @@ export async function readCommitStats(cwd: string): Promise<CommitStats> {
         filesChanged++;
       }
     }
-    return { insertions, deletions, filesChanged };
+    const authored = (await runGitCommand(['log', '-1', '--format=%aI'], cwd)).trim();
+    return { insertions, deletions, filesChanged, authoredAt: Number.isFinite(Date.parse(authored)) ? new Date(authored).toISOString() : null };
   } catch {
-    return { insertions: 0, deletions: 0, filesChanged: 0 };
+    return { insertions: 0, deletions: 0, filesChanged: 0, authoredAt: null };
   }
+}
+
+/** One line of a remote branch's reflog, when it is a push (a fetch or a pull is not): from which commit to which, and when. */
+export function parsePushReflogLine(line: string): { from: string; to: string; at: string } | null {
+  const m = line.match(/^([0-9a-f]{40,64}) ([0-9a-f]{40,64}) .* (\d{9,11}) [+-]\d{4}\tupdate by push$/);
+  return m ? { from: m[1], to: m[2], at: new Date(Number(m[3]) * 1000).toISOString() } : null;
+}
+
+/** How many commits a push carried, or null when git cannot say. `pushedRef` is `<remote>/<branch>`. */
+export async function countPushedCommits(cwd: string, from: string, to: string, pushedRef: string): Promise<number | null> {
+  // A new branch has no "from": its commits are the ones no other remote branch holds.
+  const range = /^0+$/.test(from) ? [to, '--not', `--exclude=${pushedRef}`, '--remotes'] : [`${from}..${to}`];
+  const n = parseInt(await runGitCommand(['rev-list', '--count', ...range], cwd).catch(() => ''), 10);
+  return Number.isFinite(n) ? n : null;
 }
 
 /**

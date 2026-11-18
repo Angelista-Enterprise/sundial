@@ -1,3 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
 const DIMENSIONS = 256;
 
 /** Identifies this embedding scheme in `memory_embeddings.model` — bump if the hashing/normalization scheme ever changes, so old vectors aren't compared against new ones as if they were the same space. */
@@ -119,9 +123,28 @@ async function tryServerEmbedding(config: EmbeddingConfig, text: string): Promis
 }
 
 /**
+ * Whether the in-process model may load. Its first load downloads it from
+ * huggingface.co (about 90 MB), so only a yes loads it: `memory.embeddings`
+ * true, or absent (an install from before the question, which already has it).
+ * `false` (the owner's no) and `"ask"` (the packaged app's first run, until
+ * /setup or Settings has an answer) keep it unloaded and search on the hashing
+ * vector. Read here, per call, because every process that embeds (the harness,
+ * `sundial mcp`) must honour it, and this package reads no other config.
+ */
+export function modelEmbeddingsAllowed(): boolean {
+  try {
+    const file = join(process.env.SUNDIAL_HOME || join(homedir(), '.sundial'), 'config.json');
+    const answer = JSON.parse(readFileSync(file, 'utf8'))?.memory?.embeddings;
+    return answer === undefined || answer === true;
+  } catch {
+    return true;
+  }
+}
+
+/**
  * PE (docs/design/07) — real semantic embeddings, in this priority:
  *   1. an explicitly-configured `/embeddings` server (`SUNDIAL_EMBEDDING_BASE_URL`), if set;
- *   2. the in-process `all-MiniLM-L6-v2` sentence-transformer (the zero-setup default);
+ *   2. the in-process `all-MiniLM-L6-v2` sentence-transformer (the default; skipped when `memory.embeddings` is false);
  *   3. the hashing-trick bag-of-words vector, as the last-resort fallback that
  *      keeps ingestion working when the model can't load (offline first-run, disk).
  *
@@ -143,6 +166,8 @@ export async function computeEmbedding(text: string): Promise<ComputedEmbedding>
     if (served) return served;
   }
 
+  // The owner said no to the model download (`memory.embeddings: false`): never load it, so it is never fetched.
+  if (!modelEmbeddingsAllowed()) return { vector: computeLocalEmbedding(text), model: LOCAL_EMBEDDING_MODEL };
   try {
     const { computeModelEmbedding, LOCAL_MODEL_EMBEDDING_MODEL } = await import('./model-embedding.js');
     return { vector: await computeModelEmbedding(text), model: LOCAL_MODEL_EMBEDDING_MODEL };

@@ -108,7 +108,15 @@ function todoFrame(data) {
 }
 
 function resultFrame(data) {
-  const block = Array.isArray(data.message?.content) ? data.message.content[0] : null
+  const message = data.message
+  // dsh 0.2 (session format V4): the result IS a `tool` message, call id and error
+  // flag on it, text in its blocks. Before, a user message held one `tool-result` block.
+  if (message?.role === 'tool') {
+    const full = textOf(message)
+    const text = full.length > RESULT_TEXT_MAX ? `${full.slice(0, RESULT_TEXT_MAX)}\n… (${full.length - RESULT_TEXT_MAX} more characters)` : full
+    return { type: 'tool-done', callId: String(message.toolCallId ?? ''), failed: data.error !== undefined || message.isError === true, text }
+  }
+  const block = Array.isArray(message?.content) ? message.content[0] : null
   const full = textOf(block)
   const text = full.length > RESULT_TEXT_MAX ? `${full.slice(0, RESULT_TEXT_MAX)}\n… (${full.length - RESULT_TEXT_MAX} more characters)` : full
   return { type: 'tool-done', callId: String(block?.toolCallId ?? ''), failed: data.error !== undefined || block?.isError === true, text }
@@ -306,9 +314,15 @@ export function doneFrame(data) {
  * the spot with the thread's name (live and on replay alike).
  */
 const BROUGHT = /^Brought in: /
+/**
+ * A message one of Sundial's own plugins put in the log. Three spellings: `plugin`
+ * (dsh 0.1, with the plugin's name beside it), `plugin:sundial-…` (what dsh 0.2's
+ * format migration makes of those), and `sundial-…` (what the plugins stamp now).
+ */
+export const fromSundial = (source) => source?.kind === 'plugin' || /^(plugin:)?sundial-/.test(source?.kind ?? '')
 function broughtFrame(data) {
   const summary = data?.source?.summary
-  return data?.source?.kind === 'plugin' && typeof summary === 'string' && BROUGHT.test(summary) ? { type: 'brought', title: summary.replace(BROUGHT, '') } : null
+  return fromSundial(data?.source) && typeof summary === 'string' && BROUGHT.test(summary) ? { type: 'brought', title: summary.replace(BROUGHT, '') } : null
 }
 
 /**
@@ -320,7 +334,7 @@ function broughtFrame(data) {
 const FOLLOWUP = /^Follow-up: /
 function followupFrame(data, event) {
   const summary = data?.source?.summary
-  if (data?.source?.kind !== 'plugin' || typeof summary !== 'string' || !FOLLOWUP.test(summary)) return null
+  if (!fromSundial(data?.source) || typeof summary !== 'string' || !FOLLOWUP.test(summary)) return null
   const t = event?.time instanceof Date ? event.time.getTime() : event?.time
   return { type: 'say', text: textOf(data).replace(FOLLOWUP, ''), followup: Number.isFinite(t) ? new Date(t).toISOString() : null }
 }

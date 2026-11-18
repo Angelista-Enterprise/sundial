@@ -127,6 +127,8 @@ export interface DailyContext {
   timeZone: string;
   coverage: { trackedMin: number; wallClockMin: number; firstActivity: string | null; lastActivity: string | null };
   projects: DailyProjectSummary[];
+  /** Minutes per app, the eight longest. "How long was I in X" and "which app most" had no answer before this (lab/chat data bench). */
+  apps: { app: string; minutes: number }[];
   noProjectMin: number;
   phaseMix: Record<MomentKind, number>;
   focus: { deepMin: number; steadyMin: number; shallowMin: number };
@@ -140,6 +142,8 @@ export interface DailyContext {
   anomalies: DailyAnomaly[];
   continuity: DailyContinuity[];
   redactions: DailyRedactions;
+  /** What Gnomon itself did that day, summed from the moments' `acts`: null on a day it did nothing. */
+  acts: { n: number; apps: string[]; goals: string[] } | null;
 }
 
 export interface BuildDailyContextOptions {
@@ -207,6 +211,8 @@ export interface MomentView {
   activeMs: number | null;
   /** The tail of what ambient hearing caught during the moment, or null when it caught nothing. */
   spokenExcerpt: string | null;
+  /** Gnomon's own acts during the moment (`rollup.acts`), or null. */
+  acts: { n: number; apps: string[]; goals: string[] } | null;
 }
 
 function str(v: unknown): string | null {
@@ -261,7 +267,20 @@ export function viewMoment(m: StoredMoment): MomentView {
     projectConfidence: d.projectConfidence === 'certain' || d.projectConfidence === 'weak' ? d.projectConfidence : null,
     activeMs: typeof d.activeMs === 'number' && (num(d.inputEventCount) > 0 || d.activeMs > 0) ? d.activeMs : null,
     spokenExcerpt: str(d.spokenExcerpt),
+    acts: actsOf(d.acts),
   };
+}
+
+function actsOf(v: unknown): MomentView['acts'] {
+  const a = v as { n?: unknown; apps?: unknown; goals?: unknown } | null | undefined;
+  return a && num(a.n) > 0 ? { n: num(a.n), apps: strArr(a.apps), goals: strArr(a.goals) } : null;
+}
+
+/** The day's acts as one tally: steps add, apps and goals union in the order first seen. */
+function dayActs(views: MomentView[]): DailyContext['acts'] {
+  const all = views.flatMap((v) => (v.acts ? [v.acts] : []));
+  if (all.length === 0) return null;
+  return { n: all.reduce((sum, a) => sum + a.n, 0), apps: [...new Set(all.flatMap((a) => a.apps))], goals: [...new Set(all.flatMap((a) => a.goals))] };
 }
 
 export function minutes(ms: number): number {
@@ -505,6 +524,9 @@ export async function buildDailyContext(date: string, options?: BuildDailyContex
   const wallClockMs = firstActivity && lastActivity ? Date.parse(lastActivity) - Date.parse(firstActivity) : 0;
 
   const { projects, noProjectMin } = buildProjects(views, projectNames, aliases);
+  const appMs = new Map<string, number>();
+  for (const v of views) appMs.set(v.process, (appMs.get(v.process) ?? 0) + v.durationMs);
+  const apps = [...appMs].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([app, ms]) => ({ app, minutes: minutes(ms) }));
 
   const timeline: DailyTimelineEntry[] = views.slice(0, maxTimeline).map((v) => ({
     id: v.id,
@@ -551,6 +573,7 @@ export async function buildDailyContext(date: string, options?: BuildDailyContex
     timeZone,
     coverage: { trackedMin: minutes(trackedMs), wallClockMin: minutes(wallClockMs), firstActivity, lastActivity },
     projects,
+    apps,
     noProjectMin,
     phaseMix: buildPhaseMix(views),
     focus: buildFocus(views),
@@ -564,5 +587,6 @@ export async function buildDailyContext(date: string, options?: BuildDailyContex
     anomalies,
     continuity,
     redactions: buildRedactions(privacySignals),
+    acts: dayActs(views),
   };
 }

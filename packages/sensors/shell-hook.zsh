@@ -71,7 +71,9 @@ __sundial_precmd() {
 
   # umask 077 so the file is 0600 from creation — it holds every command run on
   # this machine, and repairing the mode after the fact leaves a window open.
-  local line="{\"c\":\"$cmd\",\"d\":\"$cwd\",\"e\":$exit_code,\"t\":\"$ts\""
+  # "a": who typed it. An interactive prompt is the owner; an agent's commands run in
+  # non-interactive shells with no precmd and arrive through agent:hook instead.
+  local line="{\"c\":\"$cmd\",\"d\":\"$cwd\",\"e\":$exit_code,\"t\":\"$ts\",\"a\":\"owner\""
   [ -n "$ms" ] && line="$line,\"m\":$ms"
   line="$line}"
   (umask 077; printf '%s\n' "$line" >> "$SUNDIAL_HOOK_FILE") 2>/dev/null

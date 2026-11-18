@@ -93,6 +93,25 @@ export interface GatePolicy {
    * three-way split at zero utility.
    */
   deferFloor: number;
+  /**
+   * Round 4 (FORESIGHT 4d): list rows an `anticipatory` candidate (a meeting's prep, the standup
+   * draft, a wake-up) may take past `dailyBudget`. The budget is for things that keep; these are
+   * worthless once their meeting starts, so a budget spent by 11:50 on returns from a break dropped
+   * 7 of 12 meeting preps. Bounded so a day of meetings cannot flood the list. Absent: `ANTICIPATORY_OVER_BUDGET`.
+   */
+  anticipatoryOverBudget?: number;
+  /**
+   * S6: the interrupting bar for an offer of help (`OFFER_KIND`), in place of `phasicThreshold`. Every guard
+   * (the cap, habituation, cost, the route's holds, the owner's quiet) is the same; only the bar is its own,
+   * because `phasicThreshold` was sized for unasked notices and no offer ever cleared it. Absent: `phasicThreshold`.
+   */
+  offerThreshold?: number;
+  /**
+   * S6: offers of help said per local day, on any channel. An offer that clears its bar while its kind still asks first
+   * is a list row, which neither the interruption cap nor the list's budget counts, so without this nothing bounded a
+   * day: replayed over 93 of the owner's days, every bar (1.6 included) let one day say 5 or 6. Absent: no cap.
+   */
+  offerDailyCap?: number;
   /** Interruptions an owner question may take over the cap. Absent: `RESERVED_OVER_CAP` (W5: the rule sets 0 unless the kind has earned it). */
   reservedOverCap?: number;
 }
@@ -137,10 +156,22 @@ export interface Decision {
     // W5: a suppressed candidate of a thin kind, said in the list anyway so the kind still earns labels.
     | 'exploration'
     // W5 step 10: worth interrupting, said in the list because its kind has not earned interrupting alone.
-    | 'autonomy-ask';
+    | 'autonomy-ask'
+    // Round 4: an anticipatory row admitted past the spent budget (`anticipatoryOverBudget`).
+    | 'anticipatory'
+    // S6: the day's offers of help are spent (`offerDailyCap`).
+    | 'offers-spent';
   /** The arithmetic, for the decision record. */
   terms: DecisionTerms;
 }
+
+/**
+ * A watch rule's reach (`do: [{reach: {tool, brief}}]`) asks before every
+ * outward act; after this many approvals in a row for the same rule and tool,
+ * the day-boundary review offers to let that one rule act without asking. The
+ * owner says yes or not, and one "not now" starts the count again.
+ */
+export const REACH_AUTO_AFTER = 5;
 
 /** ~1 tonic notice a day, urgency exempt. The band `measure-proactivity-triggers.ts` measured as useful is 0.3-3 per active day. */
 export const DEFAULT_GATE_POLICY: GatePolicy = {
@@ -165,6 +196,9 @@ export const DEFAULT_GATE_POLICY: GatePolicy = {
   // see the budget sweep in `apps/daemon/src/scripts/lab/measure-noticing.ts`
   // (removed in 9a6988c; recoverable with `git show 9a6988c^:<path>`).
   budgetExemptAbove: 1.6,
+  // S6: config.offerBar's default (sundial-config.ts), tuned on the owner's days by lab/offer-bar/replay.mjs.
+  offerThreshold: 1,
+  offerDailyCap: 4,
   concernGain: 1.5,
   // Sized against `phasicThreshold`: at full cost (deep focus, hands moving) an
   // interruption has to be worth 1.6 + 0.8 to land now, and anything between
@@ -220,11 +254,23 @@ export interface NoticeState {
   spentToday: number;
   /** Interruptions already delivered on `day`. Absent = none (the harness's simulations). */
   phasicToday?: number;
+  /** S6: offers of help said on `day` (`notices.offersSaid`). Absent = none. */
+  offersToday?: number;
 }
 
 /** Kinds that keep an interruption when the day's cap is spent, and how many over it. */
 const RESERVED_KINDS = new Set(['owner-question']);
 const RESERVED_OVER_CAP = 1;
+/** List rows an anticipatory candidate may take past the daily budget. */
+export const ANTICIPATORY_OVER_BUDGET = 2;
+
+/** S6: the kind that interrupts against `offerThreshold`. */
+export const OFFER_KIND = 'offer-now';
+
+/** The bar a candidate of this kind must clear to interrupt: an offer's own, else the gate's. */
+export function phasicBarFor(policy: GatePolicy, kind: string): number {
+  return kind === OFFER_KIND ? (policy.offerThreshold ?? policy.phasicThreshold) : policy.phasicThreshold;
+}
 
 /**
  * Whether to say this, and through which channel.
@@ -239,6 +285,9 @@ export function decide(policy: GatePolicy, notices: NoticeState, candidate: Noti
   const gain = habituatedGain(notices.habituation[candidate.key], Date.parse(ts), policy);
   const concern = candidate.concerns.length > 0 ? policy.concernGain : 1;
   const weight = candidate.surprise * candidate.precision * gain * concern;
+  if (candidate.kind === OFFER_KIND && notices.day === localDay && (notices.offersToday ?? 0) >= (policy.offerDailyCap ?? Infinity)) {
+    return { channel: 'suppressed', weight, utility: weight, reason: 'offers-spent', terms: { surprise: candidate.surprise, precision: candidate.precision, habituation: gain, concern, cost: 0 } };
+  }
 
   const urgent = candidate.valueHalfLifeMs !== null && candidate.valueHalfLifeMs <= policy.urgentBelowMs;
   // Over the day's interruptions, an urgent candidate falls through to the tonic path below.
@@ -252,13 +301,14 @@ export function decide(policy: GatePolicy, notices: NoticeState, candidate: Noti
     const cost = Math.max(0, Math.min(1, interruptionCost)) * policy.interruptionCostWeight;
     const utility = weight - cost;
     const terms: DecisionTerms = { surprise: candidate.surprise, precision: candidate.precision, habituation: gain, concern, cost };
+    const bar = phasicBarFor(policy, candidate.kind);
 
-    if (utility >= policy.phasicThreshold) return { channel: 'phasic', weight, utility, reason: 'admitted', terms };
+    if (utility >= bar) return { channel: 'phasic', weight, utility, reason: 'admitted', terms };
     // Habituation and the threshold are judgments about the candidate and settle it
     // for good; cost is a judgment about the MOMENT and will be different in twenty
     // minutes. Only the latter earns a place in the defer ring — checking it second
     // is what keeps a genuinely weak candidate from being deferred for ever.
-    if (weight >= policy.phasicThreshold && utility > policy.deferFloor) return { channel: 'deferred', weight, utility, reason: 'too-costly-now', terms };
+    if (weight >= bar && utility > policy.deferFloor) return { channel: 'deferred', weight, utility, reason: 'too-costly-now', terms };
     return { channel: 'suppressed', weight, utility, reason: gain < 0.5 ? 'habituated' : 'below-threshold', terms };
   }
 
@@ -267,7 +317,12 @@ export function decide(policy: GatePolicy, notices: NoticeState, candidate: Noti
 
   const spent = notices.day === localDay ? notices.spentToday : 0;
   const exempt = policy.budgetExemptAbove !== null && weight >= policy.budgetExemptAbove;
-  if (spent >= policy.dailyBudget && !exempt) return { channel: 'suppressed', weight, utility: weight, reason: 'budget-spent', terms };
+  if (spent >= policy.dailyBudget && !exempt) {
+    // A thing worth saying only before its meeting, said while it still is: within a few rows past the budget.
+    // It is judged on arrival, inside its half-life; the defer ring retires an expired one before it is weighed again.
+    const ahead = candidate.shape === 'anticipatory' && spent < policy.dailyBudget + (policy.anticipatoryOverBudget ?? ANTICIPATORY_OVER_BUDGET);
+    return ahead ? { channel: 'tonic', weight, utility: weight, reason: 'anticipatory', terms } : { channel: 'suppressed', weight, utility: weight, reason: 'budget-spent', terms };
+  }
 
   return { channel: 'tonic', weight, utility: weight, reason: 'admitted', terms };
 }
@@ -295,10 +350,10 @@ export function applyDelivery(notices: NoticeState, candidate: NoticeCandidate, 
  */
 export const MAX_HABITUATION_KEYS = 200;
 
-/** The policy under the owner's dial: the bias moves both bars together, `2^bias` (settings keep it within ±3). */
-export function policyForBias(bias = 0): GatePolicy {
+/** The policy under the owner's dial: the bias moves every bar together, `2^bias` (settings keep it within ±3). `offerBar`: `config.offerBar`. */
+export function policyForBias(bias = 0, offerBar = DEFAULT_GATE_POLICY.offerThreshold ?? DEFAULT_GATE_POLICY.phasicThreshold): GatePolicy {
   const scale = 2 ** bias;
-  return scale === 1 ? DEFAULT_GATE_POLICY : { ...DEFAULT_GATE_POLICY, tonicThreshold: DEFAULT_GATE_POLICY.tonicThreshold * scale, phasicThreshold: DEFAULT_GATE_POLICY.phasicThreshold * scale };
+  return { ...DEFAULT_GATE_POLICY, tonicThreshold: DEFAULT_GATE_POLICY.tonicThreshold * scale, phasicThreshold: DEFAULT_GATE_POLICY.phasicThreshold * scale, offerThreshold: offerBar * scale };
 }
 
 export interface GateSimulation {

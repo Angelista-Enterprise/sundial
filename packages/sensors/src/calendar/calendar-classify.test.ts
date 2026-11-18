@@ -75,6 +75,18 @@ describe('classifyCalendarPoll', () => {
     const contextEvent = events.find((e) => e.type === 'calendar:context-event');
     expect(contextEvent?.payload.reason).toBe('not-self-attendee');
   });
+
+  it('marks a declined meeting, and re-lists the day when only the reply changed', () => {
+    const state = createCalendarClassifyState();
+    const at = new Date('2026-01-01T09:00:00.000Z');
+    classifyCalendarPoll(output([event({ selfStatus: 'accepted' })]), state, at);
+    const after = classifyCalendarPoll(output([event({ selfStatus: 'declined' })]), state, new Date(at.getTime() + 60_000));
+    expect(after.map((e) => e.type)).toContain('calendar:upcoming');
+    expect(after.find((e) => e.type === 'calendar:context-event')?.payload.reason).toBe('declined');
+    // And while it runs, nothing says the owner is in it.
+    const during = classifyCalendarPoll(output([event({ selfStatus: 'declined', startDate: '2026-01-01T08:55:00.000Z', endDate: '2026-01-01T10:00:00.000Z' })]), createCalendarClassifyState(), at);
+    expect(during.map((e) => e.type)).not.toContain('calendar:active');
+  });
 });
 
 describe('the week ahead (UC1-X1)', () => {

@@ -19,6 +19,8 @@ export async function readAssistantProposals({ state, now }) {
       // Open ones only. A resolved proposal is a record, and Today is
       // for what still wants something from the owner.
       .filter((p) => p.outcome === 'open')
+      // Set 5 R3: a skill offer waits on the proposals card (`/gnomon/proposals`), with its count; one place, not two.
+      .filter((p) => p.kind !== 'skill')
       .sort((a, b) => String(b.at).localeCompare(String(a.at))),
     // What was decided this week, newest first: a proposal that was
     // accepted is not "nothing to decide", it is the record of a decision.

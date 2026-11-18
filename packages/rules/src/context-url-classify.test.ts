@@ -20,7 +20,7 @@ describe('contextUrlClassify', () => {
 
   it('detects a Google Search title and emits search:performed', () => {
     const state = createInitialState('d1');
-    const { effects } = contextUrlClassify(state, windowEvent('2026-01-01T00:00:00.000Z', 'best pizza in rotterdam - Google Search'));
+    const { effects } = contextUrlClassify(state, windowEvent('2026-01-01T00:00:00.000Z', 'best pizza in springfield - Google Search'));
 
     expect(effects).toEqual([
       {
@@ -29,7 +29,7 @@ describe('contextUrlClassify', () => {
           id: expect.any(String),
           type: 'search:performed',
           ts: '2026-01-01T00:00:00.000Z',
-          payload: { timestamp: '2026-01-01T00:00:00.000Z', engine: 'google', query: 'best pizza in rotterdam', host: 'google.search', source: 'title', processName: 'Chrome' },
+          payload: { timestamp: '2026-01-01T00:00:00.000Z', engine: 'google', query: 'best pizza in springfield', host: 'google.search', source: 'title', processName: 'Chrome' },
         },
       },
     ]);
@@ -37,7 +37,7 @@ describe('contextUrlClassify', () => {
 
   it('detects the Dutch "Google Zoeken" variant', () => {
     const state = createInitialState('d1');
-    const { effects } = contextUrlClassify(state, windowEvent('2026-01-01T00:00:00.000Z', 'beste pizza rotterdam - Google Zoeken'));
+    const { effects } = contextUrlClassify(state, windowEvent('2026-01-01T00:00:00.000Z', 'beste pizza springfield - Google Zoeken'));
     expect((effects[0] as any).event.payload.engine).toBe('google');
   });
 

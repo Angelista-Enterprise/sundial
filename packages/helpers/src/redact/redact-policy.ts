@@ -2,7 +2,7 @@
 // helpers instead of reading `privacyConfig` directly, so the policy lives
 // in exactly one place.
 
-import { privacyConfig } from '../privacy-config.js';
+import { PRIVATE_APP_NAMES, privacyConfig } from '../privacy-config.js';
 import { isSensitiveProcessName, redact } from './redact.js';
 import { redactPii } from './redact-pii.js';
 import { stripEmbeddedUrlQueries } from './redact-url.js';
@@ -19,8 +19,25 @@ export function redactWithPolicy(text: string): string {
  */
 export function isSensitiveProcess(processName: string): boolean {
   const tier = getRedactionTier();
-  if (isSensitiveProcessName(processName, effectiveSensitiveApps(tier))) return true;
+  if (isSensitiveProcessName(processName, effectiveSensitiveApps(tier)) || privateAppName(processName)) return true;
   return tier === 3 && detectAndLearnSensitiveApp(processName);
+}
+
+/** Every app whose screen is never read, lowercase: the sensitive list in force and the hidden list. A name or bundle id that holds one is private. */
+export function privateApps(): string[] {
+  return [...new Set([...effectiveSensitiveApps(), ...(privacyConfig.hiddenApps ?? [])].map((app) => app.toLowerCase()))];
+}
+
+/** Every name a private app goes by (PRIVATE_APP_NAMES) whose entry is in force, lowercase: what Sundial.app matches whole. */
+export function privateAppNames(): string[] {
+  const apps = privateApps();
+  return [...new Set(Object.entries(PRIVATE_APP_NAMES).flatMap(([entry, names]) => (apps.includes(entry) ? names : [])))];
+}
+
+/** Whether `name` is, whole and in any case, a name a private app goes by (PRIVATE_APP_NAMES) while its entry is in force. */
+export function privateAppName(name: string): boolean {
+  const n = String(name ?? '').normalize('NFC').trim().toLowerCase().replace(/’/g, "'").replace(/\.app$/, '');
+  return n !== '' && privateAppNames().includes(n);
 }
 
 /**

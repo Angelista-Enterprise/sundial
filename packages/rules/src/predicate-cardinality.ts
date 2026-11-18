@@ -62,6 +62,8 @@ const EXPLICIT: Record<string, Cardinality> = {
   // for free.
   steps: 'functional',
   partOf: 'functional',
+  // An app's routes that worked for Gnomon (`routePromote`): an app has many, each its own fact.
+  routeWorks: 'set',
 };
 
 /**

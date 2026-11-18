@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { hydrateSnapshot } from './initial-state.js';
-import { activeAt, backtestWatch, describeRule, fromBlueprint, inWindow, isRuleIntent, matchesWatch, resolvePeople, toBlueprint, emptyWatchFlags, emptyWatchRuntime, stepWatch, stepWatchFlags, validateWatchRule, type WatchRule } from './watch.js';
+import { activeAt, backtestWatch, describeRule, inWindow, matchesWatch, resolvePeople, emptyWatchFlags, emptyWatchRuntime, stepWatch, stepWatchFlags, validateWatchRule, watchActions, watchEmit, asksInstead, type WatchRule } from './watch.js';
+import { adoptedRules, validateWatchFlow } from './watch-flow.js';
+import { fromBlueprint, isRuleIntent, toBlueprint } from './watch-words.js';
+import { answerPayload, watchAskRule } from '@sundial/helpers/loops.js';
 
 const at = (min: number) => new Date(Date.parse('2026-09-28T09:00:00.000Z') + min * 60_000).toISOString();
 const win = (min: number, processName: string, windowTitle = '') => ({ type: 'window:changed', ts: at(min), payload: { processName, windowTitle } });
@@ -387,5 +390,89 @@ describe('blueprints: a rule\'s shape to share (U4-F30)', () => {
     expect(inputs).toEqual([{ name: 'cwd', field: 'cwd', op: 'contains', example: 'string' }, { name: 'dirtyFiles', field: 'dirtyFiles', op: 'gt', example: 'number' }]);
     const back = validateWatchRule(fromBlueprint(blueprint, { cwd: 'my-repo', dirtyFiles: 10 }));
     expect('rule' in back && back.rule.when.where).toEqual([{ field: 'cwd', op: 'contains', value: 'my-repo' }, { field: 'dirtyFiles', op: 'gt', value: 10 }]);
+  });
+});
+
+describe('emit: a rule raises a custom event another rule can hear (observatory §1)', () => {
+  const commit = { title: 'Commit after a failure', when: { type: 'shell:command', where: [{ field: 'exitCode', op: 'ne', value: 0 }] }, emit: 'custom:failed-then', say: 'Failed: {command}' };
+  it('keeps emit, lets a rule that emits leave say out, and refuses what would hear itself', () => {
+    expect(rule({ ...commit, when: { type: 'window:changed' } }).emit).toBe('custom:failed-then');
+    const silent = validateWatchRule({ title: 'Silent', when: { type: 'window:changed' }, emit: 'custom:seen' });
+    expect('rule' in silent && silent.rule).toMatchObject({ say: '', emit: 'custom:seen' });
+    for (const bad of [
+      { title: 't', when: { type: 'window:changed' } },
+      { title: 't', when: { type: 'window:changed' }, emit: 'git:commit', say: 'x' },
+      { title: 't', when: { type: 'window:changed' }, emit: 'custom:Big', say: 'x' },
+      { title: 't', when: { type: 'custom:a' }, emit: 'custom:a', say: 'x' },
+      { title: 't', when: { type: 'window:changed' }, then: { type: 'custom:b', withinMin: 5 }, emit: 'custom:b', say: 'x' },
+    ])
+      expect('error' in validateWatchRule(bad)).toBe(true);
+  });
+  it('the emitted event carries the rule, the sentence, the thing and the matched row, shallow', () => {
+    const r = rule({ title: 'E', emit: 'custom:x', say: 'in {processName}', by: ['processName'] });
+    const big = 'y'.repeat(600);
+    const fire = { text: 'in Slack', key: 'Slack', payload: { processName: 'Slack', long: big, small: { a: 1 }, huge: { b: big }, n: 3, ...Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`f${i}`, i])) } };
+    const out = watchEmit(r, fire, 'flow-1')!;
+    expect(out.type).toBe('custom:x');
+    expect(out.payload).toMatchObject({ rule: 'e', flow: 'flow-1', said: 'in Slack', key: 'Slack', from: { processName: 'Slack', small: { a: 1 }, n: 3 } });
+    const from = out.payload.from as Record<string, unknown>;
+    expect((from.long as string).length).toBe(500);
+    expect(from.huge).toBeUndefined();
+    expect(Object.keys(from).length).toBeLessThanOrEqual(20);
+    expect(watchEmit(rule({}), fire)).toBeNull();
+    // A silent rule's event has no sentence.
+    expect(watchEmit({ ...r, say: '' }, { ...fire, text: '' })!.payload.said).toBeUndefined();
+  });
+  it('a flow may feed later steps only: no step hears what it or a later step emits', () => {
+    const a = { title: 'A', when: { type: 'git:commit' }, emit: 'custom:a', say: 'a' };
+    const b = { title: 'B', when: { type: 'custom:a' }, emit: 'custom:b', say: 'b' };
+    const c = { title: 'C', when: { type: 'custom:b' }, say: 'c' };
+    expect('rules' in validateWatchFlow([a, b, c])).toBe(true);
+    expect(validateWatchFlow([c, b, a])).toEqual({ error: expect.stringContaining('step 2 emits custom:b, which step 1 hears') });
+    expect(validateWatchFlow([{ ...a, when: { type: 'custom:b' } }, b])).toEqual({ error: expect.stringContaining('step 2 emits custom:b, which step 1 hears') });
+    expect(validateWatchFlow([a, a])).toEqual({ error: expect.stringContaining('already step 1') });
+    expect(validateWatchFlow([a, { title: 'x' }])).toEqual({ error: expect.stringContaining('step 2:') });
+    expect('error' in validateWatchFlow([])).toBe(true);
+  });
+  it('a rule\'s ask names it, and the answer to it carries the rule and the choice, so a step can branch', () => {
+    const r = rule({ title: 'Ask me', do: [{ ask: { question: 'Publish?', choices: ['Yes', 'Not now'] } }] });
+    const [ask] = watchActions(r, { text: 'x', payload: null, key: null }, at(0));
+    expect(ask!.payload).toMatchObject({ rule: 'ask-me', choices: ['Yes', 'Not now'] });
+    const askId = ask!.payload.askId as string;
+    expect(watchAskRule(askId)).toBe('ask-me');
+    expect(answerPayload(askId, 'Yes')).toEqual({ askId, answer: 'Yes', rule: 'ask-me' });
+    expect(answerPayload('owner-ask:rule-ask-me', 'Drop it')).toEqual({ askId: 'owner-ask:rule-ask-me', answer: 'Drop it' });
+    // ask:owner-answered is watchable, and a branch matches on rule and answer.
+    const branch = rule({ title: 'Branch', when: { type: 'ask:owner-answered', where: [{ field: 'rule', op: 'eq', value: 'ask-me' }, { field: 'answer', op: 'eq', value: 'Yes' }] } });
+    expect(matchesWatch(branch, 'ask:owner-answered', answerPayload(askId, 'yes'))).toBe(true);
+    expect(matchesWatch(branch, 'ask:owner-answered', answerPayload(askId, 'Not now'))).toBe(false);
+  });
+  it('a silent step backtests with nothing heard, and says what it would emit', () => {
+    const r = rule({ title: 'S', when: { type: 'window:changed', where: [{ field: 'processName', op: 'eq', value: 'Slack' }] }, emit: 'custom:s', say: undefined });
+    const out = backtestWatch(r, [win(0, 'Slack')], { daytime: () => true });
+    expect(out.fires).toHaveLength(1);
+    expect(out.fires[0]!.wouldDo).toEqual(['emits custom:s']);
+  });
+});
+
+describe('reach: one outward act, asked first (observatory §3)', () => {
+  const publish = { title: 'Publish', when: { type: 'git:push' }, do: [{ reach: { tool: 'mcp__github__create_release', brief: 'Draft a release for {remote}' } }], say: 'pushed' };
+  it('keeps a reach whose tool has a gate shape, and refuses a second question or a tool of no known shape', () => {
+    expect(rule(publish).do).toEqual([{ reach: { tool: 'mcp__github__create_release', brief: 'Draft a release for {remote}' } }]);
+    expect('error' in validateWatchRule({ ...publish, do: [{ reach: { tool: 'rm -rf', brief: 'x' } }] })).toBe(true);
+    expect('error' in validateWatchRule({ ...publish, do: [{ reach: { tool: 'gnomon_calendar_create' } }] })).toBe(true);
+    expect('error' in validateWatchRule({ ...publish, do: [{ reach: { tool: 'gnomon_calendar_create', brief: 'b' } }, { ask: { question: 'q?' } }] })).toBe(true);
+  });
+  it('compiles to a question whose first choice is the yes, until the owner lets it run alone', () => {
+    const r = rule(publish);
+    const fire = { text: 'pushed', payload: { remote: 'origin' }, key: null };
+    const [ask] = watchActions(r, fire, at(0));
+    expect(ask).toMatchObject({ type: 'ask:owner-opened', payload: { question: 'Draft a release for origin (mcp__github__create_release)', choices: ['Yes, do it', 'Not now'], rule: 'publish', reach: { tool: 'mcp__github__create_release', brief: 'Draft a release for origin' } } });
+    expect(watchAskRule(ask!.payload.askId as string)).toBe('publish');
+    expect(asksInstead(r)).toBe(true);
+    const auto = new Set(['mcp__github__create_release']);
+    expect(watchActions(r, fire, at(0), auto)).toEqual([{ type: 'reach:approved', payload: { rule: 'publish', tool: 'mcp__github__create_release', brief: 'Draft a release for origin', auto: true } }]);
+    expect(asksInstead(r, auto)).toBe(false);
+    expect(adoptedRules({ rules: [r], runtime: {}, stats: { publish: { version: 1, adoptedAt: at(0), fires: 0, recent: [], verdicts: { useful: 0, wrong: 0, 'not-now': 0 }, reach: { mcp__github__create_release: { approvals: 3, auto: false } } } } })[0]!.reach).toEqual([{ tool: 'mcp__github__create_release', approvals: 3, of: 5, auto: false }]);
   });
 });

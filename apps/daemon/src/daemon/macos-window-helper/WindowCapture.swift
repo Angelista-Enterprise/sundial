@@ -24,6 +24,7 @@ func getActiveWindowInfo() -> WindowInfo? {
     var windowAlpha = 1.0
     var windowRole = ""
     var windowSubrole = ""
+    var sheet = false
     var diagnostics: [String: String] = [:]
 
     let appElement = AXUIElementCreateApplication(pid)
@@ -86,6 +87,16 @@ func getActiveWindowInfo() -> WindowInfo? {
            let subrole = subroleValue as? String {
             windowSubrole = subrole
         }
+
+        // S5R2: a sheet is a child of its window (role AXSheet), not a window of its own; a dialog is a window with a dialog subrole.
+        let dialogs = [kAXDialogSubrole as String, kAXSystemDialogSubrole as String]
+        var kids: CFTypeRef?
+        sheet = windowRole == kAXSheetRole as String || dialogs.contains(windowSubrole)
+            || (AXUIElementCopyAttributeValue(axWindow, kAXChildrenAttribute as CFString, &kids) == .success
+                && ((kids as? [AXUIElement]) ?? []).contains { child in
+                    var role: CFTypeRef?
+                    return AXUIElementCopyAttributeValue(child, kAXRoleAttribute as CFString, &role) == .success && role as? String == kAXSheetRole as String
+                })
 
         var fsValue: CFTypeRef?
         if AXUIElementCopyAttributeValue(axWindow, "AXFullScreen" as CFString, &fsValue) == .success,
@@ -176,7 +187,7 @@ func getActiveWindowInfo() -> WindowInfo? {
         position: position, size: size,
         isFullscreen: isFullscreen, isMinimized: isMinimized,
         isOnscreen: isOnscreen, windowLayer: windowLayer, windowAlpha: windowAlpha,
-        windowRole: windowRole, windowSubrole: windowSubrole,
+        windowRole: windowRole, windowSubrole: windowSubrole, sheet: sheet,
         documentPath: documentPath,
         screen: screenInfo, pid: pid,
         diagnostics: diagnostics,

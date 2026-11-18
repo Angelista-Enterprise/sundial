@@ -1,17 +1,26 @@
 // The conversation's routes: the thread list and one thread's log, new, archive and delete, a turn
 // and everything a turn can be asked (attach, bring, compact, question, stop, approve, watch), the model.
 import { post, readJson, sendJson, view } from './http.js'
+import { benchRefusal } from './bench-guard.js'
+import { redactWithPolicy } from '@sundial/helpers/redact/redact-policy.js'
+import { privacyConfig } from '@sundial/helpers/privacy-config.js'
 import { readModels } from './read-models.js'
 import { readSession } from './read-session.js'
 import { readFile, rm, stat } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { basename, dirname } from 'node:path'
 import { COMPANION_SESSION_ID, TURN_IDLE_MS } from '@sundial/helpers/vocab.js'
+import { openApprovals } from '@sundial/kernel/read/doing.js'
+import { staleTurn } from '@sundial/helpers/stale-turn.js'
+import { dropNudges, lastTurn, taskOf } from '@sundial/helpers/task-of.js'
 import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import { replayFrames, titleFrom } from '../shell/frames.js'
 import { forget, readArchive, setArchived } from './archive.js'
 import { readTitles, writeTitles } from './session-titles.js'
+
+/** Where a Stop came from, as the page says (overlay.js `stop`, app.js `stopTurn`); anything else is 'api'. */
+const STOPPERS = new Set(['slip-button', 'slip-key', 'bar'])
 
 /** A turn that produces nothing for this long has stopped being a turn. */
 /** How much of a side thread rides into the conversation when it is brought in. */
@@ -54,8 +63,45 @@ const MAX_IMAGE_BYTES = 25 * 1024 * 1024
  */
 const OWN_SESSIONS = new Set([COMPANION_SESSION_ID])
 
+/**
+ * A thread's last answer, as its first words: the newest turn outline entry with a response (dsh's own bounded preview,
+ * already the conversation's text), on one line, cut at a word to 80 characters. Null when no turn has answered yet.
+ */
+/** Set 4 R2: what a withdrawn turn says, in the chat and on the slip (slip-read.js `endOf` reads it). */
+export const DROPPED_LINE = 'I dropped that, ask again.'
+
+export function answerOf(outline) {
+  const text = [...(Array.isArray(outline) ? outline : [])].reverse().find((t) => typeof t?.response === 'string' && t.response.trim() !== '')?.response.replace(/[*`#>]+/g, '').replace(/\s+/g, ' ').trim()
+  if (!text) return null
+  return text.length <= 80 ? text : `${text.slice(0, 80).replace(/\s+\S*$/, '')}…`
+}
+
+/** Words that make a question of their own, and words that point back at the running task (a no, a "that", an "instead"). */
+const ASKS = /^\s*(what|which|who|when|where|why|how|is|are|can|could|do|does|did|will|would|should|wat|wie|waar|wanneer|waarom|hoe|hoeveel)\b|\?\s*$/i
+const BACK = /\b(no|nee|niet|not|don'?t|stop|instead|wait|actually|rather|also|it|its|them|they|that|this|those|these|ook|dat|dit|die)\b/i
+const SMALL = new Set('what which who whom whose when where why how are was were does did can could will would should the and for from with into than then about you your our there here wat wie waar hoe het een van voor met'.split(' '))
+/** The words of a text that carry its subject: three letters or more, a plural's s off, the small words out. */
+const subjectWords = (text) => new Set((String(text ?? '').toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []).map((w) => (w.length > 3 ? w.replace(/s$/, '') : w)).filter((w) => !SMALL.has(w)))
+
+/**
+ * Set 4 R2: whether words typed while a task runs are a second question rather than a steer: asked as a question, with no
+ * no and nothing pointing back at the task, and no subject word shared with the task's own words (`task.said`).
+ */
+export function newQuestion(text, said) {
+  if (!ASKS.test(text) || BACK.test(text)) return false
+  const task = subjectWords(said)
+  return ![...subjectWords(text)].some((w) => task.has(w))
+}
+
 export function mountSessions(ctx, shell) {
-  const { PLUGIN, agentFor, api, briefMessage, handles, home, live, openAsk, openQuestions, pending, readSnapshot, rememberedModel, selection, snapshot, snapshots, stoppers, threadModel, threadModels, turnClosed, turnOpened, turning, waiting, watch } = shell
+  const { agentFor, api, briefMessage, broadcast, handles, home, live, openAsk, openQuestions, pending, PLUGIN, readSnapshot, rememberedModel, runs, selection, snapshot, snapshots, stoppers, threadModel, threadModels, turnClosed, turning, turnOpened, unhold, watch, push } = shell
+  /** Round 2: the approvals open on the record (`state.approvals`), of one thread when named; a restart keeps them. */
+  const waitingOn = (sessionId) => openApprovals(ctx.gnomonKernel.getState(), Date.now(), sessionId)
+  // The live ask's full reason (its `Gnomon:` sentence, `final:` tag, Command) is held in memory beside its resolver; after a restart only the step line is left.
+  // `dead`: open on the record but its call is gone (a restart): shown, answerable to close it, never offered as a live ask by the slip.
+  const askFrame = (a) => ({ type: 'approval', id: a.id, toolName: a.tool, callId: a.callId, reason: pending.get(a.id)?.reason ?? a.line, ...(pending.get(a.id)?.command ? { command: pending.get(a.id).command } : {}), ...(pending.has(a.id) ? {} : { dead: true }) })
+  /** The last thread picked from outside, and when: the live frame reaches only a page that is up, so a slip page that loads later reads it here. */
+  const last = { picked: null }
 
   /**
    * One session's list facts WITHOUT reading its log.
@@ -93,6 +139,7 @@ export function mountSessions(ctx, shell) {
         title: snapshot.values.title ?? snapshot.values.turnOutline?.[0]?.prompt ?? '',
         blank: meta?.blank === true,
         lastPromptAt: meta?.lastPromptAt ?? null,
+        answer: answerOf(snapshot.values.turnOutline),
       }
     } catch {
       // A cache that cannot answer is not an error, only a slower path.
@@ -197,10 +244,11 @@ export function mountSessions(ctx, shell) {
         // turn in it; a row without the hint keeps the old wording.
         blank: hint?.blank ?? null,
         lastPromptAt: hint?.lastPromptAt ?? null,
+        answer: hint?.answer ?? null,
       }
     })
     rows.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
-    return { sessions: rows, model: selection().model ?? null }
+    return { sessions: rows, model: selection().model ?? null, picked: last.picked }
   })
 
   /**
@@ -371,6 +419,17 @@ export function mountSessions(ctx, shell) {
     res.end(await readFile(wanted))
   })
 
+  /** Set 4 R2: a side thread for a second question, on its parent's model; a rig chat's side thread is a rig chat too (`rigSessions`). */
+  async function sideThread(parent) {
+    const id = `session-${randomUUID()}`
+    const current = { ...(threadModel(parent) ?? selection()) }
+    threadModels.set(id, { current, assembled: undefined })
+    await agentFor(id, { create: true })
+    if (ctx.gnomonKernel.getState?.()?.rigSessions?.[parent] !== undefined) await Promise.resolve(ctx.gnomonKernel.appendSignal('thread:model', { sessionId: id, provider: current.provider, model: current.model, rig: true })).catch(() => {})
+    console.log(`[${PLUGIN}] side thread ${id} for a second question in ${parent}`)
+    return id
+  }
+
   /**
    * Start a session.
    *
@@ -385,7 +444,13 @@ export function mountSessions(ctx, shell) {
     }
     const id = `session-${randomUUID()}`
     await agentFor(id, { create: true })
-    console.log(`[${PLUGIN}] session ${id} created`)
+    // `pick` is for a caller that is not the page: the test runner starts every run in a clean thread,
+    // and the open slip has to follow it or the run lands in whatever conversation was last open.
+    // Only when something was actually sent: a body read on a request that carries none never ends.
+    const body = Number(req.headers['content-length'] ?? 0) > 0 ? await readJson(req).catch(() => ({})) : {}
+    if (body?.pick === true) last.picked = { id, at: Date.now() }
+    if (body?.pick === true) broadcast({ type: 'thread', ...last.picked })
+    console.log(`[${PLUGIN}] session ${id} created${body?.pick === true ? ' and picked' : ''}`)
     sendJson(res, 200, { id })
   })
 
@@ -403,7 +468,7 @@ export function mountSessions(ctx, shell) {
    *
    * `command-compact` is enabled in the profile (dsh-base mounts it,
    * dsh-web-app disabled it, the machine's patch re-enables it) and
-   * `compaction-basic` already compacts automatically at 80% of the model's
+   * the compaction engine (NotesCompaction in sundial-actions) already compacts automatically at 80% of the model's
    * declared window. This is the manual lever for the pinned conversation,
    * where the owner can see the gauge and decide the transcript has served its
    * purpose.
@@ -476,7 +541,7 @@ export function mountSessions(ctx, shell) {
     if (typeof commands?.execute !== 'function') return [501, { unavailable: 'This profile has no commands service.' }]
     const agent = await agentFor(sessionId)
     if (!agent || agent.status === 'disposed') return [409, { unavailable: 'That session is no longer running.' }]
-    const settled = await commands.execute(agent, '/compact', AbortSignal.timeout(COMPACT_TIMEOUT_MS))
+    const settled = await commands.execute(agent, '/compact', [], AbortSignal.timeout(COMPACT_TIMEOUT_MS))
     return settled === undefined ? [501, { unavailable: 'The /compact command is not available on this profile.' }] : { compacted: true }
   })
 
@@ -524,13 +589,13 @@ export function mountSessions(ctx, shell) {
     agent.inject(
       createUserMessage({
         content: [{ type: 'text', text: `The owner brought another thread into this conversation: "${title}". Its words, oldest first${digest === joined ? '' : ' (only the latest part)'}:\n\n${digest}` }],
-        source: { kind: 'plugin', plugin: PLUGIN, form: 'notice', summary: `Brought in: ${title}` },
+        source: { kind: PLUGIN, form: 'notice', summary: `Brought in: ${title}` },
       }),
     )
     agent.followup(
       createUserMessage({
         content: [{ type: 'text', text: 'In one or two sentences, say what that thread settled and what is still open, so the owner can carry on from here. No offer.' }],
-        source: { kind: 'plugin', plugin: PLUGIN },
+        source: { kind: PLUGIN },
       }),
     )
     sendJson(res, 200, { brought: true, title })
@@ -569,7 +634,7 @@ export function mountSessions(ctx, shell) {
     }
     // Whatever this thread is still waiting on, asked again for the browser
     // that just opened it: an approval, or that its open question is live.
-    for (const { sessionId, frame } of waiting.values()) if (sessionId === id) write(frame)
+    for (const ask of waitingOn(id)) write(askFrame(ask))
     if (openQuestions.has(id)) write({ type: 'question-open' })
     let between = true
     const off = watch(id, (frame) => {
@@ -597,18 +662,39 @@ export function mountSessions(ctx, shell) {
       return
     }
     const body = await readJson(req)
-    const sessionId = typeof body?.sessionId === 'string' ? body.sessionId.trim() : ''
+    let sessionId = typeof body?.sessionId === 'string' ? body.sessionId.trim() : ''
     const text = typeof body?.text === 'string' ? body.text.trim() : ''
     if (sessionId === '' || text === '') {
       sendJson(res, 400, { unavailable: 'A turn needs a session and something to say.' })
       return
     }
 
-    const agent = await agentFor(sessionId)
+    let agent = await agentFor(sessionId)
     if (agent === null || agent === undefined || agent.status === 'disposed') {
       sendJson(res, 409, { unavailable: 'That session is no longer running.' })
       return
     }
+    unhold(sessionId)
+    // Run 202: a turn that sat with nobody behind it (stale-turn.ts, from this chat's log) is withdrawn, with its queue,
+    // so these words start a task of their own instead of steering it; the model is told why in one line.
+    const quiet = agent.status === 'running' ? staleTurn(agent.session?.snapshotEvents?.(), Date.now()) : null
+    if (quiet !== null) {
+      // keepInbox, as /stop does: the note below survives the cancel, and the owner's old steers go just after.
+      agent.cancel({ kind: 'hook', reason: 'stale turn' }, { keepInbox: true })
+      agent.inject(createUserMessage({ content: [{ type: 'text', text: `The turn before this one sat ${Math.round(quiet / 60_000)} minutes with no step and was withdrawn: it is over. Do not pick it up; answer the words below.` }], source: { kind: PLUGIN, form: 'notice', summary: 'An earlier turn sat still and was withdrawn' } }))
+    }
+    // A finish nudge queued just before these words never runs after them: the owner leads now (Review S5R1).
+    dropNudges(agent.inbox)
+    // A steer still queued from an earlier task never rides into this one: these words are the task now.
+    let correcting = quiet === null && (agent.status === 'running' || turning.has(sessionId))
+    // Set 4 R2: a second question while the task runs (no ask waits, `newQuestion` against the task's own words) runs in a side
+    // thread of its own. The running task is not stopped or steered; this stream is the side turn's (`x-gnomon-aside`), and the
+    // slip shows both. An ask that waits keeps "no + next" (overlay.js), so a yes never lands on another thread's ask.
+    const task = taskOf(ctx.gnomonKernel.getState?.(), sessionId)
+    const parent = correcting && waitingOn(sessionId).length === 0 && newQuestion(text, task?.said ?? '') ? sessionId : null
+    if (parent) [sessionId, correcting] = [await sideThread(parent), false]
+    if (parent) agent = await agentFor(sessionId)
+    if (!correcting) for (const old of agent.inbox?.nextStep ?? []) if (old?.source?.kind === 'user' && old.id) agent.inbox.remove(old.id)
     // This turn is about to put words in that log, so whatever the thread list
     // remembers it is called is now a guess. The next listing reads it again.
     forgetTitle(sessionId)
@@ -636,8 +722,28 @@ export function mountSessions(ctx, shell) {
           .slice(0, MAX_IMAGES_PER_TURN)
       : []
     // W1: the brief — the facts this turn is shown, logged as `chat:shown`, rendered once.
-    const brief = await ctx.gnomonKernel.brief({ sessionId, cause: { kind: 'owner', askId: typeof body.answering?.askId === 'string' ? body.answering.askId : null }, place, answering, text })
-    agent.inject(briefMessage(brief, place !== '' ? `Looking at ${place}` : brief.present))
+    // Plan 15 step 2: said in the summoned panel. The selected text rides only with a place the owner attached.
+    const summon = typeof body.summon === 'string' && body.summon !== ''
+    // Never from an app on the sensitive or hidden list (a password manager), and through the policy's patterns always.
+    const below = place.split(':')[0].trim().toLowerCase()
+    const secret = [...privacyConfig.sensitiveApps, ...privacyConfig.hiddenApps].some((app) => below !== '' && below.includes(String(app).toLowerCase()))
+    const selected = summon && place !== '' && !secret && typeof body.selected === 'string' ? redactWithPolicy(body.selected.slice(0, 2000)) : ''
+    // Set 2 R4: a correction steers the running turn, which already holds its brief: no second one mid-turn.
+    const brief = correcting ? null : await ctx.gnomonKernel.brief({ sessionId, cause: { kind: summon ? 'summon' : 'owner', askId: typeof body.answering?.askId === 'string' ? body.answering.askId : null }, place, answering, text, ...(selected !== '' ? { selected } : {}), ...(body.voice === true ? { voice: true } : {}) })
+    // Plan 15 step 3: a spoken turn's reply is said aloud by the app, sentence by sentence.
+    if (body.voice === true) shell.voice?.begin(sessionId, typeof body.lang === 'string' ? body.lang.slice(0, 20) : null)
+    if (brief) agent.inject(briefMessage(brief, place !== '' ? `Looking at ${place}` : brief.present))
+    // Run 14: Sundial could not tell one task from the next, so the screen tools stood in a minute for
+    // "a new task" and the route learner could not tell the owner's work from Gnomon's own tidying up.
+    // The boundary is here, where the owner's words arrive, and nowhere else.
+    // Set 2 R4: a correction is a `task:corrected` row, not a new task (the screen tools stop a chain on it); the owner's words
+    // themselves steer the running turn's next step (below), once, instead of queueing a turn after it.
+    const said = String(text ?? '').slice(0, 240)
+    // The chat's newest turn before these words: the task's own turns are the ones above it (task-of.ts `taskOfTurn`). By clock
+    // they never were: dsh logs `turn/start` a few ms before the kernel stamps `task:started`.
+    const afterTurn = lastTurn(agent.session?.snapshotEvents?.())
+    const turnMark = afterTurn === undefined ? {} : { afterTurn }
+    if (typeof ctx.gnomonKernel.appendSignal === 'function') void Promise.resolve(ctx.gnomonKernel.appendSignal(...(correcting ? ['task:corrected', { session: sessionId, text: said }] : parent ? ['task:aside', { sessionId, parent, text: said, ...turnMark }] : ['task:started', { sessionId, text: said, ...turnMark }]))).catch(() => {})
 
     res.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
@@ -646,6 +752,7 @@ export function mountSessions(ctx, shell) {
       // No proxy sits in front of this today, but a Tailscale Serve route would
       // buffer the whole stream into one lump.
       'x-accel-buffering': 'no',
+      ...(parent ? { 'x-gnomon-aside': sessionId } : {}),
     })
 
     await new Promise((resolve) => {
@@ -707,8 +814,11 @@ export function mountSessions(ctx, shell) {
         if (timer !== null) clearTimeout(timer)
         timer = setTimeout(() => {
           // An approval waiting on the owner is not a quiet turn: it outlives this (APPROVAL_TTL_MS), and its close re-arms it.
-          if ([...waiting.values()].some((w) => w.sessionId === sessionId)) return arm()
-          emit({ type: 'error', message: 'That turn went quiet. It may still be running — reopen the session to see.' })
+          if (waitingOn(sessionId).length > 0) return arm()
+          // Set 4 R2: a turn that sat still with no tool running (stale-turn.ts) is withdrawn here, and says so in one line.
+          const stale = agent.status === 'running' && staleTurn(agent.session?.snapshotEvents?.(), Date.now()) !== null
+          if (stale) agent.cancel({ kind: 'hook', reason: 'stale turn' }, { keepInbox: true })
+          emit({ type: 'error', message: stale ? DROPPED_LINE : 'That turn went quiet. It may still be running: reopen the session to see.' })
           finish()
         }, TURN_IDLE_MS)
       }
@@ -716,7 +826,9 @@ export function mountSessions(ctx, shell) {
       res.on('close', finish)
       // Images ride WITH the owner's words, in the same message: a picture
       // sent as its own turn is a turn with no question in it.
-      agent.followup(createUserMessage({ content: [{ type: 'text', text }, ...images.map((attachment) => ({ type: 'image', attachment }))], source: { kind: 'user' } }))
+      const words = createUserMessage({ content: [{ type: 'text', text }, ...images.map((attachment) => ({ type: 'image', attachment }))], source: { kind: 'user' } })
+      if (correcting) agent.steer(words)
+      else agent.followup(words)
       arm()
     })
 
@@ -744,9 +856,15 @@ export function mountSessions(ctx, shell) {
     const [provider, model] = [body.provider, body.model].map((v) => (typeof v === 'string' ? v : ''))
     const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
     if (provider === '' || model === '') return 'A choice needs a provider and a model.'
+    // The rig only ever picks its own thread's model: with no thread named it would set the owner's default.
+    if (body.by === 'rig' && sessionId === '') return 'The rig picks a model for one thread: name its sessionId.'
     const ref = sessionId === '' ? null : await agentFor(sessionId).then(() => threadModels.get(sessionId))
-    if (sessionId !== '') ref.current = { ...ref.current, provider, model }
-    else await ctx.agentDefaultModel.saveSelection({ ...selection(), provider, model })
+    if (sessionId !== '') {
+      ref.current = { ...ref.current, provider, model }
+      // The run's model in the record, beside its steps (the rig reads it). Round 4: the rig says `by: 'rig'`, and the
+      // row carries `rig: true`, so the fold knows its session (`rigSessions`); the owner's own change carries nothing.
+      await ctx.gnomonKernel.appendSignal('thread:model', { sessionId, provider, model, ...(body.by === 'rig' ? { rig: true } : {}) }).catch(() => {})
+    } else await ctx.agentDefaultModel.saveSelection({ ...selection(), provider, model })
     console.log(`[${PLUGIN}] ${sessionId !== '' ? `thread ${sessionId} now uses` : 'default model is now'} ${provider}/${model}`)
     return sessionId !== '' ? { current: ref.current, scope: 'thread' } : { current: selection(), scope: 'default' }
   })
@@ -770,8 +888,12 @@ export function mountSessions(ctx, shell) {
     live.add(emit)
     emit({ type: 'now', now: snapshot() })
     emit({ type: 'ask', open: openAsk() })
+    emit({ type: 'runs', runs: [...runs.values()] })
     // A tab that connects mid-session gets the settings in force, not the defaults.
     emit({ type: 'settings', settings: ctx.gnomonKernel.getState()?.settings ?? null })
+    // Run 27: a slip whose feed was reconnecting missed the runner's pick and sent the run to the owner's thread.
+    // The last pick again, with when: the slip joins it only when it is newer than its own last choice.
+    if (last.picked) emit({ type: 'thread', ...last.picked })
     await new Promise((resolve) => res.on('close', resolve))
     live.delete(emit)
   })
@@ -810,6 +932,15 @@ export function mountSessions(ctx, shell) {
     }
 
     agent.cancel({ kind: 'user' }, { keepInbox: true })
+    // Doc 29: four Stops no script logged. Who pressed: the slip's button or key, the run bar, or any other caller of this route
+    // ('api', with its user agent: the rig's post.mjs is node's); `press`, a hand or a posted click, as Sundial.app saw it.
+    const by = STOPPERS.has(body?.by) ? body.by : 'api'
+    const press = body?.press === 'hand' || body?.press === 'posted' ? { press: body.press } : {}
+    await ctx.gnomonKernel.appendSignal('chat:stop', { sessionId, by, ...press, ...(by === 'api' ? { agent: String(req.headers['user-agent'] ?? '').slice(0, 80) } : {}) }).catch(() => {})
+    // The inbox stays, but a finish nudge queued in the instant before the Stop goes: it would restart what the owner stopped.
+    dropNudges(agent.inbox)
+    // The rings that turn put on the owner's screen go with it; a guide they are following stays.
+    await ctx.gnomonKernel.appendSignal('screen:mark', { clear: true }).catch(() => {})
 
     // What the next turn needs to know, in one line: that the silence was the
     // owner's doing and not a failure, and — when they said why — what they
@@ -829,7 +960,7 @@ export function mountSessions(ctx, shell) {
               .join('\n'),
           },
         ],
-        source: { kind: 'plugin', plugin: PLUGIN, form: 'notice', summary: boundContextSummary(note !== '' ? `Stopped: ${note}` : 'The owner stopped that turn') },
+        source: { kind: PLUGIN, form: 'notice', summary: boundContextSummary(note !== '' ? `Stopped: ${note}` : 'The owner stopped that turn') },
       }),
     )
 
@@ -847,10 +978,29 @@ export function mountSessions(ctx, shell) {
 
   post(ctx, '/gnomon/api/approve', { method: 'Answering takes a POST.' }, async (body) => {
     const outcome = body.outcome === 'allowed-once' ? 'allowed-once' : 'rejected'
-    const settle = pending.get(typeof body.id === 'string' ? body.id : '')
+    const id = typeof body.id === 'string' ? body.id : ''
+    // Round 3: who answered, as the caller says (the web client `owner`, yes.mjs `rig`); anything else is `unknown`. Only `owner` moves the ladder (autonomy-track.ts).
+    // Bench mode (docs/release/27 section 4): `bench`, lab/bench/answerer.mjs, is taken only on the bench install itself (bench-guard.js).
+    const by = body.by === 'owner' || body.by === 'rig' || body.by === 'bench' ? body.by : 'unknown'
+    const refused = by === 'bench' ? benchRefusal() : null
+    if (refused !== null) {
+      console.warn(`[${PLUGIN}] a bench answer for ${id || 'no ask'} was refused: ${refused}`)
+      return [403, { answered: false, refused: `A bench answer is refused here: ${refused}.` }]
+    }
+    const settle = pending.get(id)?.settle
+    if (settle !== undefined) return (settle(outcome, by), { answered: true, outcome })
+    // Round 2: after a restart the call that asked is gone and nothing runs, but the ask is still open on the record: the answer closes it there.
+    const ask = waitingOn().find((a) => a.id === id)
+    if (ask !== undefined) {
+      await ctx.gnomonKernel.appendSignal('approval:answered', { approvalId: id, sessionId: ask.sessionId, tool: ask.tool, answer: outcome, by })
+      // The card closes and says nothing ran.
+      for (const send of [(frame) => push(ask.sessionId, frame), broadcast]) send({ type: 'approval-closed', id, outcome, ran: false })
+      return { answered: true, outcome, ran: false }
+    }
     // Already answered, expired, or withdrawn: a stale tab answering a question that moved on is inert, not a fault.
-    if (settle === undefined) return { answered: false }
-    settle(outcome)
-    return { answered: true, outcome }
+    return { answered: false }
   })
+
+  /** Round 2: a thread's open approvals as JSON (`?session=`; none named, every thread's), for the slip and the rig's checks. */
+  view(ctx, '/gnomon/api/approvals', 'Gnomon could not read its approvals.', async (url) => ({ open: waitingOn(url.searchParams.get('session') || undefined).map(askFrame) }))
 }

@@ -1,5 +1,5 @@
 import { deriveId } from '@sundial/helpers/derive-id.js';
-import { wasAbsent } from './meeting-followup.js';
+import { attendanceOf } from '@sundial/kernel/attendance.js';
 import type { Effect, KernelState, Rule } from '@sundial/kernel/types.js';
 import { looksLikePersonName } from '@sundial/helpers/person-name.js';
 import { slugifyEntityName } from './entity-extract.js';
@@ -174,7 +174,7 @@ export const peopleAsk: Rule = (state, event) => {
     const since = now - Date.parse(meeting.end);
     if (since < ASK_AFTER_END_MS || since > MEETING_HORIZON_MS) continue;
     // A room the owner was not in has nobody they can name.
-    if (wasAbsent(meeting)) continue;
+    if (attendanceOf(meeting) !== 'joined') continue;
     // Unnamed attendees in THIS meeting. Asking is only honest when there is
     // exactly one: "who was the other person there?" has a single right answer
     // then, and the name can be attached to that alias with confidence. With

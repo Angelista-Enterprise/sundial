@@ -375,6 +375,24 @@ describe('every sensor text field gets the secret pass (release audit)', () => {
       privacyConfig.hiddenApps.pop();
     }
   });
+  it('an app is private by its bundle id too: a name the list does not hold hides nothing (doc 16)', () => {
+    const look = (payload: Record<string, unknown>) => sanitizeAtIngest({ id: 'e', type: 'screen:looked', ts: '2026-01-01T00:00:00.000Z', payload: { processName: 'Praatbox', bundleId: 'com.puzzlebox.chat', windowTitle: 'Mira Bakker', screenText: ['File'], elements: [{ ref: 'e1', screenText: ['BOX-484', '', ''] }], ...payload } } as never).payload as Record<string, any>;
+    expect(look({}).elements[0].screenText[0]).toBe('BOX-484');
+    privacyConfig.sensitiveApps.push('puzzlebox.chat');
+    try {
+      const out = look({});
+      expect(JSON.stringify(out)).not.toMatch(/BOX-484|Mira|File/);
+      expect(out).toMatchObject({ processName: 'Praatbox', bundleId: 'com.puzzlebox.chat', windowTitle: '[private]' });
+    } finally {
+      privacyConfig.sensitiveApps.pop();
+    }
+    privacyConfig.hiddenApps.push('puzzlebox.chat');
+    try {
+      expect(look({})).toMatchObject({ processName: '[hidden]', bundleId: '[hidden]', windowTitle: '[hidden]' });
+    } finally {
+      privacyConfig.hiddenApps.pop();
+    }
+  });
   it('scrubs the secrets people paste into a coding agent before an agent:turn is stored', () => {
     const text = [
       'AWS_SECRET_ACCESS_KEY=abcdEFGHijklMNOPqrstUVWXyz0123456789abcd',
@@ -406,3 +424,17 @@ describe('gaps found by the 2026-10-05 audit of the live record', () => {
     expect(clean({ processName: 'Google Chrome', documentPath: 'https://box.example.com/cb?token=abc&apiKey=xyz' }).documentPath).toBe('https://box.example.com/cb');
   });
 });
+
+describe('a model-written goal (screen:step, Round 2)', () => {
+  const step = (processName: string, goal: string) => sanitizeAtIngest({ id: 'e1', type: 'screen:step', ts: '2026-01-01T00:00:00.000Z', payload: { processName, windowTitle: 'Vault', verb: 'press', screenText: ['Send'], goal } });
+  it('is stored with an address redacted, and the rest of its words kept', () => {
+    expect(step('Mail', 'mail mira.bakker@example.com about BOX-484').payload.goal).toBe('mail [email] about BOX-484');
+  });
+  it('is never cleared to [private] in a private app', () => {
+    const private_ = privacyConfig.sensitiveApps[0] ?? '1Password';
+    const row = step(private_, 'queue giant steps').payload;
+    expect(row.windowTitle).toBe('[private]'); // the app is private
+    expect(row.goal).toBe('queue giant steps');
+  });
+});
+

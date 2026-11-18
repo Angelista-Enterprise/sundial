@@ -207,7 +207,12 @@ export function createLlmAuditRecorder({ openAudit, getMomentId, routeBaseUrl = 
     const toolCalls = [];
     let usage;
     let finish;
+    // Set 2 R4: the route that answered when the asked one could not be reached (sundial-llm-openai), filed instead of it.
+    let fellBack;
+    let upstream;
     let settled = false;
+    // Plan 15 I16: when the first text arrived; the target for a spoken reply is a first word inside 1.2 s.
+    let firstAt;
 
     return {
       id,
@@ -215,6 +220,7 @@ export function createLlmAuditRecorder({ openAudit, getMomentId, routeBaseUrl = 
       observe(chunk) {
         switch (chunk?.type) {
           case 'text-delta':
+            if (firstAt === undefined && chunk.text) firstAt = clock();
             text += chunk.text ?? '';
             break;
           case 'block-end':
@@ -227,6 +233,9 @@ export function createLlmAuditRecorder({ openAudit, getMomentId, routeBaseUrl = 
             break;
           case 'finish':
             finish = chunk.reason;
+            if (typeof chunk.fellBack?.route === 'string') fellBack = chunk.fellBack;
+            // Set 4 R1: the host the route says served it (OpenRouter's `provider`), so a slow hour names its upstream.
+            if (typeof chunk.upstream === 'string' && chunk.upstream) upstream = chunk.upstream;
             break;
           default:
             break;
@@ -261,12 +270,15 @@ export function createLlmAuditRecorder({ openAudit, getMomentId, routeBaseUrl = 
           await row.settle({
             respondedAt: new Date(endedAt).toISOString(),
             latencyMs: endedAt - startedAt,
+            ...(firstAt !== undefined ? { firstTokenMs: firstAt - startedAt } : {}),
             success,
             ...(body.length > 0 ? { responseContent: boundBody(body) } : {}),
             ...columns,
             ...(error ? { error } : {}),
             ...(errorClass ? { errorClass } : {}),
             ...(billedPromptTokens ? { billedPromptTokens } : {}),
+            ...(upstream ? { upstream } : {}),
+            ...(fellBack ? { route: fellBack.route, model: ledgerModel(fellBack.model ?? 'unknown', fellBack.route, routeBaseUrl(fellBack.route)) } : {}),
           });
         } catch (writeError) {
           console.error('[sundial-tools] failed to close a ledger row for a chat call:', writeError);

@@ -10,6 +10,16 @@
 /** lane H (H4): the taps a push offers. "Not now" first; a coding agent's wait is not something to rate. */
 export const phoneVerdicts = (kind) => (typeof kind === 'string' && kind.startsWith('agent-') ? ['not-now'] : ['not-now', 'useful', 'wrong'])
 
+/**
+ * Plan 15 4.4: the shelf push follows the router (it went around it, almanac/issues/shelved-work-push-bypasses-the-channel-router).
+ * Away: the phone. At the Mac with the knock on: the return sound at the next pause instead. In a call or focus: nothing; the shelf keeps it.
+ */
+export function shelfPush(state) {
+  const channel = state?.route?.channel
+  if (channel === 'hold') return false
+  return channel !== 'mac' || state?.config?.experiments?.voiceKnock === false
+}
+
 /** How long ntfy gets before the push counts as failed. */
 export const PUSH_TIMEOUT_MS = 10_000
 

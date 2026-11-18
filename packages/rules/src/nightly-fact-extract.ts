@@ -8,6 +8,8 @@ export interface ExtractedFactCandidate {
   predicate: string;
   object: string;
   confidence: number;
+  /** YYYY-MM-DD of the line a conversation fact came from, when the model gave a well-formed one. */
+  at?: string;
 }
 
 const VALID_ENTITY_KINDS = new Set<string>(EXTRACTABLE_ENTITY_KINDS);
@@ -62,7 +64,7 @@ export function normalizePredicate(predicate: string): string {
  * malformed rather than throwing — a bad LLM response degrades to "no facts
  * extracted this pass," not a crashed daemon.
  */
-export function parseExtractedFactCandidates(text: string): ExtractedFactCandidate[] {
+export function parseExtractedFactCandidates(text: string, max = MAX_EXTRACTED_FACTS_PER_PASS): ExtractedFactCandidate[] {
   const stripped = text
     .trim()
     .replace(/^```(?:json)?\s*/i, '')
@@ -90,9 +92,10 @@ export function parseExtractedFactCandidates(text: string): ExtractedFactCandida
       // extractor already refuses this (`entityExtract` will not make a task of
       // a known project's name); the model path had no equivalent.
       if (canonicalName.toLowerCase() === object.toLowerCase()) continue;
-      candidates.push({ entityKind: entityKind as ExtractedFactCandidate['entityKind'], canonicalName, predicate, object, confidence: Math.max(1, Math.min(100, Math.round(confidence))) });
+      const at = typeof row.at === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(row.at.trim()) ? { at: row.at.trim() } : {};
+      candidates.push({ entityKind: entityKind as ExtractedFactCandidate['entityKind'], canonicalName, predicate, object, confidence: Math.max(1, Math.min(100, Math.round(confidence))), ...at });
     }
-    return candidates.slice(0, MAX_EXTRACTED_FACTS_PER_PASS);
+    return candidates.slice(0, max);
   } catch {
     return [];
   }

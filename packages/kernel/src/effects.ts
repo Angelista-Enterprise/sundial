@@ -60,7 +60,7 @@ export interface ProjectRow {
 }
 
 /** The same purposes as `state.budgets.byPurpose`. Kept as an inline literal union rather than imported from `@sundial/llm` to keep the rules' type surface free of a package a pure `(state, event)` function has no business reaching into — `packages/kernel` does now depend on `@sundial/llm`, but only for the tool registry's `ToolDefinition`, which is a read-path concern. The two unions must be edited together. */
-export type LlmPurpose = 'intent' | 'companion' | 'reflect' | 'extract' | 'journal' | 'ask' | 'refute' | 'goal' | 'transcript' | 'hand' | 'vision' | JudgementPurpose;
+export type LlmPurpose = 'intent' | 'companion' | 'reflect' | 'extract' | 'journal' | 'ask' | 'refute' | 'goal' | 'transcript' | 'hand' | 'vision' | 'visualize' | 'offer' | JudgementPurpose;
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -119,11 +119,12 @@ export interface ScheduleLLMEffect {
  * `JudgementPurpose` in `@sundial/llm/types.js`; kept here the way
  * `LlmPurpose` is, so a rule file imports one types module.
  */
-export type JudgementPurpose = 'perceive' | 'classify' | 'rank' | 'judge' | 'audit' | 'forecast' | 'listen';
+export type JudgementPurpose = 'perceive' | 'classify' | 'rank' | 'judge' | 'audit' | 'forecast' | 'listen' | 'screen' | 'frame';
 
 /** One question to Jev, as `callSystemOne` sends it (`@sundial/llm/systemone.js`). */
 export interface JudgeQuestion {
-  type: 'choice' | 'score' | 'noul';
+  /** `box`: where in an image asset (frames only, `questions/screen-frame.ts`). */
+  type: 'choice' | 'score' | 'noul' | 'box';
   instructions: string;
   criteria?: Record<string, string> | string[];
 }
@@ -269,6 +270,41 @@ export interface NotifyEffect {
 }
 
 /**
+ * Plan 15, 2.3: a sound and/or a sentence from Sundial.app, over the app channel. `knock-wait` knocks
+ * and waits for a go; `knock-speak` knocks and speaks; `notice` speaks a notice. At most once: after a
+ * crash an old sentence is dropped, never said late.
+ */
+export interface SpeakEffect {
+  type: 'Speak';
+  text: string | null;
+  sound: 'knock' | 'nod' | 'return' | null;
+  mode: 'knock-wait' | 'knock-speak' | 'notice';
+  noticeKey?: string;
+}
+
+/** One mark on a named thing on the real screen (step 6). The helper finds its frame; the model never sees pixels. */
+export interface ScreenMark {
+  id: string;
+  target: { app: string; window?: string; role?: string; label?: string; text?: string };
+  shape: 'ring' | 'underline' | 'bracket' | 'step' | 'label';
+  /** At most 60 characters, cut at a word. */
+  label?: string;
+  step?: number;
+  /** A guide's step: how many steps the guide has. */
+  of?: number;
+  /** Plan 15 step 7: this mark is a guide's step; the app reports the change that finishes it. */
+  guide?: string;
+}
+
+/** Plan 15, 2.3: the marks on screen now, whole. An empty list clears the screen. At most once. */
+export interface MarkEffect {
+  type: 'Mark';
+  marks: ScreenMark[];
+  /** Plan 15 step 6: ask "Right spot?" when these marks clear (the first 20 marks only). */
+  judge?: boolean;
+}
+
+/**
  * Phase 5's `companionInsight` output. `dedupeKey` maps to a real unique DB
  * index (`packages/db/src/schemas/db-schema.ts`) — the executor's insert is
  * `onConflictDoNothing`, so a repeat insight is a harmless no-op, not
@@ -325,6 +361,8 @@ export interface DeleteRowsEffect {
   apps?: string[];
   /** With `signalTypes`: only these `event_type`s (`audio` + `transcript`). */
   eventTypes?: string[];
+  /** With `signalTypes`: rows whose payload `questionSetId` is one of these stay (the fact audit's answers are a retraction's evidence). */
+  keepQuestionSets?: string[];
   /** W1: with `signalTypes`, only one thread's rows (`chat:forget`), and the `llm_audit` rows its calls were reserved under. */
   sessionId?: string;
   /** lane Q (Q10): instead of deleting, clear `llm_audit` text and prune completed `applied_effects` rows older than `olderThan`. */
@@ -862,6 +900,8 @@ export type Effect =
   | UpdateOwnerAskEffect
   | RunAskHarvestBackfillEffect
   | NotifyEffect
+  | SpeakEffect
+  | MarkEffect
   | DeleteRowsEffect
   | UpsertEntityFactEffect
   | SupersedeFactEffect

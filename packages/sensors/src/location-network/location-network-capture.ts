@@ -7,8 +7,6 @@ export interface NetworkState {
   fingerprint: string;
   gatewayIp: string | null;
   interfaceName: string | null;
-  ssid: string | null;
-  bssid: string | null;
   networkId: string | null;
   sname: string | null;
   interfaceType: string | null;
@@ -197,29 +195,50 @@ export function isIncompleteWifiRead(details: WifiLinkFields): boolean {
   return details.interfaceType === 'WiFi' && details.ssid === null && details.networkId === null && details.sname === null && details.security === null;
 }
 
+/** A VPN or Tailscale exit node: the default route names it, and it says nothing about where the Mac is. */
+export const isTunnelInterface = (iface: string) => /^(utun|ipsec|ppp|tun|tap|wg)\d*/.test(iface);
+
+/** The `Device:` names in `networksetup -listallhardwareports`, in its order. */
+export function parseHardwareDevices(out: string | null): string[] {
+  return out ? [...out.matchAll(/^Device:\s*(\S+)/gm)].map((m) => m[1]!) : [];
+}
+
 export async function readMacOSNetworkState(): Promise<NetworkState | null> {
   const routeOut = await exec('route', ['get', 'default']);
   const route = parseDefaultRouteMacOS(routeOut);
   if (!route.iface) return null;
 
-  const detailsOut = await exec('ipconfig', ['getsummary', route.iface]);
-  const details = parseMacInterfaceDetails(detailsOut);
+  let iface = route.iface;
+  let details = parseMacInterfaceDetails(await exec('ipconfig', ['getsummary', iface]));
+  // Behind a tunnel the default route is the tunnel, which has no router and no type,
+  // and the key collapsed to its name: from 2026-10-06 every network read as one
+  // ("utun13"). The place is the physical interface under it: the first hardware
+  // device whose summary names a router.
+  if (isTunnelInterface(iface) || (details.router === null && route.gateway === null)) {
+    for (const dev of parseHardwareDevices(await exec('networksetup', ['-listallhardwareports']))) {
+      const d = parseMacInterfaceDetails(await exec('ipconfig', ['getsummary', dev]));
+      if (d.router !== null) {
+        iface = dev;
+        details = d;
+        break;
+      }
+    }
+  }
   if (isIncompleteWifiRead(details)) return null;
-  const gateway = details.router ?? route.gateway;
+  const gateway = details.router ?? (isTunnelInterface(iface) ? null : route.gateway);
   persistLocationGrantMarker(inferLocationServicesGrant(details));
 
   return {
-    fingerprint: networkKeyFor({ networkId: details.networkId, sname: details.sname, gatewayIp: gateway, interfaceName: route.iface, security: details.security }),
+    fingerprint: networkKeyFor({ networkId: details.networkId, sname: details.sname, gatewayIp: gateway, interfaceName: iface, security: details.security }),
     gatewayIp: gateway,
-    interfaceName: route.iface,
-    ssid: details.ssid,
-    bssid: details.bssid,
+    interfaceName: iface,
     networkId: details.networkId,
     sname: details.sname,
     interfaceType: details.interfaceType,
     isExpensive: details.isExpensive,
     security: details.security,
-    label: details.ssid ?? details.sname ?? gateway,
+    // The SSID is never carried: macOS redacts it without Location Services (0 of 91 rows ever had one), and the gateway with the interface type names the place as well.
+    label: details.sname ?? (gateway ? `${details.interfaceType ?? iface} @ ${gateway}` : null),
   };
 }
 
@@ -240,8 +259,6 @@ export async function readLinuxNetworkState(): Promise<NetworkState | null> {
     fingerprint: networkKeyFor({ networkId: null, sname: null, gatewayIp: gateway, interfaceName: iface, security: null }),
     gatewayIp: gateway,
     interfaceName: iface,
-    ssid: null,
-    bssid: null,
     networkId: null,
     sname: null,
     interfaceType: null,

@@ -15,7 +15,7 @@ const confirmed = (aliases: string[]): KernelState['memory']['factCursor'] =>
 function withMeeting(attendees: string[], shared = true): KernelState {
   const base = createInitialState('d1');
   const factCursor = shared ? confirmed(attendees.filter((a) => a.startsWith('person-'))) : {};
-  return { ...base, memory: { ...base.memory, factCursor }, meetings: { seen: { 'RRA|x': { title: 'RRA: Kruiswoorden testen', start: '2026-09-07T09:00:00.000Z', end: END, attendees, askedAt: END } } } };
+  return { ...base, memory: { ...base.memory, factCursor }, meetings: { seen: { 'RRA|x': { title: 'RRA: Kruiswoorden testen', start: '2026-09-07T09:00:00.000Z', end: END, attendees, askedAt: END, called: true } } } };
 }
 
 describe('peopleAsk', () => {
@@ -46,8 +46,8 @@ describe('peopleAsk', () => {
       ...state,
       meetings: {
         seen: {
-          a: { title: 'One', start: '2026-09-07T09:00:00.000Z', end: END, attendees: ['person-c205ca11f2', 'Alex'], askedAt: END },
-          b: { title: 'Two', start: '2026-09-07T09:00:00.000Z', end: END, attendees: ['person-d1feb17d9f', 'Alex'], askedAt: END },
+          a: { title: 'One', start: '2026-09-07T09:00:00.000Z', end: END, attendees: ['person-c205ca11f2', 'Alex'], askedAt: END, called: true },
+          b: { title: 'Two', start: '2026-09-07T09:00:00.000Z', end: END, attendees: ['person-d1feb17d9f', 'Alex'], askedAt: END, called: true },
         },
       },
     };
@@ -71,7 +71,7 @@ describe('peopleAsk', () => {
     expect(refused.people.mutedUntil).toBeDefined();
     // A DIFFERENT alias, in a different meeting, two minutes later — the exact
     // shape of the 06:36/06:37/06:38 run. Silent now.
-    const other: KernelState = { ...refused, meetings: { seen: { b: { title: 'Two', start: '2026-09-07T09:00:00.000Z', end: END, attendees: ['person-d1feb17d9f', 'Alex'], askedAt: END } } } };
+    const other: KernelState = { ...refused, meetings: { seen: { b: { title: 'Two', start: '2026-09-07T09:00:00.000Z', end: END, attendees: ['person-d1feb17d9f', 'Alex'], askedAt: END, called: true } } } };
     expect(peopleAsk(other, tick('2026-09-07T10:12:00.000Z')).effects).toEqual([]);
     // Still silent six days on. (Past that, MEETING_HORIZON_MS has retired this
     // meeting anyway, so the mute's far edge is asserted on the value itself.)
@@ -94,7 +94,7 @@ describe('peopleAsk', () => {
   it('M4: never asks about an alias it shares no context with; two meetings are context', () => {
     const once = withMeeting(['person-c205ca11f2', 'Alex'], false);
     expect(peopleAsk(once, tick('2026-09-07T10:05:00.000Z')).effects).toEqual([]);
-    const twice: KernelState = { ...once, meetings: { seen: { ...once.meetings.seen, earlier: { title: 'Kickoff', start: '2026-09-06T09:00:00.000Z', end: '2026-09-06T09:30:00.000Z', attendees: ['person-c205ca11f2'], askedAt: null } } } };
+    const twice: KernelState = { ...once, meetings: { seen: { ...once.meetings.seen, earlier: { title: 'Kickoff', start: '2026-09-06T09:00:00.000Z', end: '2026-09-06T09:30:00.000Z', attendees: ['person-c205ca11f2'], askedAt: null, called: true } } } };
     expect(emitted(peopleAsk(twice, tick('2026-09-07T10:05:00.000Z')).effects)).toHaveLength(1);
   });
 

@@ -45,14 +45,14 @@ export interface ChatCompletionResult {
  * day of evidence, refutation runs over a handful of already-held beliefs and
  * is the natural first candidate for a cheaper model.
  */
-export type LlmPurpose = 'intent' | 'companion' | 'reflect' | 'extract' | 'journal' | 'ask' | 'refute' | 'goal' | 'transcript' | 'hand' | 'vision' | JudgementPurpose;
+export type LlmPurpose = 'intent' | 'companion' | 'reflect' | 'extract' | 'journal' | 'ask' | 'refute' | 'goal' | 'transcript' | 'hand' | 'vision' | 'visualize' | 'offer' | JudgementPurpose;
 
 /**
  * The purposes a `Judge` effect runs under (docs/jarvis/02). Jev's, not the
  * text model's: a judgement is a probability vector over a structured state,
  * budgeted apart so a runaway fan-out cannot spend the journal's day.
  */
-export type JudgementPurpose = 'perceive' | 'classify' | 'rank' | 'judge' | 'audit' | 'forecast' | 'listen';
+export type JudgementPurpose = 'perceive' | 'classify' | 'rank' | 'judge' | 'audit' | 'forecast' | 'listen' | 'screen' | 'frame';
 
 export interface AuditedLlmCallOptions {
   purpose: LlmPurpose;

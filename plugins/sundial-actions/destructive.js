@@ -34,6 +34,16 @@ const RULES = [
   { why: 'destructive git (force push, hard reset, clean -fdx)', test: (c) => /git\b[^\n]*\s(push\b[^\n]*\s(-f\b|--force)|reset\b[^\n]*--hard|clean\b[^\n]*-[a-z]*f[a-z]*d|clean\b[^\n]*-[a-z]*d[a-z]*f)/.test(c) },
   { why: 'overwrite a device or truncate a file to nothing', test: (c) => /(^|[\s|;&(])(truncate)\b[^\n]*\s-s\s*0\b/.test(c) },
   { why: 'history/credential exfiltration', test: (c) => /(cat|less|more|head|tail)\b[^\n]*(\.ssh\/id_|\.aws\/credentials|\.env\b|\.netrc\b)/.test(c) },
+  // Run 8 (2026-11-13) ran `strings` on Zen's logins.json and grepped the whole profile for an address: any command at all
+  // that names a browser profile, a login or cookie store, or the Keychain is refused, whatever reads it.
+  // Run 9 searched the owner's whole Documents folder and named another project's files: a search names the folder it is for.
+  // Run 13: four calls and about a minute went on asking the shell which apps are running and telling one to
+  // quit. macOS refuses both to a process without Automation, and the screen tools do it without asking anyone.
+  { why: 'asking the shell which apps are running: macOS refuses that without Automation. To see what is in front, look with no app named. To quit one app you can name, this works and is not refused: osascript -e \'tell application "NAME" to quit\'',
+    // A System Events keystroke is a blind Send, which has its own refusal and its own words: leave it to that one.
+    test: (c) => (!/\bkeystroke\b|\bkey code\b/i.test(c) && /\bsystem events\b|\bevery application process\b|\blsappinfo\b/i.test(c)) || /\bps\s+-[a-z]*\b[^|;&\n]*\|[^|;&\n]*\bgrep\b[^|;&\n]*(Applications|\.app)\b/i.test(c) },
+  { why: 'a recursive search of the whole home or Documents folder (name the folder the task is about)', test: (c) => /(^|[\s|;&(])(grep|egrep|rg|ag|find|mdfind)\b[^|;&\n]*\s(~|\$home|\/users\/[^/\s]+)(\/documents)?\/?(?=\s|$|[|;&])/.test(c) },
+  { why: 'reading a browser profile, a login or cookie store, or the Keychain', test: (c) => /application\\? support\/(zen|firefox|mozilla|google\/chrome|chromium|bravesoftware|brave|microsoft edge|arc|vivaldi|com\.operasoftware|orion|dia)\b|library\/(safari|cookies|keychains)\b|\.mozilla\/|\b(logins\.json|key[34]\.db|cookies\.sqlite|places\.sqlite|formhistory\.sqlite|login data|web data)\b|\bsecurity\s+(find-(generic|internet)-password|dump-keychain|export)\b/.test(c) },
 ]
 
 /**
@@ -49,9 +59,4 @@ export function classifyCommand(command) {
     if (rule.test(normalised)) return { destructive: true, reason: rule.why }
   }
   return { destructive: false }
-}
-
-/** Convenience predicate. */
-export function isDestructive(command) {
-  return classifyCommand(command).destructive
 }

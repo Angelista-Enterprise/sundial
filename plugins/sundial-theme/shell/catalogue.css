@@ -1,0 +1,143 @@
+/* The catalogue (catalogue.js): in the conversation's place inside the ghost,
+   on the board's chat card and in the overlay's dock alike. Linked by the
+   module (the thread list's entry needs it from the first frame).
+
+   app.css's language, nothing new: tokens only, hairlines and no radius, no
+   shadow, one easing. Headings are type alone, no eyebrow over them; the demo
+   is the one framed thing, on the pane's own engraved brackets, because it is
+   a card shown inside a page. */
+
+.ghost > .catalogue { grid-row: 2 / -1; grid-column: 1; z-index: 3; display: grid; min-height: 0; background: var(--card); }
+/* The conversation under it keeps running (a question asked here is a turn there) but is not shown: with no paper
+   in the overlay it would read through. */
+.ghost[data-catalogue] > :is(.canvas, .ask, .bar) { visibility: hidden; }
+.cat-scroll { min-height: 0; overflow: auto; padding: 0 clamp(16px, 4%, 28px) 48px; outline: none; }
+
+/* The head: the name, the way back, one line, and the sections (sticky, so the way round is always in reach). */
+.cat-head { padding-top: 22px; }
+.cat-head-line { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+.cat-title { margin: 0; font-size: 26px; font-weight: 300; letter-spacing: -0.03em; line-height: 1.1; color: var(--ink); }
+.cat-back { margin-left: auto; }
+.cat-lede { margin: 8px 0 0; max-width: 62ch; font-size: 13px; line-height: 1.45; color: var(--ink-muted); }
+.cat-index { position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; gap: 2px 4px; margin: 14px calc(-1 * clamp(16px, 4%, 28px)) 0; padding: 8px clamp(16px, 4%, 28px); background: var(--card); border-bottom: 1px solid var(--border); }
+
+/* A section: its number and name, light and large; what it holds in one line. */
+.cat-section { padding-top: 34px; scroll-margin-top: 52px; }
+.cat-section-title { display: flex; align-items: baseline; gap: 12px; margin: 0; font-size: 30px; font-weight: 300; letter-spacing: -0.02em; line-height: 1.1; color: var(--ink-subtle); }
+.cat-num { font-size: 13px; font-weight: 400; letter-spacing: 0; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.cat-section-about { margin: 8px 0 6px; max-width: 62ch; font-size: 13px; line-height: 1.45; color: var(--ink-muted); }
+.cat-group { margin: 26px 0 0; padding-top: 10px; border-top: 1px solid var(--border-strong); font-size: 17px; font-weight: 400; color: var(--ink-muted); }
+
+/* An item: name and id, its line, its parameters, its demo, then two quiet acts. */
+.cat-item { padding: 20px 0 16px; border-top: 1px solid var(--divider); scroll-margin-top: 52px; }
+.cat-group + .cat-item { border-top: 0; }
+.cat-item-head { display: flex; align-items: baseline; gap: 12px; }
+.cat-item-title { margin: 0; font-size: 17px; font-weight: 400; color: var(--ink); }
+.cat-id { margin-left: auto; font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 12px; color: var(--ink-faint); overflow-wrap: anywhere; text-align: right; }
+.cat-use { margin: 6px 0 0; max-width: 62ch; font-size: 15px; line-height: 1.4; color: var(--ink); }
+.cat-use-label { color: var(--ink-faint); }
+/* A state word beside the name, in the frame-label register: planned. */
+.cat-status { flex: none; padding: 2px 6px; border: 1px solid var(--border-strong); font-size: 10px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-muted); }
+.cat-item[data-planned] .cat-status { border-style: dashed; color: var(--ochre-text); border-color: var(--ochre); }
+.cat-about { margin: 4px 0 0; max-width: 62ch; font-size: 14px; line-height: 1.45; color: var(--ink-muted); }
+.cat-params { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; margin: 12px 0 0; font-size: 13px; line-height: 1.4; }
+.cat-params dt { padding-top: 2px; font-size: 10px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint); }
+.cat-params dd { margin: 0; color: var(--ink-muted); overflow-wrap: anywhere; }
+
+/* The demo: a card inside the page, on the pane's brackets. Space is held before it is drawn, so the page does not jump. */
+.cat-demo {
+  --bk: var(--ink);
+  --bracket: 11px;
+  display: grid;
+  margin-top: 14px;
+  min-height: 220px;
+  border: 1px solid var(--border);
+  background:
+    linear-gradient(var(--bk), var(--bk)) 0 0 / var(--bracket) 1px,
+    linear-gradient(var(--bk), var(--bk)) 0 0 / 1px var(--bracket),
+    linear-gradient(var(--bk), var(--bk)) 100% 0 / var(--bracket) 1px,
+    linear-gradient(var(--bk), var(--bk)) 100% 0 / 1px var(--bracket),
+    linear-gradient(var(--bk), var(--bk)) 0 100% / var(--bracket) 1px,
+    linear-gradient(var(--bk), var(--bk)) 0 100% / 1px var(--bracket),
+    linear-gradient(var(--bk), var(--bk)) 100% 100% / var(--bracket) 1px,
+    linear-gradient(var(--bk), var(--bk)) 100% 100% / 1px var(--bracket),
+    var(--card);
+  background-repeat: no-repeat;
+}
+.cat-demo[data-mounted] { min-height: 0; }
+.cat-demo > .none { align-self: center; justify-self: center; }
+/* A planned idiom: a hairline sketch on dashed paper, never a figure that exists drawn again. */
+.cat-planned { min-height: 0; padding: 18px 22px; border-style: dashed; color: var(--ink-muted); }
+.cat-sketch { display: block; width: 100%; max-width: 520px; height: auto; margin: 0 auto; }
+.cat-sketch text { fill: currentColor; stroke: none; font-size: 10px; letter-spacing: 0.04em; }
+.cat-index [data-planned] { color: var(--ink-faint); }
+.cat-figure + .cat-figure { border-top: 1px solid var(--border); }
+.cat-demo .nodus { height: auto; padding: 14px 18px; }
+.cat-demo .nodus-headline { font-size: 20px; }
+.cat-demo .nodus:focus-visible { outline: 1px solid var(--ink); outline-offset: -3px; }
+
+/* Quiet acts: no border, muted ink, a wash under the hand; the open one takes the panel. */
+.cat-acts { display: flex; gap: 4px; margin-top: 10px; }
+.cat-quiet { height: 26px; padding: 0 8px; border: 0; background: transparent; font: inherit; font-size: 12px; color: var(--ink-muted); cursor: pointer; transition: background 120ms var(--ease), color 120ms var(--ease); }
+.cat-quiet:hover:not(:disabled) { background: var(--wash); color: var(--ink); }
+.cat-quiet[aria-expanded='true'] { background: var(--panel); color: var(--ink); }
+.cat-quiet:disabled { color: var(--ink-faint); cursor: default; }
+.cat-count { font-variant-numeric: tabular-nums; color: var(--ink-faint); }
+.cat-count:empty { display: none; }
+.cat-quiet:focus-visible, .cat-go:focus-visible, .cat-back:focus-visible, .cat-entry:focus-visible { outline: 1px solid var(--ink); outline-offset: 2px; }
+
+/* The drawers: one field on an underline and its button. */
+.cat-drawer { padding: 8px 0 0; }
+.cat-row { display: flex; align-items: flex-end; gap: 10px; }
+.cat-field { flex: 1; min-width: 0; height: 30px; padding: 0; border: 0; border-bottom: 1px solid var(--border-strong); background: transparent; font: inherit; font-size: 14px; color: var(--ink); outline: none; transition: border-color 120ms var(--ease); }
+.cat-field::placeholder { color: var(--ink-faint); }
+.cat-field:focus { border-bottom-color: var(--ink); }
+.cat-go { flex: none; }
+
+/* Gnomon's reply, on the ochre rule its voice takes everywhere. */
+.cat-reply { margin-top: 12px; padding: 2px 0 2px 12px; border-left: 2px solid var(--ochre); }
+.cat-asked { margin: 0; font-size: 12px; color: var(--ink-faint); }
+.cat-reply-text { margin: 4px 0 6px; max-width: 62ch; font-size: 15px; line-height: 1.45; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+.cat-reply .cat-quiet { padding: 0; height: auto; text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; }
+.cat-reply .cat-quiet:hover { background: transparent; text-decoration-color: var(--ochre); }
+
+/* The notes, newest first. */
+.cat-comments { margin: 10px 0 0; padding: 0; list-style: none; }
+.cat-comment { padding: 8px 0; border-bottom: 1px solid var(--divider); }
+.cat-comment-text { margin: 0; font-size: 14px; line-height: 1.45; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+.cat-comment-meta { display: flex; align-items: baseline; gap: 8px; margin-top: 2px; font-size: 12px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.cat-comment-meta .cat-quiet { height: 22px; margin-left: auto; }
+
+/* Under the hood: folded by default, its sections set one step smaller. */
+.cat-hood { margin-top: 40px; border-top: 1px solid var(--border-strong); }
+.cat-hood-title { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; padding: 16px 0 4px; cursor: pointer; list-style: none; font-size: 22px; font-weight: 300; letter-spacing: -0.02em; color: var(--ink-subtle); scroll-margin-top: 52px; }
+.cat-hood-title::-webkit-details-marker { display: none; }
+.cat-hood-title::before { content: '+'; width: 14px; font-weight: 300; color: var(--ink-faint); }
+.cat-hood[open] > .cat-hood-title::before { content: '\2212'; }
+.cat-hood-title:hover { color: var(--ink); }
+.cat-hood-title:focus-visible { outline: 1px solid var(--ink); outline-offset: 2px; }
+.cat-hood-said { font-size: 13px; letter-spacing: 0; color: var(--ink-faint); }
+.cat-hood-section { margin-top: 30px; }
+
+/* The overlay draws no card paper (overlay.css): the catalogue there is frameless too, ink straight over the owner's screen. */
+:root[data-overlay] .ghost > .catalogue, :root[data-overlay] .cat-index { background: transparent; }
+:root[data-overlay] .cat-index { position: static; }
+:root[data-overlay] .cat-demo { border: 0; background: transparent; }
+:root[data-overlay] .cat-planned { border: 1px dashed var(--border); }
+
+/* The entry in the thread list: a seat like the conversation's, on a quieter rule. */
+.cat-entry { display: block; width: 100%; margin-top: 10px; padding: 8px 10px; border: 0; border-left: 2px solid var(--border-strong); background: transparent; font: inherit; text-align: left; cursor: pointer; transition: background 120ms var(--ease); }
+.cat-entry:hover { background: var(--wash); }
+.cat-entry-name { display: block; font-size: 15px; color: var(--ink); }
+.cat-entry-said { display: block; margin-top: 1px; font-size: 12px; color: var(--ink-muted); }
+
+@media (prefers-reduced-motion: reduce) {
+  .cat-quiet, .cat-field, .cat-entry { transition: none; }
+}
+/* One question, three ways: a column per mode. */
+.cat-modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; align-items: start; }
+.cat-mode { display: grid; gap: 8px; min-width: 0; }
+.cat-mode-name { margin: 0; font-size: 15px; font-weight: 500; color: var(--ink); }
+.cat-mode-time { margin: 0; font-size: 12px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.cat-mode-time:empty { display: none; }
+.cat-mode-ask { margin: 0 0 12px; font-size: 14px; color: var(--ink); }

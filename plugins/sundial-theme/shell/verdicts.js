@@ -67,10 +67,39 @@ export function markSeen(node, noticeKey, surface) {
   if (!noticeKey || seenKeys.has(noticeKey)) return node
   const send = () => {
     if (seenKeys.has(noticeKey)) return
+    // In the overlay the app boots hidden under the slip: only what is on the slip is on screen.
+    if (document.documentElement.dataset.overlay !== undefined && !node.closest?.('.ov-slip')) return
     if (document.visibilityState === 'hidden') return void document.addEventListener('visibilitychange', send, { once: true })
     seenKeys.add(noticeKey)
     fetch('/gnomon/api/feedback', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ artifactKind: 'notice', artifactId: noticeKey, seen: true, surface }) }).catch(() => seenKeys.delete(noticeKey))
   }
   whenVisible(node, send)
   return node
+}
+
+/**
+ * Round 4: a notice's one act, on the strip (`now.offer`). The press names only the notice; the host runs
+ * the call the gate kept for it, through the action gate, so an ask still asks. Settles into where the
+ * answer went, or why it did not run. On screen counts as seen, so an offer never pressed reads as ignored.
+ */
+export function offerChip(offer) {
+  // `data-offer`: the slip draws the same offer from here (overlay.js `offerIn`).
+  // `data-line`: the notice's own line, carried on the offer from the gate (`notices.offers`, the `now` snapshot), for the slip's line.
+  const wrap = el('span', { class: 'strip-self', 'data-offer': offer.noticeKey, 'data-line': offer.line || null, title: `From a notice (${offer.kind}). Gnomon runs this one step; anything that changes something still asks you first.` })
+  const settle = (text, title = null) => wrap.replaceChildren(el('span', { class: 'verdict-done', text, title }))
+  wrap.append(
+    el('button', {
+      type: 'button',
+      class: 'act act-small',
+      text: offer.label,
+      onclick: async (event) => {
+        event.currentTarget.disabled = true
+        const res = await fetch('/gnomon/api/offer', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ noticeKey: offer.noticeKey }) }).catch(() => null)
+        const body = res ? await res.json().catch(() => ({})) : {}
+        if (body.ran) settle('in the conversation')
+        else settle(res?.status === 404 ? 'gone' : 'not run', body.reason ?? body.unavailable ?? null)
+      },
+    }),
+  )
+  return markSeen(wrap, offer.noticeKey, 'offer')
 }

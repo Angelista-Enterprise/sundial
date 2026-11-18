@@ -698,7 +698,8 @@ describe('W6 D1: activeMs never exceeds the duration', () => {
     const { reduce } = await import('@sundial/kernel/reduce.js');
     const { RULE_MANIFEST } = await import('./manifest.js');
     let state: KernelState = createInitialState('d1');
-    const rows: { durationMs: number; data: { activeMs: number } }[] = [];
+    // Last write per id: a moment reopened after a flick is upserted again, longer, at its real close.
+    const byId = new Map<string, { id: string; durationMs: number; data: { activeMs: number; interruptions?: unknown[] } }>();
     const T0 = Date.parse('2026-09-29T08:00:03.000Z');
     const at = (s: number) => new Date(T0 + s * 1000).toISOString();
     const events: SanitizedEvent[] = [];
@@ -713,27 +714,49 @@ describe('W6 D1: activeMs never exceeds the duration', () => {
     for (const event of events) {
       const out = reduce(state, event, RULE_MANIFEST);
       state = out.state;
-      for (const { effect } of out.effects) if (effect.type === 'WriteDB' && effect.table === 'moments') rows.push(effect.row as never);
+      for (const { effect } of out.effects) if (effect.type === 'WriteDB' && effect.table === 'moments') byId.set(effect.row.id, effect.row as never);
     }
+    const rows = [...byId.values()];
     expect(rows.length).toBeGreaterThanOrEqual(3);
     for (const row of rows) expect(row.data.activeMs).toBeLessThanOrEqual(row.durationMs);
-    // The flicks' time went to their successors: the written moments cover the day without a gap.
+    // The flicks' time went to the moment around them: the written moments cover the day without a gap.
     expect(rows.reduce((sum, r) => sum + r.durationMs, 0)).toBe(900_000);
-    expect(rows).toHaveLength(4);
+    // Code 0-300 (the Arc flick absorbed as an interruption), Terminal 300-600 (Slack's flick merged in), Code 600-900.
+    expect(rows).toHaveLength(3);
+    expect(rows[0]!.data.interruptions).toHaveLength(1);
+  }, 20_000); // the whole manifest over 100 events: 0.6 s alone, over 5 s under a full parallel run
+
+  it('a flick away and back reopens the moment it interrupted, with the flick as an interruption', () => {
+    let s = createInitialState('d1');
+    s = momentClose(s, windowEvent('2026-09-29T08:00:00.000Z', 'Code')).state;
+    const codeId = s.moment?.id;
+    s = momentClose(s, windowEvent('2026-09-29T08:02:00.000Z', 'Arc')).state;
+    const back = momentClose(s, windowEvent('2026-09-29T08:02:12.000Z', 'Code'));
+    expect(back.effects).toEqual([]);
+    expect(back.state.moment).toMatchObject({ id: codeId, startTime: '2026-09-29T08:00:00.000Z' });
+    expect(back.state.moment?.rollup.interruptions).toEqual([{ processName: 'Arc', at: '2026-09-29T08:02:00.000Z', durationMs: 12_000 }]);
+    // A real (33 s) Arc moment closes Code for good: one row, upserted over the one written at 08:02:00.
+    s = momentClose(back.state, windowEvent('2026-09-29T08:02:27.000Z', 'Arc')).state;
+    const closed = momentClose(s, windowEvent('2026-09-29T08:03:00.000Z', 'Code'));
+    const row = closed.effects.find((e) => e.type === 'WriteDB')?.row as { processName: string; startTime: string; durationMs: number };
+    expect(row).toMatchObject({ processName: 'Arc', startTime: '2026-09-29T08:02:27.000Z', durationMs: 33_000 });
+    expect(closed.state.moment?.id).not.toBe(codeId);
   });
 
-  it('a merged sub-20-s predecessor carries its start (and so its duration) into the successor', () => {
+  it('a dropped predecessor of ANOTHER app still carries its start into the successor', () => {
     let s = createInitialState('d1');
     s = momentClose(s, windowEvent('2026-09-29T08:00:00.000Z', 'Code')).state;
     s = momentClose(s, windowEvent('2026-09-29T08:02:00.000Z', 'Arc')).state;
-    s = momentClose(s, windowEvent('2026-09-29T08:02:12.000Z', 'Code')).state;
-    expect(s.moment).toMatchObject({ startTime: '2026-09-29T08:02:12.000Z', carriedFrom: '2026-09-29T08:02:00.000Z' });
-    // A second flick keeps the chain's first start; the drop is still judged on its own 15 s.
-    s = momentClose(s, windowEvent('2026-09-29T08:02:27.000Z', 'Arc')).state;
-    expect(s.moment?.carriedFrom).toBe('2026-09-29T08:02:00.000Z');
-    const closed = momentClose(s, windowEvent('2026-09-29T08:03:00.000Z', 'Code'));
-    const row = closed.effects.find((e) => e.type === 'WriteDB')?.row as { startTime: string; durationMs: number };
-    expect(row).toMatchObject({ startTime: '2026-09-29T08:02:00.000Z', durationMs: 60_000 });
+    s = momentClose(s, windowEvent('2026-09-29T08:02:12.000Z', 'Slack')).state;
+    expect(s.moment).toMatchObject({ processName: 'Slack', startTime: '2026-09-29T08:02:12.000Z', carriedFrom: '2026-09-29T08:02:00.000Z' });
+  });
+
+  it('the second half of a 30-minute split names the row it continues', () => {
+    let state = createInitialState('d1');
+    state = momentClose(state, windowEvent('2026-01-01T00:00:00.000Z', 'Code')).state;
+    const first = state.moment?.id;
+    const { state: next } = tickThrough(state, '2026-01-01T00:00:00.000Z', '2026-01-01T00:31:00.000Z');
+    expect(next.moment?.rollup.continuesMomentId).toBe(first);
   });
 });
 

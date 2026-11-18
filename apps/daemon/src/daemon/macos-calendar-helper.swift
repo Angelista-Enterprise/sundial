@@ -158,6 +158,31 @@ struct CalendarEvent: Codable {
     /// when attendees are present but none is the current user. nil when there
     /// are no attendees at all (treat as self-organized — i.e. self-attended).
     let isSelfAttendee: Bool?
+    /// The owner's own reply: accepted / declined / tentative / pending / unknown; "accepted" when they
+    /// organize it; nil when they are not on the list. A declined meeting is not one they were in.
+    let selfStatus: String?
+    /// The event carries a video-call link (location, URL or notes). Only the flag, never the link.
+    let isOnline: Bool
+}
+
+/// The owner's reply to the invitation, from their own participant entry.
+func selfStatus(_ ev: EKEvent) -> String? {
+    if let organizer = ev.organizer, organizer.isCurrentUser { return "accepted" }
+    guard let me = (ev.attendees ?? []).first(where: { $0.isCurrentUser }) else { return nil }
+    switch me.participantStatus {
+    case .accepted: return "accepted"
+    case .declined: return "declined"
+    case .tentative: return "tentative"
+    case .pending: return "pending"
+    default: return "unknown"
+    }
+}
+
+let VIDEO_HOSTS = ["meet.google.com", "zoom.us", "teams.microsoft.", "teams.live.", "webex.com", "whereby.com", "facetime.apple.com"]
+
+func isOnline(_ ev: EKEvent) -> Bool {
+    let text = [ev.location, ev.url?.absoluteString, ev.notes].compactMap { $0 }.joined(separator: " ").lowercased()
+    return VIDEO_HOSTS.contains { text.contains($0) }
 }
 
 struct CreateOutput: Codable {
@@ -218,7 +243,9 @@ func encode(_ ev: EKEvent) -> CalendarEvent {
         calendar: ev.calendar?.title ?? "Unknown",
         isAllDay: ev.isAllDay,
         organizer: ev.organizer.map { displayName(for: $0) },
-        isSelfAttendee: participants.isEmpty ? nil : participants.contains(where: { $0.isCurrentUser })
+        isSelfAttendee: participants.isEmpty ? nil : participants.contains(where: { $0.isCurrentUser }),
+        selfStatus: selfStatus(ev),
+        isOnline: isOnline(ev)
     )
 }
 
@@ -499,7 +526,9 @@ func main() {
             calendar: ev.calendar?.title ?? "Unknown",
             isAllDay: ev.isAllDay,
             organizer: organizerString,
-            isSelfAttendee: isSelfAttendee
+            isSelfAttendee: isSelfAttendee,
+            selfStatus: selfStatus(ev),
+            isOnline: isOnline(ev)
         )
     }
 

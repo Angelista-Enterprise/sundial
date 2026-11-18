@@ -1,6 +1,7 @@
 import { isRedactedPlaceholder } from '@sundial/helpers/redact/redact-policy.js';
+import { isOwnAudioProcess } from '@sundial/helpers/window-classification.js';
 import { canonicalProjectRoot } from '@sundial/helpers/redact/redact-url.js';
-import type { KernelState, MomentRollup, Rule } from '@sundial/kernel/types.js';
+import type { KernelState, MomentActs, MomentRollup, Rule } from '@sundial/kernel/types.js';
 import { aliasedKnownRoot, longestPrefixRoot } from './attribution.js';
 
 const MAX_NOTABLE_COMMANDS = 12;
@@ -15,9 +16,22 @@ const MAX_SCREEN_EXCERPT_CHARS = 240;
 const MAX_SPOKEN_EXCERPT_CHARS = 600;
 const MAX_SPOKEN_LANGUAGES = 4;
 const MAX_SCREEN_REFS_PER_MOMENT = 8;
+const MAX_SCREEN_SEEN_PER_MOMENT = 12;
 const MAX_SYMBOLS_PER_MOMENT = 12;
 /** Shortest identifier worth naming; `id`, `db`, `fn` say nothing. */
 const MIN_SYMBOL_CHARS = 4;
+const MAX_ACT_APPS = 5;
+const MAX_ACT_GOALS = 10;
+const MAX_ACT_GOAL_CHARS = 120;
+
+/** Two tallies of Gnomon's acts as one: counts add, the lists keep the most recently seen. Also how a dropped moment's acts carry over (`moment-close`). */
+export function addActs(into: MomentActs | undefined, more: MomentActs): MomentActs {
+  const union = (a: string[], b: string[], max: number) => [...a.filter((x) => !b.includes(x)), ...new Set(b)].slice(-max);
+  return { n: (into?.n ?? 0) + more.n, apps: union(into?.apps ?? [], more.apps, MAX_ACT_APPS), goals: union(into?.goals ?? [], more.goals, MAX_ACT_GOALS) };
+}
+
+/** A name or goal worth keeping: a non-empty string that is not a redaction placeholder. Already sanitized at ingest, so only trimmed. */
+const kept = (v: unknown, max: number): string[] => (typeof v === 'string' && v.trim() !== '' && !isRedactedPlaceholder(v.trim()) ? [v.trim().slice(0, max)] : []);
 
 /**
  * Commands that say nothing about the work: looking around, moving about.
@@ -79,6 +93,8 @@ interface ShellCommandPayload {
 interface GitCommitPayload {
   branch?: string;
   cwd?: string;
+  insertions?: number;
+  deletions?: number;
 }
 
 interface GitStatusPayload {
@@ -98,9 +114,12 @@ interface ScreenOcrPayload {
 }
 
 interface SymbolEditedPayload {
-  edits?: { file: string; symbols: string[] }[];
+  edits?: { file: string; symbols: string[]; added?: number; removed?: number }[];
   totalSymbolCount?: number;
 }
+
+/** Files whose uncommitted diff size a moment keeps (`rollup.editedLines`). */
+const MAX_EDITED_FILES = 30;
 
 function appendCapped(list: string[], item: string, max: number): string[] {
   return [...list, item].slice(-max);
@@ -171,7 +190,8 @@ export const momentRollup: Rule = (state, event) => {
   if (event.type === 'git:commit') {
     const payload = event.payload as GitCommitPayload;
     const branch = typeof payload.branch === 'string' ? payload.branch : rollup.gitBranch;
-    return withRollup(state, { gitCommitCount: rollup.gitCommitCount + 1, gitBranch: branch, ...devActivityPatch(rollup, state.project.known, state.config.projectAliases, payload.cwd) });
+    const lines = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0);
+    return withRollup(state, { gitCommitCount: rollup.gitCommitCount + 1, gitBranch: branch, linesAdded: (rollup.linesAdded ?? 0) + lines(payload.insertions), linesRemoved: (rollup.linesRemoved ?? 0) + lines(payload.deletions), ...devActivityPatch(rollup, state.project.known, state.config.projectAliases, payload.cwd) });
   }
 
   // P2b — keep the calendar event's title + attendees (previously flattened
@@ -239,7 +259,7 @@ export const momentRollup: Rule = (state, event) => {
    * flood the capped list.
    */
   if (event.type === 'media:state') {
-    const media = event.payload as { audioInput?: boolean; audioOutput?: boolean; camera?: boolean; audioOutputProcess?: string | null };
+    const media = event.payload as { audioInput?: boolean; audioOutput?: boolean; camera?: boolean; audioInputProcess?: string | null; audioOutputProcess?: string | null };
     const patch: Partial<MomentRollup> = {};
     let lifeEvents = rollup.lifeEvents;
 
@@ -248,9 +268,14 @@ export const momentRollup: Rule = (state, event) => {
       if (!lifeEvents.includes(marker)) lifeEvents = appendCapped(lifeEvents, marker, MAX_LIFE_EVENTS);
     };
 
-    if (media.audioInput) {
+    // Who held the mic, the way `audioApp` records playback. The sensor leaves Sundial's
+    // own hearing out since 2026-10-14; the rows before that name it in 58% of mic-on
+    // samples, so the same exclusion runs here and a replay corrects the stored calls.
+    const mic = typeof media.audioInputProcess === 'string' ? media.audioInputProcess.trim() : '';
+    if (media.audioInput && !(mic && isOwnAudioProcess(mic))) {
       if (!rollup.micActive) patch.micActive = true;
       note('audio-input');
+      if (mic && !isRedactedPlaceholder(mic) && mic !== rollup.micApp) patch.micApp = mic;
     }
     if (media.camera) {
       if (!rollup.cameraActive) patch.cameraActive = true;
@@ -288,7 +313,17 @@ export const momentRollup: Rule = (state, event) => {
     for (const edit of edits) for (const symbol of edit.symbols ?? []) {
       if (typeof symbol === 'string' && symbol.length >= MIN_SYMBOL_CHARS && !names.includes(symbol)) names.push(symbol);
     }
-    return withRollup(state, { lifeEvents: appendCapped(rollup.lifeEvents, summary, MAX_LIFE_EVENTS), symbolsEdited: names.slice(-MAX_SYMBOLS_PER_MOMENT) });
+    // The uncommitted diff of each file edited, latest size wins: every event re-diffs the
+    // whole file, so a sum over events would count the same lines again on each save.
+    const edited = { ...(rollup.editedLines ?? {}) };
+    for (const edit of edits) {
+      if (typeof edit.added !== 'number' || typeof edit.removed !== 'number') continue;
+      delete edited[edit.file];
+      edited[edit.file] = edit.added + edit.removed;
+    }
+    const files = Object.keys(edited);
+    const editedLines = files.length > MAX_EDITED_FILES ? Object.fromEntries(files.slice(-MAX_EDITED_FILES).map((f) => [f, edited[f]!])) : edited;
+    return withRollup(state, { lifeEvents: appendCapped(rollup.lifeEvents, summary, MAX_LIFE_EVENTS), symbolsEdited: names.slice(-MAX_SYMBOLS_PER_MOMENT), ...(files.length > 0 ? { editedLines } : {}) });
   }
 
   // P7 — screen OCR (opt-in). Accumulate deduped topic tags; keep the most-recent salient line
@@ -335,8 +370,28 @@ export const momentRollup: Rule = (state, event) => {
     const nextExcerpt = usable && excerptSource.length > 0 ? excerptSource.slice(0, MAX_SCREEN_EXCERPT_CHARS) : rollup.screenExcerpt;
     const refs = state.screen.eventId === event.id ? state.screen.refs ?? [] : [];
     const nextRefs = refs.length > 0 ? [...new Set([...(rollup.screenRefs ?? []), ...refs])].slice(-MAX_SCREEN_REFS_PER_MOMENT) : rollup.screenRefs;
-    if (nextTopics === rollup.screenTopics && nextExcerpt === rollup.screenExcerpt && nextRefs === rollup.screenRefs) return { state, effects: [] };
-    return withRollup(state, { screenTopics: nextTopics, screenExcerpt: nextExcerpt, ...(nextRefs !== undefined ? { screenRefs: nextRefs } : {}) });
+    // The capture's typed facts (`screenTrack`), kept across the moment: the excerpt is the LAST capture's, these are all of them.
+    const facts = state.screen.eventId === event.id ? state.screen.facts ?? [] : [];
+    const seen = rollup.screenSeen ?? [];
+    const fresh = facts.filter((f) => !seen.some((s) => s.kind === f.kind && s.value === f.value));
+    const nextSeen = fresh.length > 0 ? [...seen, ...fresh].slice(-MAX_SCREEN_SEEN_PER_MOMENT) : rollup.screenSeen;
+    if (nextTopics === rollup.screenTopics && nextExcerpt === rollup.screenExcerpt && nextRefs === rollup.screenRefs && nextSeen === rollup.screenSeen) return { state, effects: [] };
+    return withRollup(state, { screenTopics: nextTopics, screenExcerpt: nextExcerpt, ...(nextRefs !== undefined ? { screenRefs: nextRefs } : {}), ...(nextSeen !== undefined ? { screenSeen: nextSeen } : {}) });
+  }
+
+  // Gnomon's own acts. A screen step that ran (a refused one did nothing) names its app and the goal it was given; the
+  // typed value never reached the row (only its length). `action:performed` counts only its detail rows, the shell
+  // command or calendar entry Gnomon made: the rows with `outcome` are every tool call, reads and screen steps included.
+  if (event.type === 'screen:step') {
+    const step = event.payload as { processName?: unknown; goal?: unknown; ok?: unknown };
+    if (step.ok === false) return { state, effects: [] };
+    // The goal is copied as stored: sanitize-at-ingest already took addresses, cards and phone numbers out of it.
+    return withRollup(state, { acts: addActs(rollup.acts, { n: 1, apps: kept(step.processName, 80), goals: kept(step.goal, MAX_ACT_GOAL_CHARS) }) });
+  }
+  if (event.type === 'action:performed') {
+    const act = event.payload as { outcome?: unknown; refused?: unknown; tool?: unknown };
+    if (act.outcome !== undefined || act.refused !== undefined || typeof act.tool !== 'string') return { state, effects: [] };
+    return withRollup(state, { acts: addActs(rollup.acts, { n: 1, apps: [], goals: [] }) });
   }
 
   if (event.type === 'audio:transcript') {

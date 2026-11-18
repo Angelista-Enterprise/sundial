@@ -61,9 +61,11 @@ describe('nowSnapshot', () => {
       sleep: null,
       self: null,
       call: null,
+      offer: null,
       failing: null,
       unpushed: null,
       screenRefs: [],
+      screen: null,
       hotFile: null,
       pressure: [],
       page: null,
@@ -184,7 +186,7 @@ describe('the present line (turn-brief)', () => {
         ],
       },
     });
-    expect(lineOf(s)).toContain("5 Claude sessions open, 1 working; waiting on the owner: hub 12 min (tool call, maybe an approval), 'Migrate the ledger' in ledger 9 min (an approval), puzzlebox-studio 7 min")
+    expect(lineOf(s)).toContain("5 coding sessions open, 1 working; waiting on the owner: hub 12 min (tool call, maybe an approval), 'Migrate the ledger' in ledger 9 min (an approval), puzzlebox-studio 7 min")
   });
 
   it('does not announce a focus span too short to mean anything', () => {
@@ -195,5 +197,19 @@ describe('the present line (turn-brief)', () => {
 
   it('says so when nothing is observed', () => {
     expect(lineOf({})).toBe('Nothing is being observed right now.');
+  });
+
+  it('says what the screen shows: facts always, Jev\'s readings only while fresh and sure', () => {
+    const screen = {
+      facts: [{ kind: 'ticket', value: 'BOX-484' }, { kind: 'error', value: 'TypeError: boom' }],
+      read: { askedAt: ago(3), signature: 'x', answer: { at: ago(3), activity: 'debugging', activityP: 0.82, meeting: 0.01, blocked: 0.7, work: 0.95 } },
+      frame: { at: ago(40), app: 'Code', shows: 'code', showsP: 0.9, meeting: 0, error: 0.1, focus: null },
+    };
+    const line = lineOf(state({ screen }));
+    expect(line).toContain('read off the screen: error TypeError: boom');
+    expect(line).toContain('the screen reads as debugging (p 0.82)');
+    // Forty minutes old: what WAS on screen.
+    expect(line).not.toContain('a picture of the screen');
+    expect(nowSnapshot(state({ screen }), NOW).screen).toEqual({ facts: screen.facts, read: { activity: 'debugging', p: 0.82, meeting: 0.01, blocked: 0.7 }, frame: null });
   });
 });

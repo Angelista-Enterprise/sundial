@@ -340,6 +340,29 @@ describe('noticeGate rule', () => {
     expect(line.effects[0]).toMatchObject({ channel: 'tonic-notice', payload: { sessionId: 'session-7f', acts: ['line'] } });
   });
 
+  it('plan 15 step 1: with voiceKnock on, an interruption at the Mac comes with a knock and its chat turn waits', () => {
+    const base = utcState();
+    const on = { ...base, config: { ...base.config, experiments: { ...base.config.experiments, voiceKnock: true } } };
+    const urgent = candidateEvent(candidate({ kind: 'day-runs-long', key: 'k1', valueHalfLifeMs: 90 * 60_000, surprise: 4, precision: 0.9 }));
+    const out = noticeGate(on, urgent);
+    expect(out.effects[0]).toMatchObject({ type: 'Notify', channel: 'phasic-notice', payload: { acts: ['inject', 'knock', 'push', 'banner'] } });
+    expect(out.state.notices.lastDelivered?.items[0]?.knock).toEqual({ mode: 'knock-wait', turn: true });
+    // The owner types: no knock, the notice goes out as before.
+    const typing = noticeGate({ ...on, voice: { pendingKnock: null, recentLines: [], mutedUntil: null, typedAt: '2026-03-10T13:59:55.000Z' } }, urgent);
+    expect(typing.effects[0]).toMatchObject({ payload: { acts: ['inject', 'turn', 'push', 'banner'] } });
+    expect(typing.state.notices.lastDelivered?.items[0]?.knock).toBeUndefined();
+  });
+
+  it('plan 15 step 1: a held notice is looked at again at a task boundary, as on a tick', () => {
+    const base = utcState();
+    const held = candidate({ kind: 'day-runs-long', key: 'k1', valueHalfLifeMs: 90 * 60_000, surprise: 4, precision: 0.9 });
+    const state = { ...base, notices: { ...base.notices, deferred: [{ candidate: held, since: '2026-03-10T13:59:00.000Z', reconsidered: 0 }] } };
+    const on = (type: string) => noticeGate(state, { id: 'b1', type, ts: '2026-03-10T14:00:00.000Z', payload: { kind: 'commit' }, sanitized: true });
+    expect(on('boundary:reached').effects.some((e) => e.type === 'Notify')).toBe(true);
+    expect(on('boundary:reached').effects).toEqual(on('clock:tick').effects);
+    expect(on('git:commit').effects).toEqual([]);
+  });
+
   it('leaves no trace in the gate memory when it suppresses — but records the verdict durably', () => {
     // A producer may legitimately re-offer a candidate before it ever clears the bar.
     // Habituating on presentation would kill exactly those before they were said once.

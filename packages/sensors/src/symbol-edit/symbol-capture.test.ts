@@ -44,10 +44,17 @@ describe('extractSymbolsFromDiff', () => {
 
     const result = extractSymbolsFromDiff(diff);
     expect(result.hunkCount).toBe(2);
+    expect([result.added, result.removed]).toEqual([10, 7]);
     expect(result.symbols.sort()).toEqual(['Foo', 'fooBar']);
   });
 
   it('returns empty symbols with zero hunks for a diff with no hunk headers', () => {
-    expect(extractSymbolsFromDiff('no hunks here')).toEqual({ symbols: [], hunkCount: 0 });
+    expect(extractSymbolsFromDiff('no hunks here')).toEqual({ symbols: [], hunkCount: 0, added: 0, removed: 0 });
+  });
+});
+
+describe('extractSymbolsFromDiff line counts', () => {
+  it('reads a missing count as one line and a zero count as none', () => {
+    expect(extractSymbolsFromDiff(['@@ -3 +3 @@', '@@ -9,0 +10,4 @@', '@@ -20,2 +23,0 @@'].join('\n'))).toMatchObject({ added: 5, removed: 3, hunkCount: 3 });
   });
 });

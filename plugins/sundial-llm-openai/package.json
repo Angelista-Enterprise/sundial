@@ -10,7 +10,10 @@
     }
   },
   "dependencies": {
-    "@deepseek-ai/dsh-llm": "0.1.5-rc.1",
-    "@sundial/helpers": "workspace:*"
+    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-llm-pi-ai": "0.2.0-rc.2",
+    "@sundial/helpers": "workspace:*",
+    "@sundial/kernel": "workspace:*",
+    "@sundial/llm": "workspace:*"
   }
 }

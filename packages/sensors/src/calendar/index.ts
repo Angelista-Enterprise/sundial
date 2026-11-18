@@ -17,9 +17,10 @@ export function createCalendarClassifyState(): CalendarClassifyState {
 
 const CONTEXT_EVENT_DEDUPE_MS = 60 * 60_000; // 1h
 
-function contextEventReason(ev: CalendarEvent): 'all-day' | 'not-self-attendee' | null {
+function contextEventReason(ev: CalendarEvent): 'all-day' | 'not-self-attendee' | 'declined' | null {
   if (ev.isAllDay) return 'all-day';
   if (ev.isSelfAttendee === false) return 'not-self-attendee';
+  if (ev.selfStatus === 'declined') return 'declined';
   return null;
 }
 
@@ -36,7 +37,8 @@ function contextEventReason(ev: CalendarEvent): 'all-day' | 'not-self-attendee' 
 export function classifyCalendarPoll(output: CalendarOutput, state: CalendarClassifyState, now: Date = new Date()): CalendarSensorEvent[] {
   const events: CalendarSensorEvent[] = [];
 
-  const fingerprint = [...output.events].map((e) => `${e.eventId}:${e.startDate}`).sort().join(',');
+  // The reply is in the fingerprint: declining a meeting changes nothing else about it.
+  const fingerprint = [...output.events].map((e) => `${e.eventId}:${e.startDate}:${e.selfStatus ?? ''}`).sort().join(',');
   if (fingerprint !== state.lastUpcomingFingerprint) {
     state.lastUpcomingFingerprint = fingerprint;
     events.push({ type: 'calendar:upcoming', payload: { timestamp: output.timestamp, events: output.events } });
@@ -44,7 +46,8 @@ export function classifyCalendarPoll(output: CalendarOutput, state: CalendarClas
 
   const currentActiveIds = new Set<string>();
   for (const ev of output.events) {
-    if (ev.isAllDay) continue;
+    // A declined meeting is not one the owner is in: no `calendar:active`, so nothing downstream counts it.
+    if (ev.isAllDay || ev.selfStatus === 'declined') continue;
     const start = new Date(ev.startDate);
     const end = new Date(ev.endDate);
     if (now >= start && now < end) {

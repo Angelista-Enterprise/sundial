@@ -33,7 +33,6 @@ import path from 'node:path';
 import { loadSundialConfig, type ResolvedSundialConfig } from '@sundial/helpers/sundial-config.js';
 import { getAllProjects } from '@sundial/db/index.js';
 import { openLlmAudit } from '@sundial/llm/audit.js';
-import { consentedNetworkFingerprint } from '@sundial/rules/presence-track.js';
 import type { KernelState } from '@sundial/kernel/index.js';
 import {
   AgentFleetSensor,
@@ -54,7 +53,6 @@ import {
   InputActivitySensor,
   LocationNetworkSensor,
   NotificationSensor,
-  PresenceSensor,
   ProjectSensor,
   ShellSensor,
   SleepWakeSensor,
@@ -63,9 +61,10 @@ import {
   SystemPowerSensor,
   VaultSensor,
   ScreenVisionSensor,
-  MailSensor,
+  ScreenFrameSensor,
   BrowserHelperSupervisor,
   localFilePathFromDocument,
+  frontProcessName,
   pollWindowSensor,
   readAudioStatus,
 } from '@sundial/sensors/index.js';
@@ -73,6 +72,11 @@ import { getSensorHealth, healthSignal, type SensorHealth } from './sensor-healt
 // lane H
 import { isSundialConfigUnreadable } from '@sundial/helpers/sundial-config.js';
 import { getScreenOcrStatusJsonPath } from '@sundial/helpers/sundial-paths.js';
+import { FRAME_ASSET_ID, screenFrame, screenFrameOf } from '@sundial/rules/questions/screen-frame.js';
+import { screenProfileFor } from '@sundial/rules/screen-text-filter.js';
+import type { SystemOneImageAsset } from '@sundial/llm/systemone.js';
+import { isEcho } from '@sundial/kernel/voice-lines.js';
+import type { JudgeQuestion, JudgementResultPayload } from '@sundial/kernel/types.js';
 
 /** lane H (H2): how often the sidecars' health is read into a `sensor:health` state. */
 export const HEALTH_POLL_MS = 60_000;
@@ -98,6 +102,8 @@ export interface SensorRuntimeOptions {
   config?: ResolvedSundialConfig;
   /** W5: `ctx.gnomonKernel.reserveLlmCall`, the one budget gate, for the sensors that call a model (screen vision). */
   reserveLlmCall?: (purpose: 'vision', options: { caller: string }) => Promise<string | null>;
+  /** `ctx.gnomonKernel.judgeNow`, for the frame sensor (`ocr.jev.frames`): budgeted (`frame`), audited, Jev only. */
+  judgeNow?: (options: { purpose: 'frame'; questionSetId: string; momentId: null; state: unknown; questions: Record<string, JudgeQuestion>; caller: string; assets: Record<string, SystemOneImageAsset> }) => Promise<{ answers: JudgementResultPayload['answers']; model: string } | null>;
 }
 
 export class SensorRuntime {
@@ -108,6 +114,7 @@ export class SensorRuntime {
 
   private pollTimer: NodeJS.Timeout | null = null;
   private pollInFlight = false;
+  private mediaWatch: fs.FSWatcher | null = null;
 
   // The sensors, constructed as the daemon did (:171-201), plus the ones added since.
   // Event-driven ones (git sweep, file watcher) push through the same
@@ -120,7 +127,7 @@ export class SensorRuntime {
   });
   private readonly symbolEditSensor = new SymbolEditSensor();
   private readonly vaultSensor: VaultSensor | null;
-  private readonly githubPrSensor = new GitHubPrSensor();
+  private readonly githubPrSensor: GitHubPrSensor;
   private readonly shellSensor = new ShellSensor();
   private readonly projectSensor = new ProjectSensor();
   private readonly agentSessionSensor = new AgentSessionSensor();
@@ -136,13 +143,12 @@ export class SensorRuntime {
   private readonly bluetoothAudioSensor = new BluetoothAudioSensor();
   private readonly systemPowerSensor = new SystemPowerSensor();
   private readonly locationNetworkSensor = new LocationNetworkSensor();
-  private readonly presenceSensor = new PresenceSensor();
   private readonly sleepWakeSensor = new SleepWakeSensor();
   private readonly browserSensor: BrowserSensor;
   /** J3.3: a local vision model over the OCR helper's frame, when `ocr.vision.enabled`. */
   private readonly screenVisionSensor: ScreenVisionSensor;
-  /** J3.6: Mail.app subjects and senders when `privacy.mail`, Messages senders when `privacy.messages` (both need Full Disk Access). */
-  private readonly mailSensor: MailSensor;
+  /** The frame to Jev, only behind `ocr.jev.frames`. */
+  private readonly screenFrameSensor: ScreenFrameSensor;
   /** Opt-in, off by default — gated on `config.clipboardEnabled`, same as the daemon's startDaemon reconstruction. */
   private readonly clipboardMetaSensor: ClipboardMetaSensor;
   /** P7 — gated on `config.ocr.enabled` (default off); inert until the owner opts in. */
@@ -163,13 +169,27 @@ export class SensorRuntime {
     this.getAllProjectsFn = options.getAllProjects ?? getAllProjects;
     this.config = options.config ?? loadSundialConfig();
     this.clipboardMetaSensor = new ClipboardMetaSensor(this.config.clipboardEnabled);
-    this.screenOcrSensor = new ScreenOcrSensor({ enabled: this.config.ocr.enabled });
+    this.screenOcrSensor = new ScreenOcrSensor({ enabled: this.config.ocr.enabled, slowApps: this.config.ocr.slowApps, slowIntervalMs: this.config.ocr.slowIntervalMs });
     this.audioTranscriptSensor = new AudioTranscriptSensor({ enabled: this.config.audio.enabled, languages: this.config.audio.languages });
     // J3.4: the helper reads the page's text too when the owner has not turned it off; the browser must allow JavaScript from Apple Events.
-    this.browserSensor = new BrowserSensor({ supervisor: new BrowserHelperSupervisor(undefined, this.config.browser.pageText ? ['--page-text'] : []) });
+    this.browserSensor = new BrowserSensor({ supervisor: new BrowserHelperSupervisor(undefined, [...(this.config.browser.pageText ? ['--page-text'] : []), ...(this.config.browser.pageTextAx ? ['--page-text-ax'] : [])]) });
     this.screenVisionSensor = new ScreenVisionSensor({ enabled: this.config.ocr.enabled && this.config.ocr.vision.enabled, model: this.config.ocr.vision.model, intervalMs: this.config.ocr.vision.intervalMs, openAudit: openLlmAudit, ...(options.reserveLlmCall ? { reserve: (purpose) => options.reserveLlmCall!(purpose, { caller: 'screen-vision' }) } : {}) });
+    const judgeNow = options.judgeNow;
+    this.screenFrameSensor = new ScreenFrameSensor({
+      enabled: this.config.ocr.enabled && this.config.ocr.jev.frames,
+      perHour: this.config.ocr.jev.framesPerHour,
+      ...(judgeNow
+        ? {
+            judge: async (capture, jpeg) => {
+              const built = screenFrame.build({ appFamily: screenProfileFor(capture.bundleId ?? capture.processName) });
+              const judged = await judgeNow({ purpose: 'frame', questionSetId: screenFrame.id, momentId: null, state: built.state, questions: built.questions, caller: 'screen-frame', assets: { [FRAME_ASSET_ID]: { type: 'image', data_base64: jpeg, format: 'jpeg' } } });
+              return judged ? screenFrameOf(judged.answers, capture) : null;
+            },
+          }
+        : {}),
+    });
     this.agentTurnSensor = new AgentTurnSensor({ enabled: this.config.privacy.agentTranscripts });
-    this.mailSensor = new MailSensor({ enabled: this.config.privacy.mail, messages: this.config.privacy.messages });
+    this.githubPrSensor = new GitHubPrSensor(undefined, undefined, undefined, this.config.sensors.githubPrs);
     this.hearingWindowPath = path.join(getSundialHome(), '.daemon', 'audio-listen.json');
     // J3.5: the vault, only when the owner named one. Paths only.
     this.vaultSensor = this.config.vault
@@ -201,9 +221,22 @@ export class SensorRuntime {
     this.pollTimer = setInterval(() => {
       this.pollTickGuarded().catch((error) => console.error('[sundial-sensors] poll tick failed:', error));
     }, this.config.pollIntervalMs);
+
+    // The launcher rewrites this file the moment the microphone changes hands: a call is in the state before the next poll.
+    // The window helper writes on every switch (plan 15 I2): the switch is in the record at its own time, not the next poll's.
+    try {
+      this.mediaWatch = fs.watch(path.join(getSundialHome(), '.daemon'), (_change, name) => {
+        const events = name === 'av-context.json' ? this.audioContextSensor.poll() : name === 'window-info.json' ? [pollWindowSensor()].filter((e) => e !== null) : [];
+        for (const e of events) void this.handleSensorEvent(e.type, { ...e.payload }).catch((error) => console.error('[sundial-sensors] sidecar event failed:', error));
+      });
+    } catch (error) {
+      console.error('[sundial-sensors] no watch on the media state, the poll still reads it:', error);
+    }
   }
 
   stop(): void {
+    this.mediaWatch?.close();
+    this.mediaWatch = null;
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
@@ -216,7 +249,7 @@ export class SensorRuntime {
 
   /** Sidecar freshness + TCC grant snapshot (never respawns anything). */
   getSensorHealth(): SensorHealth {
-    return { ...getSensorHealth(this.config), ocrSecureInputDrops: { ...this.screenOcrSensor.secureInputDrops } };
+    return { ...getSensorHealth(this.config), ocrSecureInputDrops: { ...this.screenOcrSensor.secureInputDrops }, screenFrameSkips: { ...this.screenFrameSensor.skipped } };
   }
 
   /**
@@ -348,8 +381,8 @@ export class SensorRuntime {
     // The browser tab: the helper is spawned by the sensor on first poll and
     // re-execs itself disclaimed (see macos-browser-helper.swift).
     await step('screen-vision', () => emit(this.screenVisionSensor.poll()));
-    await step('mail', () => emit(this.mailSensor.poll()));
-    await step('browser', () => emit(this.browserSensor.poll()));
+    await step('screen-frame', () => emit(this.screenFrameSensor.poll()));
+    await step('browser', () => emit(this.browserSensor.poll(Date.now(), frontProcessName())));
     // Arc's tabs in the focused space, on change only (UC2: restore the space the owner left).
     await step('arc-tabs', () => emit(this.arcTabsSensor.poll()));
     await step('input-activity', () => emit(this.inputActivitySensor.poll()));
@@ -369,7 +402,8 @@ export class SensorRuntime {
 
     // Ambient hearing. Reads whatever the audio sidecar appended since the last
     // poll, so a pause here delays utterances rather than dropping them.
-    await step('audio-transcript', () => emit(this.audioTranscriptSensor.poll()));
+    // Plan 15 step 3: hearing does not keep Gnomon's own spoken reply as something said near the machine.
+    await step('audio-transcript', () => emit(this.audioTranscriptSensor.poll().filter((e) => !isEcho(String(e.payload.spokenText ?? ''), this.getState()?.voice?.recentSaid, String(e.payload.timestamp)))));
 
     // bluetooth-audio/system-power/location-network/clipboard-meta all
     // self-gate to their own (much longer) poll intervals internally.
@@ -377,14 +411,6 @@ export class SensorRuntime {
     await step('system-power', async () => emit(await this.systemPowerSensor.poll()));
     await step('location-network', async () => emit(await this.locationNetworkSensor.poll()));
     await step('clipboard-meta', async () => emit(await this.clipboardMetaSensor.poll()));
-
-    // Presence consent gate: a subnet sweep runs only on a network the owner
-    // explicitly granted — `consentedNetworkFingerprint` over the LIVE state
-    // keeps the permission in exactly one place (the folded presence:consent events).
-    await step('presence', async () => {
-      const state = this.getState();
-      await emit(state?.config.experiments?.presence ? await this.presenceSensor.poll(consentedNetworkFingerprint(state)) : null);
-    });
 
     await step('github-pr', async () => emit(await this.githubPrSensor.poll()));
 

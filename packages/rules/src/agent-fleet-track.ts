@@ -69,17 +69,17 @@ type WaitState = Exclude<AgentFleetEntry['state'], 'working'>;
  * ExitPlanMode calls over fifteen.
  */
 const KINDS: Record<WaitState, Kind> = {
-  permission: { kind: 'agent-permission', afterMs: 3 * MINUTE, halfLifeMs: 10 * MINUTE, say: (o, m) => `Your Claude session ${o} has waited ${m} min for your approval.` },
-  question: { kind: 'agent-question', afterMs: 3 * MINUTE, halfLifeMs: 15 * MINUTE, say: (o, m) => `Your Claude session ${o} asked you a question ${m} min ago.` },
-  plan: { kind: 'agent-plan', afterMs: 3 * MINUTE, halfLifeMs: 15 * MINUTE, say: (o, m) => `Your Claude session ${o} has had a plan waiting for your approval for ${m} min.` },
+  permission: { kind: 'agent-permission', afterMs: 3 * MINUTE, halfLifeMs: 10 * MINUTE, say: (o, m) => `Your coding session ${o} has waited ${m} min for your approval.` },
+  question: { kind: 'agent-question', afterMs: 3 * MINUTE, halfLifeMs: 15 * MINUTE, say: (o, m) => `Your coding session ${o} asked you a question ${m} min ago.` },
+  plan: { kind: 'agent-plan', afterMs: 3 * MINUTE, halfLifeMs: 15 * MINUTE, say: (o, m) => `Your coding session ${o} has had a plan waiting for your approval for ${m} min.` },
   failed: {
     kind: 'agent-failed',
     afterMs: MINUTE,
     halfLifeMs: AGENT_WAIT_HALF_LIFE_MS,
-    say: (o, m, s) => `Your Claude session ${o} stopped on ${s.error === 'rate_limit' ? 'a rate limit' : s.error && s.error !== 'api_error' ? `an API error (${s.error})` : 'an API error'} ${m} min ago.`,
+    say: (o, m, s) => `Your coding session ${o} stopped on ${s.error === 'rate_limit' ? 'a rate limit' : s.error && s.error !== 'api_error' ? `an API error (${s.error})` : 'an API error'} ${m} min ago.`,
   },
-  waiting: { kind: 'agent-waiting', afterMs: AGENT_WAIT_NOTICE_MS, halfLifeMs: AGENT_WAIT_HALF_LIFE_MS, say: (o, m, s) => `Your Claude session ${o} finished ${m} min ago and is waiting for you${done(s)}.` },
-  tool: { kind: 'agent-tool-pending', afterMs: AGENT_WAIT_NOTICE_MS, halfLifeMs: AGENT_WAIT_HALF_LIFE_MS, say: (o, m) => `Your Claude session ${o} has been on one tool call for ${m} min — it may be waiting for your approval.` },
+  waiting: { kind: 'agent-waiting', afterMs: AGENT_WAIT_NOTICE_MS, halfLifeMs: AGENT_WAIT_HALF_LIFE_MS, say: (o, m, s) => `Your coding session ${o} finished ${m} min ago and is waiting for you${done(s)}.` },
+  tool: { kind: 'agent-tool-pending', afterMs: AGENT_WAIT_NOTICE_MS, halfLifeMs: AGENT_WAIT_HALF_LIFE_MS, say: (o, m) => `Your coding session ${o} has been on one tool call for ${m} min — it may be waiting for your approval.` },
 };
 /**
  * A tool call the registry or a hook says is running — not an approval, that
@@ -87,7 +87,7 @@ const KINDS: Record<WaitState, Kind> = {
  * ran over five minutes 40 times in 30 days and over fifteen six times, so
  * fifteen minutes is the bar.
  */
-const STUCK: Kind = { kind: 'agent-stuck', afterMs: 15 * MINUTE, halfLifeMs: AGENT_WAIT_HALF_LIFE_MS, say: (o, m) => `Your Claude session ${o} has been on one tool call for ${m} min with no result — it may be stuck.` };
+const STUCK: Kind = { kind: 'agent-stuck', afterMs: 15 * MINUTE, halfLifeMs: AGENT_WAIT_HALF_LIFE_MS, say: (o, m) => `Your coding session ${o} has been on one tool call for ${m} min with no result — it may be stuck.` };
 const kindOf = (s: AgentFleetEntry & { state: WaitState }): Kind => (s.state === 'tool' && s.source && s.source !== 'transcript' ? STUCK : KINDS[s.state]);
 
 /** Waits kept per kind for the owner's own thresholds, and how many before they replace the defaults (U3-F21). */
@@ -231,7 +231,7 @@ export const agentFleetTrack: Rule = (state, event) => {
           // Identical input and an error result each time: counted, not guessed.
           precision: 0.8,
           valueHalfLifeMs: 20 * MINUTE,
-          observation: `Your Claude session ${on(looping)} has run the same failing tool call ${looping.repeats} times in a row.`,
+          observation: `Your coding session ${on(looping)} has run the same failing tool call ${looping.repeats} times in a row.`,
           evidence: [`session ${looping.id} in ${looping.cwd}`, `${looping.repeats} identical failing calls`],
         }),
       ],
@@ -298,7 +298,7 @@ function foldFleet(state: KernelState, event: SanitizedEvent): RuleResult {
       // Two live sessions naming one folder is a fact, not a guess.
       precision: 0.9,
       valueHalfLifeMs: 20 * MINUTE,
-      observation: `${c.ids.length} Claude sessions are open in ${c.cwd} at the same time. A build or commit in one ships the other's unsaved changes — a worktree per session keeps them apart.`,
+      observation: `${c.ids.length} coding sessions are open in ${c.cwd} at the same time. A build or commit in one ships the other's unsaved changes — a worktree per session keeps them apart.`,
       evidence: [`sessions ${c.ids.join(', ')}`, `in ${c.cwd}`],
     }),
   );
@@ -350,7 +350,7 @@ function foldHook(state: KernelState, event: SanitizedEvent): RuleResult {
         // Two hooks naming one file: a fact.
         precision: 0.95,
         valueHalfLifeMs: 10 * MINUTE,
-        observation: `Two Claude sessions edited ${edit.file} in ${project(edit.cwd)} within ten minutes of each other — one may undo the other's change.`,
+        observation: `Two coding sessions edited ${edit.file} in ${project(edit.cwd)} within ten minutes of each other — one may undo the other's change.`,
         evidence: [`sessions ${[edit.id, ...others].sort().join(', ')}`, `${edit.file} in ${edit.cwd}`],
       }),
     ],
@@ -384,7 +384,7 @@ function ownerEdits(state: KernelState, event: SanitizedEvent): RuleResult {
         // The change is inferred to be the owner's: no agent edit named the file.
         precision: 0.7,
         valueHalfLifeMs: 10 * MINUTE,
-        observation: `You are changing ${mine[0]}${mine.length > 1 ? ` and ${mine.length - 1} more` : ''} in ${project(agent.cwd)} while your Claude session${agent.title ? ` ${quote(agent.title)}` : ''} is mid-turn there.`,
+        observation: `You are changing ${mine[0]}${mine.length > 1 ? ` and ${mine.length - 1} more` : ''} in ${project(agent.cwd)} while your coding session${agent.title ? ` ${quote(agent.title)}` : ''} is mid-turn there.`,
         evidence: [`session ${agent.id} working since ${agent.since}`, `${mine.length} changed file(s) no agent edited, in ${agent.cwd}`],
       }),
     ],
@@ -430,7 +430,7 @@ function digest(state: KernelState, event: SanitizedEvent, awaySince: string): R
         surprise: Math.log(1 + waits.length),
         precision: Math.min(...waits.map(precisionOf)),
         valueHalfLifeMs: 20 * MINUTE,
-        observation: `While you were away, your Claude sessions: ${parts.join(', ')}.`,
+        observation: `While you were away, your coding sessions: ${parts.join(', ')}.`,
         evidence: waits.map((s) => `session ${s.id} ${s.state} since ${s.since} in ${s.cwd}`),
       }),
     ],
@@ -460,7 +460,7 @@ function prRed(state: KernelState, event: SanitizedEvent): RuleResult {
         // The checks said failure; which session it belongs to is a branch match.
         precision: 0.85,
         valueHalfLifeMs: AGENT_WAIT_HALF_LIFE_MS,
-        observation: `The checks failed on PR #${p.number}, which your Claude session ${on(session)} is working on${typeof p.url === 'string' ? ` — ${p.url}` : ''}.`,
+        observation: `The checks failed on PR #${p.number}, which your coding session ${on(session)} is working on${typeof p.url === 'string' ? ` — ${p.url}` : ''}.`,
         evidence: [`session ${session.id} on ${session.branch ?? 'its PR'}`, `PR #${p.number} checks: failure`],
       }),
     ],

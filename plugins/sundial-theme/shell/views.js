@@ -19,67 +19,26 @@
 // route that already existed and had no reader.
 import { el } from './surfaces.js'
 import { INSTRUMENT_ROUTES } from './cards.js'
-import { read, whenVisible } from './read.js'
-import { clock, focusBar, hm, json, panel, when } from './view-kit.js'
+import { whenVisible } from './read.js'
+import { json } from './view-kit.js'
 import { ENGINE_TABS } from './view-cards.js'
-import { jobWords } from './view-today.js'
 import { trustPanel } from './view-trust.js'
 import { calibrationPanel } from './view-calibration.js'
-import { hhmm, span } from './view-day.js'
 import { tracePanel } from './view-trace.js'
 import { reachPanel } from './view-reach.js'
 import { labPanel } from './view-lab.js'
 export { lensesPanel } from './view-lenses.js'
-export { unsaidPanel } from './view-unsaid.js'
-export { asksPanel } from './view-asks.js'
-export { habitsPanel } from './view-habits.js'
-export { rhythmPanel } from './view-rhythm.js'
 export { dayPanel, hhmm, span, whatItSaw } from './view-day.js'
-export { ledgerView } from './view-ledger.js'
-export { shelfSection } from './view-shelf.js'
 export { peopleSection } from './view-people.js'
-export { goalsSection } from './view-goals.js'
-export { answerDoor, briefLine, briefParts, doneAct, heardInPassing, jobWords, promiseRow, resumeDetails, TODAY_PARTS, todayBlock, todayParts } from './view-today.js'
+export { answerDoor, briefLine, briefParts, heardInPassing, jobWords, resumeDetails, TODAY_PARTS, todayParts } from './view-today.js'
 export { ENGINE_TABS, engineCard, inPlayCard, rhythmCard, voiceCard } from './view-cards.js'
-export { clock, focusBar, hm, longDate } from './view-kit.js'
-
-// ── Today ─────────────────────────────────────────────────────────────────
-
-// ── The Ledger ────────────────────────────────────────────────────────────
+export { beliefsCard } from './view-beliefs.js'
+export { routesCard } from './view-routes.js'
+export { hm, longDate } from './view-kit.js'
 
 // ── The Instruments ───────────────────────────────────────────────────────
 
-/**
- * Twelve readings, in two bands.
- *
- * They were one flat strip of twelve words, in the order they happened to be
- * written, and the first of them was `Trust` — a page about embedding counts
- * and redaction totals. So the first thing the owner met, every time, was the
- * engine's own health, and the seven pages that are actually ABOUT them were
- * scattered through the same row as the five that are about the machine.
- *
- * Two bands, and the owner's band first. The split is not cosmetic: these
- * answer different questions on different days ("what does it know about my
- * life" versus "is the thing working"), and a reader scanning twelve nouns for
- * one of them was reading all twelve every time.
- */
-/**
- * The instruments, as `[tab, label, mark, keywords]`.
- *
- * **The fourth slot is why this comment exists.** The owner typed "rhythm"
- * into Find and got nothing, because the palette matched a card's one-word
- * NAME and nothing else — and a name is the last thing somebody reaches for
- * when they want a surface. They search for what it is about. Every card in
- * this series already has a subject sentence at the top of its body; these are
- * the words out of it, so "sleep" and "bedtime" reach Rhythm, "permissions"
- * and "obsidian" reach Reach, and "forecast" reaches Calibration.
- *
- * The words live in the card catalog (`cards.js`), the one place an
- * instrument is declared — the agent reads the same entry. Pinned by
- * *views.test.js*, which holds every tab against `PANELS` in both directions
- * and refuses one with no keywords.
- */
-
+/** The instruments' renderers; the words and routes live in the card catalog (`cards.js`), checked by views.test.js. */
 const RENDER = {
   trust: trustPanel,
   reach: reachPanel,

@@ -5,6 +5,7 @@ import { readUnsaid } from './read-unsaid.js'
 import { readSituation } from '@sundial/kernel/read/situation.js'
 import { readShelf } from '@sundial/kernel/read/shelf.js'
 import { readContext } from './read-context.js'
+import { answerWrite } from './api-writes.js'
 import { readOpenAsk } from './read-open-ask.js'
 import { readToday } from './read-today.js'
 import { readDial } from './read-dial.js'
@@ -29,13 +30,7 @@ export function mountToday(ctx) {
 
   // The SAME signal `gnomon_owner_answer` appends, on purpose: a tap and a typed reply are the same
   // fact. The rule ignores an askId that is not the open one, so a stale tab tapping is inert.
-  post(ctx, '/gnomon/ask/answer', { limit: 8192, method: 'Answering takes a POST.', tooLong: 'That answer is too long for a tap — say it in the chat.' }, async (body) => {
-    const askId = typeof body.askId === 'string' ? body.askId.trim() : ''
-    const answer = typeof body.answer === 'string' ? body.answer.trim() : ''
-    if (askId === '' || answer === '') return 'An answer needs both an askId and an answer.'
-    await ctx.gnomonKernel.appendSignal('ask:owner-answered', { askId, answer })
-    return { recorded: true, askId }
-  })
+  post(ctx, '/gnomon/ask/answer', { limit: 8192, method: 'Answering takes a POST.', tooLong: 'That answer is too long for a tap — say it in the chat.' }, (body) => answerWrite(ctx, body))
 
   // ── How heavy the conversation has become ────────────────────────────────
   // Read from Gnomon's OWN ledger rather than dsh's token-meter projection:
@@ -89,7 +84,8 @@ export function mountToday(ctx) {
     const state = ctx.gnomonKernel.getState()
     const bench = state?.workbench ?? { open: null, recent: [], countToday: 0 }
     return {
-      items: await readShelf({ now: Date.now() }),
+      // Set 5 R3: a self-review's open proposal is answered on the proposals card, with its count; one place, not two.
+      items: (await readShelf({ now: Date.now() })).filter((item) => !state?.selfReview?.proposed?.[item.id]),
       working: bench.open ? { kind: bench.open.kind, subject: bench.open.subject, reason: bench.open.reason, since: bench.open.openedAt } : null,
       recent: (bench.recent ?? []).slice(-8).reverse().map((job) => ({ kind: job.kind, subject: job.subject, outcome: job.outcome, closedAt: job.closedAt })),
       countToday: bench.countToday ?? 0,

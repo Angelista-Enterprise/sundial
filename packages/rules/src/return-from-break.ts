@@ -2,6 +2,7 @@ import { deriveId } from '@sundial/helpers/derive-id.js';
 import { formatClock, localDate, localHour } from '@sundial/helpers/local-day.js';
 import { classifyActivity } from '@sundial/helpers/window-classification.js';
 import { IGNORED_PATH } from './file-track.js';
+import { attendanceOf } from '@sundial/kernel/attendance.js';
 import type { AgentFleetEntry, Commitment, Effect, KernelState, NoticeCandidate, ResumeLine, ResumePieces, ResumeTrigger, Rule, SanitizedEvent } from '@sundial/kernel/types.js';
 
 /** One `input:activity` window, from the sensor's own `EMIT_WINDOW_MS`: the slack allowed around the break's start. */
@@ -401,18 +402,18 @@ const MEETING_RETURN_MS = 20 * MINUTE;
 function meetingReturn(state: KernelState, event: SanitizedEvent): ReturnType<Rule> | null {
   const resume = resumeOf(state);
   const ts = Date.parse(event.ts);
-  const inRoom = ([, m]: [string, NonNullable<KernelState['meetings']>['seen'][string]]) => {
-    const minutes = (Date.parse(m.end) - Date.parse(m.start)) / MINUTE;
-    return !(m.listened === true && (m.heard ?? 0) > 0 && (m.heard ?? 0) < minutes);
-  };
   const under = Object.entries(state.meetings?.seen ?? {}).find(([, m]) => Date.parse(m.start) <= ts && ts < Date.parse(m.end));
-  if (under && inRoom(under) && resume.meeting?.key !== under[0]) {
+  // Captured while it runs; whether the owner was in it is only known at the end, and checked there.
+  if (under && resume.meeting?.key !== under[0]) {
     const meeting = { key: under[0], title: under[1].title, end: under[1].end, pieces: resumePieces(state, ts, ts), said: false };
     return { state: { ...state, resume: { ...resume, meeting } }, effects: [] };
   }
   const m = resume.meeting;
   if (!m || m.said || ts < Date.parse(m.end) || ts - Date.parse(m.end) > MEETING_RETURN_MS) return null;
   const said = { ...state, resume: { ...resume, meeting: { ...m, said: true } } };
+  // "Back from" a meeting the owner was not in is false: only one the signals put them in.
+  const seen = state.meetings?.seen?.[m.key];
+  if (!seen || attendanceOf(seen) !== 'joined') return { state: said, effects: [] };
   const line = resumeLineText(`Back from ${clip(m.title, 40)}. Before it`, m.pieces, ': ');
   if (line === null) return { state: said, effects: [] };
   const key = `resume-meeting:${m.end}`;

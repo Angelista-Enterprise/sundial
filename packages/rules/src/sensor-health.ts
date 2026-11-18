@@ -94,6 +94,19 @@ export function healthCandidate(state: KernelState, ts: string, eventId: string,
   };
 }
 
+/**
+ * What `sundial:up` carries: the last heartbeat, when the Mac booted, and the gap between that heartbeat and now with its reason.
+ * `mac-off`: the Mac booted after the heartbeat. `stop`: a `sundial:down` row came after it. `sleep`: the Mac went to sleep after it. Else `crash`.
+ */
+export function upPayload(h: SensorHealthState | undefined, nowMs: number, macUptimeSec: number) {
+  const lastSeenAt = h?.lastTickAt ?? null;
+  const last = lastSeenAt === null ? NaN : Date.parse(lastSeenAt);
+  const boot = nowMs - macUptimeSec * 1000;
+  const after = (at?: string | null) => typeof at === 'string' && Date.parse(at) >= last;
+  const reason = boot > last ? 'mac-off' : after(h?.downAt) ? 'stop' : after(h?.sleptAt) ? 'sleep' : 'crash';
+  return { lastSeenAt, macBootAt: new Date(boot).toISOString(), gap: Number.isFinite(last) ? { ms: nowMs - last, reason } : null };
+}
+
 /** Every trouble that has stood long enough and was not said yet, as one candidate each. */
 function raiseDue(state: KernelState, h: SensorHealthState, ts: string, eventId: string, tick: boolean): { h: SensorHealthState; effects: ReturnType<Rule>['effects'] } {
   const effects: ReturnType<Rule>['effects'] = [];
@@ -202,7 +215,11 @@ export const sensorHealth: Rule = (state, event) => {
     t !== 'llm:budget-exhausted' &&
     t !== 'push:sent' &&
     t !== 'push:failed' &&
-    t !== 'sundial:up'
+    t !== 'sundial:up' &&
+    t !== 'sundial:down' &&
+    t !== 'system:sleep-wake' &&
+    t !== 'sensor:blind' &&
+    t !== 'sensor:sighted'
   )
     return { state, effects: [] };
   let h: SensorHealthState = state.sensorHealth ?? idle();
@@ -218,7 +235,11 @@ export const sensorHealth: Rule = (state, event) => {
     const up = h.uptime ?? [];
     const uptime = up.at(-1)?.day === day ? [...up.slice(0, -1), { day, minutes: up.at(-1)!.minutes + 1 }] : [...up, { day, minutes: 1 }].slice(-7);
     h = without({ ...h, lastTickAt: ts, uptime }, 'downtime');
-  } else if (t === 'sundial:up') {
+  } else if (t === 'sundial:down') h = { ...h, downAt: ts };
+  else if (t === 'system:sleep-wake') h = { ...h, sleptAt: p.kind === 'sleep' ? ts : null };
+  else if (t === 'sundial:up') {
+    // The refusal line says "then restart Sundial": a restart counts again from zero, so a fixed key (or a route no longer used) stops being said.
+    h = { ...h, llmAuth: {}, troubles: Object.fromEntries(Object.entries(h.troubles).filter(([k]) => !k.startsWith('llm-auth:'))) };
     // W6 D9: down while the Mac was on — since the last heartbeat, or since the Mac booted if that came after it.
     const last = typeof p.lastSeenAt === 'string' ? Date.parse(p.lastSeenAt) : NaN;
     const boot = typeof p.macBootAt === 'string' ? Date.parse(p.macBootAt) : NaN;
@@ -226,7 +247,7 @@ export const sensorHealth: Rule = (state, event) => {
     if (Number.isFinite(from) && Date.parse(ts) - from > DOWN_TO_SAY_MS) {
       const since = new Date(from).toISOString();
       const hours = Math.round((Date.parse(ts) - from) / 360_000) / 10;
-      h = withTrouble(h, 'downtime', since, 0, `Sundial was not running for ${hours} hours while this Mac was on, so nothing was recorded from ${formatClock(since, state.config.timezone)} until now.`, [`down ${hours} h`]);
+      h = withTrouble(h, 'downtime', since, 0, `Sundial was not running for ${hours} hours while this Mac was on, so nothing was recorded from ${formatClock(since, state.config.timezone)} until now.`, [`down ${hours} h`, ...(typeof (p.gap as { reason?: unknown } | null)?.reason === 'string' ? [`reason: ${(p.gap as { reason: string }).reason}`] : [])]);
     }
   } else if (t === 'input:activity') h = onInput(h, p as InputPayload, ts);
   else if (t === 'sensor:health') h = onHealth(h, p as HealthPayload, ts);
@@ -244,6 +265,11 @@ export const sensorHealth: Rule = (state, event) => {
     }
   } else if (t === 'llm:budget-exhausted') {
     if (typeof p.purpose === 'string') h = { ...h, budgetExhausted: { ...h.budgetExhausted, [p.purpose]: localDate(ts, state.config.timezone) } };
+  } else if (t === 'sensor:blind' || t === 'sensor:sighted') {
+    // W6 D6: `witnessPairs` saw two streams disagree; said at once, cleared by the stream's own return.
+    const key = `blind:${typeof p.pair === 'string' ? p.pair : 'sensor'}`;
+    if (t === 'sensor:sighted') h = without(h, key);
+    else if (typeof p.observation === 'string') h = withTrouble(h, key, typeof p.since === 'string' ? p.since : ts, 0, p.observation, Array.isArray(p.evidence) ? p.evidence.filter((e): e is string => typeof e === 'string') : []);
   } else if (t === 'push:sent') h = { ...h, push: { ...h.push, lastOkAt: ts } };
   else h = { ...h, push: { ...h.push, lastFailedAt: ts, lastError: typeof p.reason === 'string' ? p.reason.slice(0, 80) : null } };
 

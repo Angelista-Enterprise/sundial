@@ -10,7 +10,20 @@
 export const MAX_BODY_CHARS = 200_000;
 
 /** Wall-clock bound on one page load, independent of the per-command CDP timeout. */
-export const DEFAULT_LOAD_TIMEOUT_MS = 30_000;
+// Run 103 T03: under dsh's 30 s web_fetch budget, so a slow page fails with our reason, not the tool's.
+// Run 110: 15 s failed a host's first, cold load (8 to 42 s before round 25); a warm one takes under 2 s.
+export const DEFAULT_LOAD_TIMEOUT_MS = 25_000;
+
+const tooSlow = (url, ms) => new Error(`${url} did not load within ${ms / 1000} s: the site is slow or not answering`);
+
+/** Run 103 T03: the whole fetch, browser setup included, answers inside `ms`. */
+export function within(ms, url, work) {
+  const timer = {};
+  const late = new Promise((_, reject) => {
+    timer.id = setTimeout(() => reject(tooSlow(url, ms)), ms);
+  });
+  return Promise.race([work, late]).finally(() => clearTimeout(timer.id));
+}
 
 /**
  * Only http(s). CDP would happily navigate to `file://`, `chrome://` or
@@ -61,13 +74,24 @@ export function capBody(text, maxChars = MAX_BODY_CHARS) {
  * `innerText` rather than `textContent`: it respects layout, so it skips
  * `display:none` boilerplate and keeps the line breaks that make a page
  * readable. Falls back to the document element for pages with no `body`.
+ *
+ * A readable extract: the page's own main content when it marks one, its menus
+ * and footers dropped, headings marked `#`, blank runs collapsed. It edits the
+ * DOM, which is safe only because the tab is closed right after.
  */
 export const EXTRACT_EXPRESSION = `(() => {
-  const el = document.body || document.documentElement;
+  const body = document.body || document.documentElement;
+  const main = body && body.querySelector('main, article, [role=main]');
+  const root = main && (main.innerText || main.textContent || '').trim().length > 500 ? main : body;
+  if (root) {
+    for (const el of root.querySelectorAll('nav, aside, footer, [role=navigation], [role=complementary], [role=contentinfo], script, style, noscript')) el.remove();
+    for (const h of root.querySelectorAll('h1, h2, h3, h4, h5, h6')) h.prepend('#'.repeat(Number(h.tagName[1])) + ' ');
+  }
+  const text = root ? (root.innerText || root.textContent || '') : '';
   return {
     title: document.title || '',
     url: location.href,
-    text: el ? (el.innerText || el.textContent || '') : '',
+    text: text.replace(/[ \\t]+\\n/g, '\\n').replace(/\\n{3,}/g, '\\n\\n').trim(),
   };
 })()`;
 
@@ -76,7 +100,7 @@ export const EXTRACT_EXPRESSION = `(() => {
  *
  * @returns { url, statusCode, title, text, truncated }
  */
-export async function loadPage(client, url, { loadTimeoutMs = DEFAULT_LOAD_TIMEOUT_MS, maxBodyChars = MAX_BODY_CHARS } = {}) {
+export async function loadPage(client, url, { loadTimeoutMs = DEFAULT_LOAD_TIMEOUT_MS, settleMs = 2_000, maxBodyChars = MAX_BODY_CHARS } = {}) {
   const target = await client.send('Target.createTarget', { url: 'about:blank' });
   const targetId = target.targetId;
   let sessionId;
@@ -100,13 +124,21 @@ export async function loadPage(client, url, { loadTimeoutMs = DEFAULT_LOAD_TIMEO
     });
 
     try {
-      const loaded = client.waitFor('Page.loadEventFired', {
-        predicate: (frame) => frame.sessionId === sessionId,
-        timeoutMs: loadTimeoutMs,
+      // Run 103 T03: the load event waited 35 s on Wikipedia's images; the text is there at DOMContentLoaded.
+      const predicate = (frame) => frame.sessionId === sessionId;
+      const loaded = client.waitFor('Page.domContentEventFired', { predicate, timeoutMs: loadTimeoutMs }).catch((error) => {
+        throw /timed out/.test(error?.message ?? '') ? tooSlow(url, loadTimeoutMs) : error;
       });
+      // A failed navigation leaves this wait unawaited: its timeout must not become an unhandled rejection.
+      loaded.catch(() => {});
+      // An app page fills itself in after DOMContentLoaded: the load event, or settleMs, whichever comes first.
+      const settled = client.waitFor('Page.loadEventFired', { predicate, timeoutMs: loadTimeoutMs }).catch(() => {});
       const navigation = await client.send('Page.navigate', { url }, sessionId);
       if (navigation.errorText) throw new Error(`navigation failed: ${navigation.errorText}`);
       await loaded;
+      const timer = {};
+      await Promise.race([settled, new Promise((done) => (timer.id = setTimeout(done, settleMs)))]);
+      clearTimeout(timer.id);
     } finally {
       disposeStatus();
     }

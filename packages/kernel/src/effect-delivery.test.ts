@@ -47,6 +47,11 @@ describe('effectDeliveryGuarantee', () => {
     }
   });
 
+  it('plan 15, 2.3: never repeats a spoken line or a set of marks after a crash', () => {
+    expect(effectDeliveryGuarantee({ type: 'Speak', text: 'Mira Bakker is waiting.', sound: 'knock', mode: 'knock-wait', noticeKey: 'pr:box-484' })).toBe('at-most-once');
+    expect(effectDeliveryGuarantee({ type: 'Mark', marks: [] })).toBe('at-most-once');
+  });
+
   it('agrees with itself across the WriteDB tables, which share one variant', () => {
     const asks: Effect = { type: 'WriteDB', table: 'owner_asks', row: { id: 'owner-ask:1', question: 'q', reason: null, askedAt: '2026-01-01', answer: null, answeredAt: null, outcome: 'expired' } };
     expect(effectDeliveryGuarantee(asks)).toBe('at-least-once');

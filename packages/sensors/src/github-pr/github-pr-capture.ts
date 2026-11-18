@@ -12,7 +12,17 @@ export interface GhPr {
   url: string;
   reviews?: Array<{ state: string }>;
   statusCheckRollup?: Array<{ conclusion?: string; status?: string }>;
+  headRefName?: string;
+  baseRefName?: string;
+  additions?: number;
+  deletions?: number;
+  changedFiles?: number;
+  createdAt?: string;
+  updatedAt?: string;
 }
+
+/** `owner/name` from a PR's URL. */
+export const repoOf = (url: string): string | null => url.match(/github\.com\/([^/]+\/[^/]+)\/pull\//)?.[1] ?? null;
 
 const DEFAULT_BRANCHES = new Set(['main', 'master', 'develop', 'trunk']);
 
@@ -55,11 +65,13 @@ export function deriveCheckState(pr: GhPr): PrCheckState {
   return 'success';
 }
 
+const SIZE_FIELDS = 'headRefName,baseRefName,additions,deletions,changedFiles,createdAt,updatedAt';
+
 export function fetchPr(cwd: string, timeoutMs = 8000): Promise<{ pr: GhPr | null; ghMissing: boolean }> {
   return new Promise((resolve) => {
     execFile(
       'gh',
-      ['pr', 'view', '--json', 'number,title,state,isDraft,url,reviews,statusCheckRollup'],
+      ['pr', 'view', '--json', `number,title,state,isDraft,url,reviews,statusCheckRollup,${SIZE_FIELDS}`],
       { cwd, timeout: timeoutMs },
       (err, stdout) => {
         if (err) {
@@ -73,5 +85,47 @@ export function fetchPr(cwd: string, timeoutMs = 8000): Promise<{ pr: GhPr | nul
         }
       },
     );
+  });
+}
+
+/** A PR as GitHub's search returns it, already in `GhPr`'s shape plus its derived review and check state. */
+export interface FoundPr extends GhPr {
+  reviewState: PrReviewState;
+  checkState: PrCheckState;
+}
+
+const SEARCH = `query($q:String!){search(query:$q,type:ISSUE,first:50){nodes{... on PullRequest{number title url state isDraft createdAt updatedAt headRefName baseRefName additions deletions changedFiles reviewDecision commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}}`;
+const REVIEW: Record<string, PrReviewState> = { APPROVED: 'approved', CHANGES_REQUESTED: 'changes_requested' };
+const CHECK: Record<string, PrCheckState> = { SUCCESS: 'success', FAILURE: 'failure', ERROR: 'failure', PENDING: 'pending', EXPECTED: 'pending' };
+
+/** One GraphQL search: every open PR the signed-in owner authored, in any repo, with its branches and size. */
+export function searchOpenPrs(timeoutMs = 10_000): Promise<{ prs: FoundPr[] | null; ghMissing: boolean }> {
+  return new Promise((resolve) => {
+    execFile('gh', ['api', 'graphql', '-f', `query=${SEARCH}`, '-f', 'q=is:pr author:@me is:open archived:false'], { timeout: timeoutMs }, (err, stdout) => {
+      if (err) return resolve({ prs: null, ghMissing: (err as NodeJS.ErrnoException).code === 'ENOENT' });
+      try {
+        const nodes = (JSON.parse(stdout)?.data?.search?.nodes ?? []) as Array<GhPr & { reviewDecision?: string | null; commits?: { nodes?: Array<{ commit?: { statusCheckRollup?: { state?: string } | null } }> } }>;
+        const prs = nodes
+          .filter((n) => typeof n?.number === 'number' && typeof n.url === 'string')
+          .map(({ reviewDecision, commits, ...n }) => ({ ...n, reviewState: REVIEW[reviewDecision ?? ''] ?? 'pending', checkState: CHECK[commits?.nodes?.[0]?.commit?.statusCheckRollup?.state ?? ''] ?? 'none' }));
+        resolve({ prs, ghMissing: false });
+      } catch {
+        resolve({ prs: null, ghMissing: false });
+      }
+    });
+  });
+}
+
+/** The state of one PR by URL, for a PR that left the open search: merged or closed. */
+export function fetchPrState(url: string, timeoutMs = 8000): Promise<GhPr | null> {
+  return new Promise((resolve) => {
+    execFile('gh', ['pr', 'view', url, '--json', `number,title,state,isDraft,url,${SIZE_FIELDS}`], { timeout: timeoutMs }, (err, stdout) => {
+      if (err) return resolve(null);
+      try {
+        resolve(JSON.parse(stdout) as GhPr);
+      } catch {
+        resolve(null);
+      }
+    });
   });
 }

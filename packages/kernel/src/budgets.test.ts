@@ -13,14 +13,14 @@ describe('resolveDailyCaps', () => {
   // Every purpose here must have something that can REQUEST it: three rules
   // (`momentAnalysisSchedule` → intent, `noticeGate` → companion,
   // `researchGoals` → goal), the runtime's nightly passes (journal, extract,
-  // reflect, refute) and the owner's own chat (ask). `narrate` was merged into
+  // reflect, refute), the owner's own chat (ask) and `offerNow` (offer). `narrate` was merged into
   // `intent` and `knowledge` lost its producer in the dsh rebuild; both kept a
   // cap for months, which is why this list is written out rather than derived.
   // The seven judgement purposes are requested by a `Judge` effect
   // (`dispatchJudge`, docs/jarvis/02) — Jev's slots, apart from the text model's.
   it('caps exactly the purposes something can actually request', () => {
     expect(Object.keys(DEFAULT_DAILY_CAPS).sort()).toEqual(
-      ['ask', 'companion', 'extract', 'goal', 'hand', 'intent', 'journal', 'reflect', 'refute', 'transcript', 'perceive', 'classify', 'rank', 'judge', 'audit', 'forecast', 'listen', 'vision'].sort(),
+      ['ask', 'companion', 'extract', 'goal', 'hand', 'intent', 'journal', 'reflect', 'refute', 'transcript', 'perceive', 'classify', 'rank', 'judge', 'audit', 'forecast', 'listen', 'vision', 'visualize', 'offer', 'screen', 'frame'].sort(),
     );
   });
 

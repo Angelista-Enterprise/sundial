@@ -5,6 +5,8 @@ import { watchRules } from './watch-rules.js';
 import { DEFAULT_GATE_POLICY, applyDelivery, decide, noticeGate, type NoticeState } from './notice-gate.js';
 import type { NoticeCandidate } from '@sundial/kernel/types.js';
 import { backtestTypes, backtestWatch, emptyWatchFlags, stepWatchFlags, validateWatchRule } from '@sundial/kernel/watch.js';
+import { adoptedRules } from '@sundial/kernel/watch-flow.js';
+import { readProposals } from '@sundial/kernel/read/proposals.js';
 import { deriveId } from '@sundial/helpers/derive-id.js';
 
 let seq = 0;
@@ -47,6 +49,17 @@ describe('watchRules', () => {
     const wrong = watchRules(run([shelved]).state, ev('feedback:verdict', { artifactKind: 'knowledge_entry', artifactId: entry, verdict: 'wrong' }, 1));
     expect(wrong.effects).toEqual([]);
     expect(wrong.state.watch?.proposed).toEqual({});
+  });
+  it('a rule idea is on the proposals card with what it stands on (its seed chore and days), and off it once answered', () => {
+    const s = createInitialState('d');
+    const job = { id: 'j', kind: 'rule-idea' as const, key: 'rule-idea:host:mail.example.com', subject: 'a rule worth watching for', reason: 'r', detail: { seed: 'host:mail.example.com', days: '4' }, openedAt: at(-5), closedAt: at(0), outcome: 'shelved' as const, title: 'Rule idea: Slack burst' };
+    const shelved = ev('work:shelved', { title: 'Rule idea: Slack burst', body: 'b', jobId: 'j', rule: spec }, 0);
+    const entry = deriveId(shelved.ts, shelved.id, 'shelf');
+    const on = run([shelved], { ...s, workbench: { ...s.workbench, recent: [job] } }).state;
+    expect(readProposals(on, at(1)).items).toEqual([expect.objectContaining({ id: entry, kind: 'rule', via: 'review', n: 4, at: at(0), title: 'Watch for this from now on: Slack burst?', evidence: expect.stringContaining('Seeded by mail.example.com, a chore on 4 days in four weeks') })]);
+    const dropped = watchRules(on, ev('feedback:verdict', { artifactKind: 'knowledge_entry', artifactId: entry, verdict: 'wrong' }, 2)).state;
+    expect(readProposals(dropped, at(3)).items).toEqual([]);
+    expect(dropped.watch?.proposedFrom).toEqual({});
   });
   it('a 21st rule is ignored like the adopt tool refuses it; the oldest stays, and replacing one still works', () => {
     const adopt = (i: number) => ev('rule:adopted', { rule: { ...spec, id: `r${i}`, title: `R ${i}` } }, i);
@@ -227,5 +240,132 @@ describe('a plain rule needs no model to be said (UC4 §10)', () => {
     const listed = noticeGate(s, ev('notice:candidate', { ...(cand as unknown as Record<string, unknown>), key: 'watch:ci-failed:x' }, 3));
     expect(listed.effects.find((e) => e.type === 'Notify')).toMatchObject({ channel: 'tonic-notice', payload: { plain: true } });
     expect(listed.effects.map((e) => e.type)).not.toContain('ScheduleLLM');
+  });
+});
+
+describe('emit: a fire raises its custom event, and a flow hears it (observatory §1)', () => {
+  const step1 = { title: 'Commit failed', when: { type: 'shell:command', where: [{ field: 'exitCode', op: 'ne', value: 0 }] }, emit: 'custom:failed', say: 'Failed: {command}' };
+  const step2 = { title: 'Then published', when: { type: 'custom:failed' }, then: { type: 'git:push', withinMin: 30, absent: false }, by: [], say: 'Fixed and pushed after {from.command}' };
+  function effectsOf(events: SanitizedEvent[], state: KernelState = createInitialState('d')) {
+    const all: { type: string; payload: Record<string, unknown> }[] = [];
+    const queue = [...events];
+    while (queue.length) {
+      const e = queue.shift()!;
+      const out = watchRules(state, e);
+      state = out.state;
+      for (const x of out.effects as { type: string; event?: SanitizedEvent }[]) {
+        if (x.type !== 'EmitEvent') continue;
+        all.push({ type: x.event!.type, payload: x.event!.payload as Record<string, unknown> });
+        // The recurrent path: an emitted event is folded next, as ingest does.
+        if (x.event!.type.startsWith('custom:')) queue.unshift({ ...x.event!, sanitized: true } as SanitizedEvent);
+      }
+    }
+    return { state, all };
+  }
+  it('step one speaks and emits; step two hears the emit and fires on the push', () => {
+    const { all } = effectsOf([ev('rule:adopted', { rule: step1 }, 0), ev('rule:adopted', { rule: step2 }, 0), ev('shell:command', { command: 'pnpm test', exitCode: 1 }, 1), ev('git:push', { remote: 'origin' }, 5)]);
+    expect(all.map((a) => a.type)).toEqual(['custom:failed', 'notice:candidate', 'notice:candidate']);
+    expect(all[0]!.payload).toMatchObject({ rule: 'commit-failed', said: 'Failed: pnpm test', key: null, from: { command: 'pnpm test', exitCode: 1 } });
+    expect(all[2]!.payload).toMatchObject({ kind: 'watch:then-published', observation: 'Fixed and pushed after pnpm test' });
+  });
+  it('a silent step emits and puts nothing to the gate', () => {
+    const { all } = effectsOf([ev('rule:adopted', { rule: { ...step1, say: undefined } }, 0), ev('shell:command', { command: 'x', exitCode: 2 }, 1)]);
+    expect(all.map((a) => a.type)).toEqual(['custom:failed']);
+    expect(all[0]!.payload.said).toBeUndefined();
+  });
+});
+
+describe('the flow as a light kernel object (observatory §2)', () => {
+  const step = (i: number, flow: string, n: number) => ev('rule:adopted', { rule: { ...spec, id: `${flow}-s${n}`, title: `S ${n}` }, flow: { id: flow, title: `Flow ${flow}`, step: n } }, i);
+  it('keeps the flow on the record, lists it, and keeps it across a version adopted without one', () => {
+    const { state } = run([step(0, 'f', 1), ev('rule:adopted', { rule: { ...spec, id: 'f-s1', title: 'S 1 edited' } }, 1)]);
+    expect(state.watch?.stats?.['f-s1']).toMatchObject({ version: 2, flow: { id: 'f', title: 'Flow f', step: 1 } });
+    expect(adoptedRules(state.watch)).toEqual([expect.objectContaining({ id: 'f-s1', flow: { id: 'f', title: 'Flow f', step: 1 } })]);
+  });
+  it('MAX_WATCH_RULES counts flows: twenty flows of two steps fit, a twenty-first flow does not, a step of a known one does', () => {
+    const events = Array.from({ length: 20 }, (_, i) => [step(i, `f${i}`, 1), step(i, `f${i}`, 2)]).flat();
+    const full = run(events);
+    expect(full.state.watch?.rules).toHaveLength(40);
+    expect(run([step(50, 'f20', 1)], full.state).state.watch?.rules).toHaveLength(40);
+    expect(run([ev('rule:adopted', { rule: { ...spec, id: 'alone', title: 'Alone' } }, 50)], full.state).state.watch?.rules).toHaveLength(40);
+    expect(run([step(50, 'f3', 3)], full.state).state.watch?.rules).toHaveLength(41);
+  });
+  it('an emit names the flow its rule was adopted in, and pause by flow is a pause per rule', () => {
+    const emits = { title: 'E', when: { type: 'window:changed' }, emit: 'custom:e', say: 'x' };
+    const adopted = run([ev('rule:adopted', { rule: emits, flow: { id: 'fl', title: 'Fl', step: 1 } }, 0)]);
+    const out = watchRules(adopted.state, ev('window:changed', { processName: 'Slack' }, 1));
+    const emitted = (out.effects as { type: string; event: SanitizedEvent }[]).find((e) => e.event.type === 'custom:e');
+    expect(emitted?.event.payload).toMatchObject({ rule: 'e', flow: 'fl', said: 'x' });
+  });
+});
+
+describe('reach with consent that adapts (observatory §3)', () => {
+  const publish = { title: 'Publish', when: { type: 'git:push' }, do: [{ reach: { tool: 'gnomon_calendar_create', brief: 'Block an hour to write the notes' } }], say: 'pushed', cooldownMin: 1 };
+  const step = (state: KernelState, e: SanitizedEvent) => {
+    const out = watchRules(state, e);
+    return { state: out.state, emitted: (out.effects as { type: string; event: SanitizedEvent }[]).map((x) => x.event) };
+  };
+  it('asks every time; five yeses in a row earn the offer; "Let it run" grants it; a revoke starts again', () => {
+    let state = run([ev('rule:adopted', { rule: publish }, 0)]).state;
+    let min = 1;
+    const fireAndAnswer = (answer: string) => {
+      const fired = step(state, ev('git:push', { remote: 'origin' }, (min += 2)));
+      state = fired.state;
+      const ask = fired.emitted.find((e) => e.type === 'ask:owner-opened')!;
+      expect(fired.emitted.map((e) => e.type)).toEqual(['ask:owner-opened']);
+      const out = step(state, ev('ask:owner-answered', { askId: ask.payload.askId, answer, rule: 'publish' }, min + 1));
+      state = out.state;
+      return out.emitted;
+    };
+    expect(fireAndAnswer('Yes, do it')).toEqual([expect.objectContaining({ type: 'reach:approved', payload: expect.objectContaining({ rule: 'publish', tool: 'gnomon_calendar_create', brief: 'Block an hour to write the notes' }) })]);
+    fireAndAnswer('Not now');
+    expect(state.watch?.stats?.publish?.reach?.gnomon_calendar_create?.approvals).toBe(0);
+    for (let i = 0; i < 5; i++) fireAndAnswer('Yes, do it');
+    expect(state.watch?.stats?.publish?.reach?.gnomon_calendar_create).toMatchObject({ approvals: 5, auto: false });
+    expect(state.watch?.stats?.publish?.reachAsks).toEqual({});
+    // The day boundary offers it, once.
+    const day = step(state, ev('day:boundary', {}, 100));
+    state = day.state;
+    const offer = day.emitted[0]!;
+    expect(offer).toMatchObject({ type: 'ask:owner-opened', payload: { askId: 'owner-ask:reach-auto-publish', choices: ['Let it run', 'Keep asking'] } });
+    expect(step(state, ev('day:boundary', {}, 101)).emitted).toEqual([]);
+    expect(step(state, ev('ask:owner-answered', { askId: 'owner-ask:reach-auto-publish', answer: 'Keep asking' }, 102)).emitted).toEqual([]);
+    const granted = step(state, ev('ask:owner-answered', { askId: 'owner-ask:reach-auto-publish', answer: 'Let it run' }, 102)).emitted;
+    expect(granted).toEqual([expect.objectContaining({ type: 'rule:auto-granted', payload: { id: 'publish', tool: 'gnomon_calendar_create', via: 'review' } })]);
+    state = step(state, { ...granted[0]!, sanitized: true } as SanitizedEvent).state;
+    // Alone now: no question, the approval journaled, and the rule speaks.
+    const alone = step(state, ev('git:push', { remote: 'origin' }, 110)).emitted;
+    expect(alone.map((e) => [e.type, e.payload.auto ?? null])).toEqual([['reach:approved', true], ['notice:candidate', null]]);
+    state = step(state, ev('rule:auto-revoked', { id: 'publish', tool: 'gnomon_calendar_create' }, 111)).state;
+    expect(state.watch?.stats?.publish?.reach?.gnomon_calendar_create).toMatchObject({ approvals: 0, auto: false });
+    expect(step(state, ev('git:push', { remote: 'origin' }, 120)).emitted.map((e) => e.type)).toEqual(['ask:owner-opened']);
+  });
+  it('an answer also steps the rules that watch answers: a branch fires live', () => {
+    const asks = { title: 'Asks', when: { type: 'git:push' }, do: [{ ask: { question: 'Publish?', choices: ['Yes', 'No'] } }], say: 'x', cooldownMin: 1 };
+    const yes = { title: 'On yes', when: { type: 'ask:owner-answered', where: [{ field: 'rule', op: 'eq', value: 'asks' }, { field: 'answer', op: 'eq', value: 'Yes' }] }, say: 'Publishing' };
+    let state = run([ev('rule:adopted', { rule: asks }, 0), ev('rule:adopted', { rule: yes }, 0)]).state;
+    const fired = step(state, ev('git:push', {}, 1));
+    state = fired.state;
+    const askId = fired.emitted[0]!.payload.askId as string;
+    const out = step(state, ev('ask:owner-answered', { askId, answer: 'Yes', rule: 'asks' }, 2)).emitted;
+    expect(out).toEqual([expect.objectContaining({ type: 'notice:candidate', payload: expect.objectContaining({ kind: 'watch:on-yes', observation: 'Publishing' }) })]);
+  });
+});
+
+describe('verdicts on single fires (observatory §6)', () => {
+  it('count toward precision, replace an earlier verdict on the same fire, and keep the last 50 with their time', () => {
+    let state = run([ev('rule:adopted', { rule: spec }, 0)]).state;
+    for (let i = 0; i < 6; i++) state = run([ev('rule:verdict', { id: 'slack-burst', fireId: `f${i}`, useful: i % 3 !== 0 }, i + 1)], state).state;
+    expect(state.watch?.stats?.['slack-burst']?.verdicts).toMatchObject({ useful: 4, wrong: 2 });
+    state = run([ev('rule:verdict', { id: 'slack-burst', fireId: 'f0', useful: true }, 10)], state).state;
+    const record = state.watch!.stats!['slack-burst']!;
+    expect(record.verdicts).toMatchObject({ useful: 5, wrong: 1 });
+    expect(record.judged?.map((j) => [j.fireId, j.useful])).toEqual([['f1', true], ['f2', true], ['f3', false], ['f4', true], ['f5', true], ['f0', true]]);
+    expect(adoptedRules(state.watch)[0]).toMatchObject({ precision: 6 / 8, judged: expect.arrayContaining([expect.objectContaining({ fireId: 'f0', ts: at(10) })]) });
+    for (let i = 0; i < 60; i++) state = run([ev('rule:verdict', { id: 'slack-burst', fireId: `g${i}`, useful: true }, 20 + i)], state).state;
+    expect(state.watch!.stats!['slack-burst']!.judged).toHaveLength(50);
+    // A verdict on no rule, or with no fire, changes nothing.
+    const same = run([ev('rule:verdict', { id: 'nope', fireId: 'x', useful: true }, 99), ev('rule:verdict', { id: 'slack-burst', useful: true }, 99)], state).state;
+    expect(same.watch).toEqual(state.watch);
   });
 });

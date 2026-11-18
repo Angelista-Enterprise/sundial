@@ -33,8 +33,9 @@ import { readFileSync } from 'node:fs'
 import { ensureCompanion } from './companion.js'
 import { createDelivery } from './delivery.js'
 import { createNativeNotifier, watchNoticeVerdicts } from './native-notify.js'
-import { createPush, phoneVerdicts } from './push.js'
-import { briefSubagent, installWorkLoop } from './work.js'
+import { createPush, phoneVerdicts, shelfPush } from './push.js'
+import { briefSubagent, installWorkLoop, markRigDelegate } from './work.js'
+import { SessionId } from '@deepseek-ai/dsh-session'
 // lane E (#12)
 import { installNightShift } from './night-shift.js'
 
@@ -107,6 +108,8 @@ export async function apply(ctx, config = {}) {
     },
     // W2: another chat's agent, from the theme (resolved at call time: no load-order dependency on it).
     getThread: (sessionId) => ctx.get?.('gnomonThreads')?.agentFor?.(sessionId) ?? null,
+    // S4: a sandbox line goes only to a rig chat's agent that is live now; never resumed or created for it.
+    getLiveThread: (sessionId) => ctx.agents?.get?.(SessionId(sessionId)) ?? null,
     record: (type, payload) => void ctx.gnomonKernel.appendSignal(type, payload).catch(() => {}),
     // W1: a notice that wakes a turn is briefed, the notice as its cause.
     brief: (input) => ctx.gnomonKernel.brief(input),
@@ -121,13 +124,17 @@ export async function apply(ctx, config = {}) {
 
   ctx.on('gnomon/notice', (notice) => delivery.enqueue(notice))
   // W5 (Phase 2B's risk): a helper the model starts is briefed once, as it starts.
-  ctx.on('subagent/start', (info) => briefSubagent(ctx, info))
+  ctx.on('subagent/start', (info) => {
+    void briefSubagent(ctx, info)
+    // S4: a helper a rig chat starts is a rig chat too, so the gate fences it as the rig's.
+    void markRigDelegate(ctx, info)
+  })
 
   // The work loop's hands (see work.js): jobs the `workbench` rule opens ride
   // the same `gnomon/notice` event on their own channel and wake a separate
   // worker session, so a job never lands in the companion's conversation.
   ctx.effect(
-    () => installWorkLoop(ctx, { home, cwd, hands: loadSundialConfig().hands, isDisposed: () => disposed, onShelved: (title) => void pushed(push.post({ title: 'Left for you', body: title })) }),
+    () => installWorkLoop(ctx, { home, cwd, llm: loadSundialConfig().llm, jobs: loadSundialConfig().jobs, isDisposed: () => disposed, onShelved: (title) => shelfPush(ctx.gnomonKernel.getState?.()) && void pushed(push.post({ title: 'Left for you', body: title })) }),
     'sundial-proactive work loop',
   )
   // lane E (#12): the night shift. Off unless `jobs.enabled`; off, it registers and hears nothing.

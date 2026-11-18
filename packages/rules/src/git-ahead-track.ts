@@ -29,9 +29,11 @@ interface GitStatusPayload {
  */
 export const gitAheadTrack: Rule = (state, event) => {
   if (event.type === 'git:push') {
-    const cwd = typeof (event.payload as { cwd?: unknown }).cwd === 'string' ? (event.payload as { cwd: string }).cwd : '';
-    const prior = state.git.unpushed[cwd];
-    if (!prior || prior.pushSeen) return { state, effects: [] };
+    const push = event.payload as { cwd?: unknown; branch?: unknown };
+    const prior = state.git.unpushed[typeof push.cwd === 'string' ? push.cwd : ''];
+    // W6 D4: a push of another branch (a worktree shares the repository) says nothing about this working copy.
+    if (!prior || prior.pushSeen || (typeof push.branch === 'string' && push.branch !== prior.branch)) return { state, effects: [] };
+    const cwd = push.cwd as string;
     return { state: { ...state, git: { ...state.git, unpushed: { ...state.git.unpushed, [cwd]: { ...prior, pushSeen: true } } } }, effects: [] };
   }
   if (event.type !== 'git:status') return { state, effects: [] };

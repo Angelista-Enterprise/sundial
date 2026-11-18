@@ -1,10 +1,13 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { GitSensor } from './index.js';
 import * as gitCapture from './git-capture.js';
 
 vi.mock('./git-capture.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./git-capture.js')>();
-  return { ...actual, isGitRepo: vi.fn(), readGitStatus: vi.fn(), readCommitStats: vi.fn() };
+  return { ...actual, isGitRepo: vi.fn(), readGitStatus: vi.fn(), readCommitStats: vi.fn(), countPushedCommits: vi.fn() };
 });
 
 const REPO_A = '/repos/a';
@@ -92,6 +95,35 @@ describe('GitSensor — A§3.6: per-root debounce (not one shared timer)', () =>
     sensor.notifyShellCommand('git push origin main', REPO_A, 0);
     sensor.notifyShellCommand('git push', REPO_B, 0);
     expect(pushes).toEqual(['feat/box-484', 'main', null]);
+    sensor.stop();
+  });
+
+  it('W6 D4: a push line in the remote reflog is one git:push with its branch, time and count; a pull, an old line and the typed command are none', async () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'sundial-reflog-')));
+    const dir = path.join(root, '.git', 'logs', 'refs', 'remotes', 'origin', 'feat');
+    fs.mkdirSync(dir, { recursive: true });
+    const AT = 1793448000;
+    const line = (to: string, message: string) => `${'a'.repeat(40)} ${to.repeat(40)} Mira Bakker <mira@example.com> ${AT} +0100\t${message}\n`;
+    expect(gitCapture.parsePushReflogLine(line('b', 'pull: fast-forward').trimEnd())).toBeNull();
+    expect(gitCapture.parsePushReflogLine(line('c', 'update by push').trimEnd())).toEqual({ from: 'a'.repeat(40), to: 'c'.repeat(40), at: new Date(AT * 1000).toISOString() });
+
+    const file = path.join('origin', 'feat', 'box-484');
+    fs.writeFileSync(path.join(dir, 'box-484'), line('b', 'pull: fast-forward'));
+    vi.mocked(gitCapture.countPushedCommits).mockResolvedValue(3);
+    const pushes: unknown[] = [];
+    const sensor = new GitSensor((e) => e.type === 'git:push' && pushes.push(e.payload));
+    sensor.registerKnownRoot(root);
+    await sensor.onReflogChange(root, file, AT * 1000 + 1000);
+    expect(pushes).toEqual([]);
+
+    fs.appendFileSync(path.join(dir, 'box-484'), line('c', 'update by push'));
+    await sensor.onReflogChange(root, file, AT * 1000 + 10 * 60_000);
+    expect(pushes).toEqual([]);
+    await sensor.onReflogChange(root, file, AT * 1000 + 1000);
+    await sensor.onReflogChange(root, file, AT * 1000 + 2000);
+    sensor.notifyShellCommand('git push', root, 0);
+    expect(pushes).toEqual([{ timestamp: new Date(AT * 1000).toISOString(), cwd: root, branch: 'feat/box-484', remote: 'origin', commits: 3, source: 'reflog' }]);
+    expect(gitCapture.countPushedCommits).toHaveBeenCalledWith(root, 'a'.repeat(40), 'c'.repeat(40), 'origin/feat/box-484');
     sensor.stop();
   });
 });

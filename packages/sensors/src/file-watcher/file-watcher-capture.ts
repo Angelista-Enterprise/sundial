@@ -23,7 +23,12 @@ export const IGNORED_DIR_SEGMENTS: ReadonlySet<string> = new Set([
   'tmp', '.tmp',
 ]);
 
-export const IGNORED_SUFFIXES: readonly string[] = ['.DS_Store', '.log', '.lock', '.tsbuildinfo', '.egg-info', '.map'];
+// SQLite files last: a database in WAL mode rewrites its -wal and -shm files for as
+// long as it is open, and a project under a watched root that keeps one (a neighbouring
+// tool's own record did, in October 2026) is a stream of file:changed events with no
+// owner behind them: 357 changes in 156 events on the record, each one a git diff spent
+// on nothing and a project counted active.
+export const IGNORED_SUFFIXES: readonly string[] = ['.DS_Store', '.log', '.lock', '.tsbuildinfo', '.egg-info', '.map', '.db', '.db-wal', '.db-shm', '.db-journal', '.sqlite', '.sqlite-wal', '.sqlite-shm', '.sqlite3'];
 
 /**
  * Pure predicate, directly unit-testable — chokidar's `ignored` option and

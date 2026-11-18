@@ -6,6 +6,7 @@ import {
   redactWithPolicy,
   windowTitleForEgress,
 } from './redact/redact-policy.js';
+import { redactPii } from './redact/redact-pii.js';
 import { sanitizeLocalFilePath, stripUrlQuery } from './redact/redact-url.js';
 
 /**
@@ -152,9 +153,15 @@ const NO_PROCESS_CTX: RedactionCtx = { hidden: false, sensitive: false, processN
  * whichever one didn't match it.
  */
 function ctxFor(obj: Record<string, unknown>, parent: RedactionCtx): RedactionCtx {
-  const processName = typeof obj.processName === 'string' ? obj.processName : undefined;
-  if (processName === undefined) return parent;
-  return { hidden: isHiddenProcess(processName), sensitive: isSensitiveProcess(processName), processName };
+  const own = typeof obj.processName === 'string';
+  // The app by name OR bundle id: a localized name misses a list entry, the id does not.
+  const names = [obj.processName, obj.bundleId].filter((name): name is string => typeof name === 'string' && name !== '');
+  if (!own && names.length === 0) return parent;
+  return {
+    hidden: names.some(isHiddenProcess) || (!own && parent.hidden),
+    sensitive: names.some(isSensitiveProcess) || (!own && parent.sensitive),
+    processName: own ? (obj.processName as string) : parent.processName,
+  };
 }
 
 /**
@@ -180,8 +187,8 @@ function sanitizeStringField(key: string, value: string, ctx: RedactionCtx, tall
 }
 
 function sanitizeStringFieldValue(key: string, value: string, ctx: RedactionCtx): string {
-  if (key === 'processName') return ctx.hidden ? '[hidden]' : value;
-  if (key === 'windowTitle') return ctx.hidden ? '[hidden]' : windowTitleForEgress(ctx.processName, value);
+  if (key === 'processName' || key === 'bundleId') return ctx.hidden ? '[hidden]' : value;
+  if (key === 'windowTitle') return ctx.hidden ? '[hidden]' : ctx.sensitive ? '[private]' : windowTitleForEgress(ctx.processName, value);
   // P7 (docs/design/07) — screen-OCR text is handled BEFORE the generic `ctx.hidden` early-return
   // below (which returns other fields raw for a hidden app): OCR captures on-screen content, so a
   // hidden/sensitive app's screen text must be cleared, never passed through. Non-sensitive text
@@ -194,6 +201,10 @@ function sanitizeStringFieldValue(key: string, value: string, ctx: RedactionCtx)
   // and would keep a conversation about a password because a text editor was.
   // The app is not evidence either way, so it is not consulted.
   if (key === 'spokenText') return redactWithPolicy(value);
+  // A model-written goal (`screen:step`): the PII pass (an address, a card, a phone number), and never the private-app
+  // clear, which a pattern field gets. A private app keeps its goal on purpose, and the learned routes match the
+  // goal's words against the names on screen; the moment, the journal and the brief copy it as stored.
+  if (key === 'goal') return redactPii(value);
   // A hidden app's free text, paths and URLs are gone, not passed raw — hiding
   // an app must never redact LESS than marking it sensitive (audit S14).
   if (ctx.hidden) return PATTERN_FIELDS.has(key) || LOCAL_PATH_FIELDS.includes(key) || URL_FIELDS.has(key) ? '[hidden]' : value;

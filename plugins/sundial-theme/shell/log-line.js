@@ -13,7 +13,10 @@ export function drawLogLine(frame, lines, into) {
   let line = frame.key ? lines.get(frame.key) : undefined
   if (line === undefined) {
     line = el('div', { class: 'log-line' }, [el('span', { class: 'log-line-label' }), el('span', { class: 'log-line-status' })])
-    if (frame.key) lines.set(frame.key, line)
+    if (frame.key) {
+      line.dataset.key = frame.key
+      lines.set(frame.key, line)
+    }
     into().append(line)
   }
   if (frame.label) line.firstChild.textContent = frame.label

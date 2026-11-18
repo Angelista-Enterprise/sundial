@@ -71,6 +71,10 @@ export function describeEffect(effect: Effect): string {
       return `DecayFactConfidence factor=${effect.factor}`;
     case 'Notify':
       return `Notify ${effect.channel}`;
+    case 'Speak':
+      return `Speak ${effect.mode}${effect.sound ? ` ${effect.sound}` : ''}${effect.noticeKey ? ` ${effect.noticeKey}` : ''}`;
+    case 'Mark':
+      return `Mark ${effect.marks.length}`;
     case 'DeleteRows':
       return `DeleteRows olderThan=${effect.olderThan}${effect.signalTypes ? ` types=${effect.signalTypes.join(',')}` : ''}${effect.sessionId ? ` session=${effect.sessionId}` : ''}${effect.trim ? ` trim=${effect.trim}` : ''}`;
     case 'RecordPrediction':
@@ -113,7 +117,7 @@ export function journalShifted(entry: { ruleName: string | null } | null, ruleNa
 /**
  * Journal-vs-guarantee replay policy. Ported verbatim (see the daemon's two-phase journal rationale).
  * The journal names an effect by its position in the fold's output, so new rules shift it for a
- * replayed tail: deploy only through a clean restart (docs/deploy.md). `journalShifted` catches the
+ * replayed tail: deploy only through a clean `sundial restart`. `journalShifted` catches the
  * shift when the row names another rule.
  */
 export function replayDecision(status: EffectJournalStatus | null, guarantee: DeliveryGuarantee): 'run' | 'skip' | 'abandon' {
@@ -193,6 +197,8 @@ export function tablesTouched(effect: Effect): readonly string[] {
     case 'Judge':
     case 'RunAskHarvestBackfill':
     case 'Notify':
+    case 'Speak':
+    case 'Mark':
     case 'RunFactExtraction':
     case 'ResolveAliases':
     case 'RunConversationExtraction':

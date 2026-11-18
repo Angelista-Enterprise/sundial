@@ -23,8 +23,12 @@
 # web_fetch at all while the persona and the job briefs kept naming them
 # (found 2026-09-10 when an owner-requested research job had nothing to search
 # with).
+#
+# `fetch: false`: this plugin registers `web_fetch` itself (fetch-tool.js), a
+# capped extract with `find` and `offset`, which tool-web's url-only tool cannot
+# pass to a provider. Two tools by one name would fail to register.
 - id: tool-web
   disabled: false
   config:
-    fetch: true
+    fetch: false
     searchTimeoutMs: 60000

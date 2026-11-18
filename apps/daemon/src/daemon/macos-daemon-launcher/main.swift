@@ -1,3 +1,4 @@
+import CoreAudio
 import Foundation
 
 /// Sundial's data folder: $SUNDIAL_HOME when set (test installs, CI), else ~/.sundial.
@@ -60,12 +61,21 @@ private func readOcrConfig() -> (enabled: Bool, fullMs: Int, cursorMs: Int, regi
         return (false, 5000, 1500, 480, false)
     }
     let enabled = (ocr["enabled"] as? Bool) ?? false
-    // J3.3: `ocr.vision.enabled` makes the helper write a frame beside its text.
-    let vision = ((ocr["vision"] as? [String: Any])?["enabled"] as? Bool) ?? false
+    // J3.3: `ocr.vision.enabled` makes the helper write a frame beside its text;
+    // so does `ocr.jev.frames`, the owner's consent to send frames to Jev.
+    let vision = (((ocr["vision"] as? [String: Any])?["enabled"] as? Bool) ?? false) || (((ocr["jev"] as? [String: Any])?["frames"] as? Bool) ?? false)
     let full = (ocr["fullIntervalMs"] as? NSNumber)?.intValue ?? 5000
     let cursor = (ocr["cursorIntervalMs"] as? NSNumber)?.intValue ?? 1500
     let region = (ocr["cursorRegionPx"] as? NSNumber)?.intValue ?? 480
     return (enabled, full, cursor, region, vision)
+}
+
+/// The audio helper sends what the microphone heard to `whisperUrl`: only this Mac may hear it. An http(s) address on
+/// 127.0.0.1, localhost or ::1, nothing else (no user part): a config.json that names another host gets the default.
+func loopbackURL(_ text: String) -> Bool {
+    guard let url = URL(string: text), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.user == nil, url.password == nil,
+          let host = url.host?.lowercased() else { return false }
+    return ["127.0.0.1", "localhost", "::1", "[::1]"].contains(host)
 }
 
 /// Read the ambient-hearing opt-in, the same shape `readOcrConfig` reads for
@@ -90,7 +100,11 @@ private func readAudioConfig() -> (enabled: Bool, whisperUrl: String, modelPath:
     }
     return (
         (audio["enabled"] as? Bool) ?? defaults.0,
-        (audio["whisperUrl"] as? String) ?? defaults.1,
+        (audio["whisperUrl"] as? String).flatMap { url in
+            if loopbackURL(url) { return url }
+            fputs("[sundial-daemon] audio.whisperUrl is not on this Mac (127.0.0.1, localhost or ::1): using \(defaults.1)\n", stderr)
+            return nil
+        } ?? defaults.1,
         (audio["modelPath"] as? String) ?? defaults.2,
         (audio["vadModelPath"] as? String) ?? defaults.3,
         (audio["silenceFlushMs"] as? NSNumber)?.intValue ?? defaults.4,
@@ -115,7 +129,8 @@ private func spawnSidecar(executable: URL, arguments: [String]) {
     task.executableURL = executable
     task.arguments = arguments
     task.standardOutput = FileHandle.nullDevice
-    task.standardError = FileHandle.nullDevice
+    // Inherited: a helper's own reason for exiting lands in sidecars.log beside the launcher's "exited" line.
+    task.standardError = FileHandle.standardError
     let startedAt = Date()
     task.terminationHandler = { finished in
         DispatchQueue.main.async {
@@ -124,7 +139,7 @@ private func spawnSidecar(executable: URL, arguments: [String]) {
             if Date().timeIntervalSince(startedAt) > 60 { backoff[name] = 1 }
             let wait = backoff[name] ?? 1
             backoff[name] = min(wait * 2, 60)
-            fputs("[sundial-daemon] \(name) exited (\(finished.terminationStatus)); restarting in \(Int(wait))s\n", stderr)
+            fputs("[sundial-daemon] \(ISO8601DateFormatter().string(from: Date())) \(name) exited (\(finished.terminationStatus)); restarting in \(Int(wait))s\n", stderr)
             DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
                 if !shuttingDown { spawnSidecar(executable: executable, arguments: arguments) }
             }
@@ -197,15 +212,46 @@ private func writeAvContextSidecar(to path: String) {
     try? FileManager.default.moveItem(atPath: tmpPath, toPath: path)
 }
 
+/// One queue for every write of the AV file: the timer and the listener never share the tmp file.
+private let avQueue = DispatchQueue(label: "dev.sundial.av", qos: .utility)
+private var micWatched = Set<AudioObjectID>()
+
+/// CoreAudio says "the microphone changed hands": write the state now, not at the next tick,
+/// so a knock does not land in a call that just started. Only a trigger; the answer stays the
+/// per-process query. A listener is never removed: an old device's listener writes the same file.
+private func watchMic(avFile: String) {
+    let write = {
+        writeAvContextSidecar(to: avFile)
+        // The per-process list can be a moment behind the device.
+        avQueue.asyncAfter(deadline: .now() + 0.3) { writeAvContextSidecar(to: avFile) }
+    }
+    let system = AudioObjectID(kAudioObjectSystemObject)
+    var input = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    let attach = {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var running = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        var device = AudioObjectID(kAudioObjectUnknown)
+        guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &device) == noErr, device != kAudioObjectUnknown, micWatched.insert(device).inserted else { return }
+        AudioObjectAddPropertyListenerBlock(device, &running, avQueue) { _, _ in write() }
+    }
+    avQueue.async(execute: attach)
+    AudioObjectAddPropertyListenerBlock(system, &input, avQueue) { _, _ in
+        attach()
+        write()
+    }
+}
+
 private func startAvPolling(avFile: String) {
-    writeAvContextSidecar(to: avFile)
-    let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+    avQueue.sync { writeAvContextSidecar(to: avFile) }
+    let timer = DispatchSource.makeTimerSource(queue: avQueue)
     timer.schedule(deadline: .now() + 1, repeating: 1)
     timer.setEventHandler {
         writeAvContextSidecar(to: avFile)
     }
     timer.resume()
     avTimer = timer
+    watchMic(avFile: avFile)
 }
 
 /// Real signal handling: cleanupSidecars() must run on SIGTERM/SIGINT (the

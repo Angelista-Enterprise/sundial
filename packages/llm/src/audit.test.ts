@@ -54,4 +54,17 @@ describe('openLlmAudit (W3: the one llm_audit writer)', () => {
       setLlmAuditListener(null);
     }
   });
+
+  it('Set 2 R4: a call another route answered settles under that route, in the row and for the breaker', async () => {
+    const heard: { route: string }[] = [];
+    setLlmAuditListener((o) => heard.push(o));
+    try {
+      const fell = await openLlmAudit({ id: 'call-5', momentId: null, purpose: 'ask', model: 'main/fast', prompt: 'p', route: 'main' });
+      await fell.settle({ respondedAt: 'now', latencyMs: 5, success: true, route: 'backup', model: 'backup/slow' });
+      expect(heard.map((o) => o.route)).toEqual(['backup']);
+      expect(updateLlmAudit.mock.calls.at(-1)).toEqual(['call-5', { respondedAt: 'now', latencyMs: 5, success: true, model: 'backup/slow', source: 'backup' }]);
+    } finally {
+      setLlmAuditListener(null);
+    }
+  });
 });

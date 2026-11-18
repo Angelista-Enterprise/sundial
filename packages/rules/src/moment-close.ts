@@ -2,11 +2,12 @@ import { deriveId } from '@sundial/helpers/derive-id.js';
 import { isRedactedPlaceholder } from '@sundial/helpers/redact/redact-policy.js';
 import { isSystemProcess } from '@sundial/helpers/window-classification.js';
 import { defaultMomentRollupExtras } from '@sundial/kernel/initial-state.js';
-import type { Effect, KernelState, MomentRollup, MomentRow, Rule, SanitizedEvent, WindowAttribution } from '@sundial/kernel/types.js';
+import type { Effect, KernelState, MomentActs, MomentRollup, MomentRow, OpenMoment, Rule, SanitizedEvent, WindowAttribution } from '@sundial/kernel/types.js';
 import { computeMomentImportance } from '@sundial/memory/score.js';
 import { resolveAttribution, type WindowLocatorInput } from './attribution.js';
 import { computeFocusScore, focusQuality } from './focus-score.js';
 import { computeAudioContext, computeMomentKind } from './moment-kind.js';
+import { addActs } from './moment-rollup.js';
 
 interface WindowChangedPayload {
   processName?: string;
@@ -62,7 +63,32 @@ const BRIEF_EXCURSION_MS = 2 * 60_000;
 export const MIN_MOMENT_DURATION_MS = 20_000;
 const MAX_ROLLUP_TITLES = 50;
 
-type OpenMoment = NonNullable<KernelState['moment']>;
+const MAX_INTERRUPTIONS = 50;
+
+/**
+ * The dropped excursion's work, folded into the moment it interrupted. Counts add,
+ * lists union, flags OR, a scalar fills a hole and never overwrites one: the same
+ * carry-over `openNewMoment` does for a successor, applied to a predecessor. Written
+ * generically so a rollup field added later is carried without a line here.
+ */
+function mergeRollup(into: MomentRollup, dropped: MomentRollup): MomentRollup {
+  const out: Record<string, unknown> = { ...into };
+  for (const [key, value] of Object.entries(dropped)) {
+    if (key === 'processName' || key === 'projectSource' || key === 'projectConfidence' || value === null || value === undefined) continue;
+    const have = out[key];
+    if (key === 'acts') {
+      out.acts = addActs(have as MomentActs | undefined, value as MomentActs);
+      continue;
+    }
+    if (typeof value === 'number') out[key] = (typeof have === 'number' ? have : 0) + value;
+    else if (typeof value === 'boolean') out[key] = have === true || value;
+    else if (Array.isArray(value)) out[key] = [...new Set([...(Array.isArray(have) ? have : []), ...value])];
+    else if (typeof value === 'object') out[key] = Object.fromEntries(Object.entries(value as Record<string, number>).map(([k, n]) => [k, ((have as Record<string, number> | undefined)?.[k] ?? 0) + n]));
+    else if (have === null || have === undefined) out[key] = value;
+  }
+  out.windowTitles = (out.windowTitles as string[]).slice(-MAX_ROLLUP_TITLES);
+  return out as unknown as MomentRollup;
+}
 
 /**
  * D2-adjacent fix, discovered while starting Phase D (docs/audit/
@@ -153,7 +179,10 @@ function openNewMoment(
             // in fact shipped.
             pr: carryOverRollup.pr,
             screenRefs: carryOverRollup.screenRefs,
+            ...(carryOverRollup.screenSeen ? { screenSeen: carryOverRollup.screenSeen } : {}),
             symbolsEdited: carryOverRollup.symbolsEdited,
+            editedLines: carryOverRollup.editedLines,
+            ...(carryOverRollup.acts ? { acts: carryOverRollup.acts } : {}),
           }
         : defaultMomentRollupExtras),
       // Attribution provenance rides on the NEWLY-opened moment's own
@@ -309,7 +338,7 @@ function closeMoment(
   const rollup = absorbed.rollup;
 
   return {
-    closed: { projectId, confidence: rollup.projectConfidence, endedAt: endTs, durationMs },
+    closed: { projectId, confidence: rollup.projectConfidence, endedAt: endTs, durationMs, open: moment },
     effects: [
       {
         type: 'WriteDB',
@@ -452,8 +481,9 @@ export const momentClose: Rule = (state, event) => {
     const currentTitle = s.window.active?.windowTitle ?? '';
     // A max-duration split continues the same activity — keep the active
     // window's current attribution rather than re-resolving from a tick.
+    const next = openNewMoment(event, s.moment.processName, currentTitle, s.window.attribution);
     return {
-      state: { ...s, moment: openNewMoment(event, s.moment.processName, currentTitle, s.window.attribution), project: { ...s.project, lastClosedMoment: closed } },
+      state: { ...s, moment: { ...next, rollup: { ...next.rollup, continuesMomentId: s.moment.id } }, project: { ...s.project, lastClosedMoment: closed } },
       effects: [...pre.effects, ...effects],
     };
   }
@@ -481,7 +511,23 @@ export const momentClose: Rule = (state, event) => {
   }
 
   const { effects, carryOverRollup, closed } = closeMoment(open, event.ts, s.project.current, resolveLocation(s), s.project.lastClosedMoment, s.config.leisureRules);
-  const nextMoment = enteringGap ? null : openNewMoment(event, processName, windowTitle, attribution, carryOverRollup, carryOverRollup ? (open.carriedFrom ?? open.startTime) : null);
+
+  // A flick away and straight back: the dropped excursion touched the moment written
+  // just before it, and the window now in front is that moment's own activity. Reopen
+  // it (same id, same start; the row is upserted longer at its next close) and keep
+  // the flick as an interruption, instead of writing a touching twin. Measured on the
+  // record since 2026-09-01: 71% of same-app touching pairs were exactly this.
+  const last = s.project.lastClosedMoment;
+  const droppedStart = open.carriedFrom ?? open.startTime;
+  if (carryOverRollup && !enteringGap && last?.open && last.endedAt === droppedStart && last.open.processName === processName && last.open.projectId === attribution.projectId) {
+    const interruption = { processName: open.processName, at: droppedStart, durationMs: Date.parse(event.ts) - Date.parse(droppedStart) };
+    const merged = mergeRollup(last.open.rollup, { ...carryOverRollup, interruptions: [] });
+    const interruptions = [...(merged.interruptions ?? []), interruption].slice(-MAX_INTERRUPTIONS);
+    const reopened: OpenMoment = { ...last.open, rollup: { ...merged, windowTitles: addTitle(merged.windowTitles, windowTitle), interruptions }, intent: { status: 'none' } };
+    return { state: { ...s, moment: reopened }, effects: pre.effects };
+  }
+
+  const nextMoment = enteringGap ? null : openNewMoment(event, processName, windowTitle, attribution, carryOverRollup, carryOverRollup ? droppedStart : null);
   return { state: { ...s, moment: nextMoment, project: { ...s.project, lastClosedMoment: closed } }, effects: [...pre.effects, ...effects] };
 };
 

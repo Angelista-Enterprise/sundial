@@ -1,0 +1,7 @@
+# Bundle patch for the sundial-nodus plugin: one insert row.
+#
+# inject holds it back until the tool registry and the kernel are up, so row
+# order is not load-bearing; it sits after sundial-tools for readability.
+- insert:
+    - id: sundial-nodus
+      name: '@sundial/dsh-nodus'

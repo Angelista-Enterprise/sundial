@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { isTunnelInterface, parseHardwareDevices } from './location-network-capture.js';
 import {
   inferLocationServicesGrant,
   isIncompleteWifiRead,
@@ -105,5 +106,14 @@ describe('inferLocationServicesGrant', () => {
     const details = parseMacInterfaceDetails(out);
     expect(details.sname).toBe('Pat-Iphone');
     expect(inferLocationServicesGrant(details)).toBe(false);
+  });
+});
+
+describe('a tunnel is not a place', () => {
+  it('names the tunnel interfaces and parses the hardware device list in order', () => {
+    expect(['utun13', 'ipsec0', 'ppp0', 'wg0'].map(isTunnelInterface)).toEqual([true, true, true, true]);
+    expect(['en0', 'bridge0', 'en4'].map(isTunnelInterface)).toEqual([false, false, false]);
+    expect(parseHardwareDevices('Hardware Port: Wi-Fi\nDevice: en0\nEthernet Address: 00:00\n\nHardware Port: Thunderbolt Ethernet\nDevice: en4\n')).toEqual(['en0', 'en4']);
+    expect(parseHardwareDevices(null)).toEqual([]);
   });
 });

@@ -106,14 +106,21 @@ function trackBranch(state: KernelState, event: SanitizedEvent): { state: Kernel
       merged: prFinished(moment.rollup.pr),
       pr: moment.rollup.pr ?? null,
     };
+    // Oldest-first eviction. A thread that has been open longest without
+    // being closed is the one the staleness sweep is about to take anyway, so it
+    // closes as `went-quiet` now: dropped from state alone, its row stayed open
+    // in the table forever, listed by the tools and out of the close path's reach.
+    const all = [...state.commitments.open, opened];
+    const evicted = all.slice(0, -MAX_OPEN);
     return {
       state: {
         ...state,
-        // Oldest-first eviction. A thread that has been open longest without
-        // being closed is the one the staleness sweep is about to take anyway.
-        commitments: { ...state.commitments, open: [...state.commitments.open, opened].slice(-MAX_OPEN) },
+        commitments: { ...state.commitments, open: all.slice(-MAX_OPEN) },
       },
-      effects: [{ type: 'WriteDB', table: 'commitments', row: rowFor(opened, null) }],
+      effects: [
+        { type: 'WriteDB', table: 'commitments', row: rowFor(opened, null) },
+        ...evicted.map((c): Effect => ({ type: 'WriteDB', table: 'commitments', row: rowFor(c, { closedAt: event.ts, closedBecause: 'went-quiet' }) })),
+      ],
     };
   }
 
@@ -395,10 +402,14 @@ function closeStale(state: KernelState, event: SanitizedEvent): { state: KernelS
  * `entityExtract` carries and for the same reason: it reads the about-to-close
  * `state.moment`.
  */
-/** Close one open thread for a reason. Unknown id: nothing. */
-function closeThread(state: KernelState, id: string, closedBecause: ClosedCommitment['closedBecause'], ts: string): { state: KernelState; effects: Effect[] } {
+/**
+ * Close one open thread for a reason. A thread no longer in state but still open
+ * in the table (evicted before eviction closed it) closes from the `row` the
+ * owner's close carried from the table. Unknown id: nothing.
+ */
+function closeThread(state: KernelState, id: string, closedBecause: ClosedCommitment['closedBecause'], ts: string, row?: CommitmentRow): { state: KernelState; effects: Effect[] } {
   const thread = state.commitments.open.find((c) => c.id === id);
-  if (!thread) return { state, effects: [] };
+  if (!thread) return row?.id === id ? { state, effects: [{ type: 'WriteDB', table: 'commitments', row: { ...row, closedAt: ts, closedBecause } }] } : { state, effects: [] };
   const closed: ClosedCommitment = { ...thread, closedAt: ts, closedBecause };
   return {
     state: {
@@ -409,15 +420,79 @@ function closeThread(state: KernelState, id: string, closedBecause: ClosedCommit
   };
 }
 
+/** Plan 15 4.1: a branch thread this long quiet is asked about once, before the sweep closes it as went-quiet at 14 days. */
+export const OUTCOME_ASK_AFTER_MS = 10 * 24 * 60 * 60 * 1000;
+const OUTCOME_PREFIX = 'owner-ask:thread-';
+export const OUTCOME_CHOICES = ['Done', 'Dropped', 'Still open'];
+
+/** At a task boundary, one question a day: how did the most-worked quiet thread end? */
+function askOutcome(state: KernelState, event: SanitizedEvent): { state: KernelState; effects: Effect[] } {
+  const day = event.ts.slice(0, 10);
+  if (state.commitments.outcomeAskDay === day) return { state, effects: [] };
+  const now = Date.parse(event.ts);
+  const quiet = (c: Commitment) => now - Date.parse(c.lastTouchedAt);
+  const thread = state.commitments.open
+    .filter((c) => c.source === 'git-branch' && !c.merged && !AGENT_BRANCH.test(c.branch) && c.touches >= 2)
+    .filter((c) => quiet(c) >= OUTCOME_ASK_AFTER_MS && quiet(c) < STALE_AFTER_MS)
+    .filter((c) => c.outcomeAskedAt === undefined || c.outcomeAskedAt < c.lastTouchedAt)
+    .sort((a, b) => b.touches - a.touches || a.id.localeCompare(b.id))[0];
+  if (!thread) return { state, effects: [] };
+  const days = Math.round(quiet(thread) / 86_400_000);
+  const asked = { ...thread, outcomeAskedAt: event.ts };
+  return {
+    state: { ...state, commitments: { ...state.commitments, outcomeAskDay: day, open: state.commitments.open.map((c) => (c.id === thread.id ? asked : c)) } },
+    effects: [
+      {
+        type: 'EmitEvent',
+        event: {
+          id: deriveId(event.ts, event.id, 'commitment-track', `outcome:${thread.id}`),
+          type: 'ask:owner-opened',
+          ts: event.ts,
+          payload: {
+            askId: `${OUTCOME_PREFIX}${thread.id.replace(/^commitment:/, '')}`,
+            question: `${thread.name} has been quiet for ${days} days. How did it end?`,
+            reason: `${thread.touches} sessions${thread.projectName ? ` in ${thread.projectName}` : ''}`,
+            choices: OUTCOME_CHOICES,
+          },
+        },
+      },
+    ],
+  };
+}
+
+/** The owner's answer to an outcome ask: done and dropped close the thread with that outcome; still open starts its quiet clock again. */
+function answerOutcome(state: KernelState, event: SanitizedEvent): { state: KernelState; effects: Effect[] } {
+  const p = event.payload as { askId?: unknown; answer?: unknown };
+  if (typeof p.askId !== 'string' || !p.askId.startsWith(OUTCOME_PREFIX)) return { state, effects: [] };
+  const id = `commitment:${p.askId.slice(OUTCOME_PREFIX.length)}`;
+  const answer = typeof p.answer === 'string' ? p.answer.trim().toLowerCase() : '';
+  if (/^(done|finished|klaar|af)\b/.test(answer)) return closeThread(state, id, 'kept', event.ts);
+  if (/^(dropped|stopped|gestopt)\b/.test(answer)) return closeThread(state, id, 'dropped', event.ts);
+  if (!/^(still open|open|nog open)\b/.test(answer)) return { state, effects: [] };
+  return { state: { ...state, commitments: { ...state.commitments, open: state.commitments.open.map((c) => (c.id === id ? { ...c, lastTouchedAt: event.ts } : c)) } }, effects: [] };
+}
+
 export const commitmentTrack: Rule = (state, event) => {
+  if (event.type === 'boundary:reached') return askOutcome(state, event);
+  if (event.type === 'ask:owner-answered') return answerOutcome(state, event);
   // A promise heard aloud (`commitment:heard`) is `promiseTrack`'s since UC1:
   // promises have their own list and cap. A speech thread opened here before
   // that still closes here, by the owner or the sweep.
-  if (event.type === 'commitment:resolved' || event.type === 'commitment:closed') {
-    const { id, due } = event.payload as { id?: unknown; due?: unknown };
+  if (event.type === 'commitment:closed') {
+    const { id, due, row } = event.payload as { id?: unknown; due?: unknown; row?: CommitmentRow };
     // A new due date moves a promise (`promiseTrack`); it never closes a thread.
     if (due !== undefined) return { state, effects: [] };
-    return typeof id === 'string' ? closeThread(state, id, event.type === 'commitment:resolved' ? 'seen-done' : 'owner', event.ts) : { state, effects: [] };
+    return typeof id === 'string' ? closeThread(state, id, 'owner', event.ts, row) : { state, effects: [] };
+  }
+  // A merged pull request finishes its branch's thread. Read from the event, not
+  // from a moment: the owner leaves the branch once it merges, so no closing
+  // moment on it ever carries the MERGED status (a branch merged at 09:42 was
+  // still "open" that evening). Matched by branch alone: a thread's project is
+  // the weaker evidence.
+  if (event.type === 'git:pr-status') {
+    const { branch, state: prState } = event.payload as { branch?: unknown; state?: unknown };
+    const thread = prState === 'MERGED' && typeof branch === 'string' ? state.commitments.open.find((c) => c.branch === branch) : undefined;
+    return thread ? closeThread(state, thread.id, 'merged', event.ts) : { state, effects: [] };
   }
   if (event.type === 'clock:tick') {
     const faded = noticeFading(state, event, new Date(event.ts).getTime());

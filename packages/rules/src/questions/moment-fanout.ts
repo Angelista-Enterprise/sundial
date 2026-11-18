@@ -26,16 +26,11 @@ export interface MomentFanoutInput {
   durationMs: number;
   /** J2.7: the owner's open goals, as short labels, in the slot order the consuming rule keeps (≤ `MAX_GOAL_SLOTS`). */
   openGoals?: string[];
-  /** J4.4: promises heard earlier and still open (`commitments` rows with `source: speech`), as the words that were heard, ≤ `MAX_PROMISE_SLOTS`. */
-  openPromises?: string[];
   /** J3.5: vault notes edited today (paths inside the vault, `.md` stripped), newest first, ≤ 8 — evidence for `subject`, not a criterion of it. */
   notesEditedToday?: string[];
   /** J3.6: subjects of mail received in the last hours, newest first, ≤ 5. Evidence only. */
   mailSubjects?: string[];
 }
-
-export const MAX_PROMISE_SLOTS = 4;
-export const promiseSlot = (i: number): string => `resolves_promise_p${i}`;
 
 /** Six fixed slots, as `listen-reply` has: a goal's question is stable wording pointing at `open_goals.gN`, never the goal's own text. */
 export const MAX_GOAL_SLOTS = 6;
@@ -81,9 +76,6 @@ export function momentFanoutState(input: MomentFanoutInput): Record<string, unkn
   // J2.7: the goals, as the owner stated them (law 3), clipped, under fixed keys.
   const goals = (input.openGoals ?? []).slice(0, MAX_GOAL_SLOTS);
   if (goals.length > 0) state.open_goals = Object.fromEntries(goals.map((g, i) => [`g${i}`, clip(g, 200)]));
-  // J4.4: the promises heard earlier, as heard (already sanitized at ingest), under fixed keys.
-  const promises = (input.openPromises ?? []).slice(0, MAX_PROMISE_SLOTS);
-  if (promises.length > 0) state.open_promises = Object.fromEntries(promises.map((t, i) => [`p${i}`, clip(t, 200)]));
   return state;
 }
 
@@ -149,29 +141,32 @@ export const GOAL_ADVANCE_QUESTIONS: Record<string, ReturnType<typeof noul>> = k
   Array.from({ length: MAX_GOAL_SLOTS }, (_, i) => [goalAdvanceSlot(i), noul(`Was time in this session spent on the goal described in \`open_goals.g${i}\`, so that the goal moved forward?`)]),
 ));
 
-/** One noul per open promise: does this session show it being kept? Fixed wording, four ids. */
-export const PROMISE_RESOLVE_QUESTIONS: Record<string, ReturnType<typeof noul>> = keyed('moment-fanout', Object.fromEntries(
-  Array.from({ length: MAX_PROMISE_SLOTS }, (_, i) => [promiseSlot(i), noul(`Does this session show the promise quoted in \`open_promises.p${i}\` being kept — the thing promised was sent, done, delivered or handed over?`)]),
-));
+/*
+ * J4.4 asked one more noul per open promise ("does this session show the
+ * promise being kept?"). Dropped 2026-11-16: 4,763 answers since 2026-09-23,
+ * highest 0.23 against a 0.7 threshold, so no promise ever closed on it. A
+ * replay of every recorded answer found no threshold that separates: at 0.2 it
+ * closes 1 of the 5 kept promises and 1 that was not; at 0.15, 3 kept and 4
+ * not. A promise closes on matched evidence, the owner's answer or the
+ * deadline ask in `promiseTrack`.
+ */
 
-/** The set's questions: the fixed seven, plus one slot per open goal, plus one per open promise. */
-export function momentFanoutQuestions(goalCount: number, promiseCount = 0): Record<string, ReturnType<typeof noul>> {
+/** The set's questions: the fixed seven, plus one slot per open goal. */
+export function momentFanoutQuestions(goalCount: number): Record<string, ReturnType<typeof noul>> {
   const g = Math.min(goalCount, MAX_GOAL_SLOTS);
-  const pr = Math.min(promiseCount, MAX_PROMISE_SLOTS);
-  if (g === 0 && pr === 0) return MOMENT_FANOUT_QUESTIONS;
+  if (g === 0) return MOMENT_FANOUT_QUESTIONS;
   return {
     ...MOMENT_FANOUT_QUESTIONS,
     ...Object.fromEntries(Array.from({ length: g }, (_, i) => [goalAdvanceSlot(i), GOAL_ADVANCE_QUESTIONS[goalAdvanceSlot(i)]])),
-    ...Object.fromEntries(Array.from({ length: pr }, (_, i) => [promiseSlot(i), PROMISE_RESOLVE_QUESTIONS[promiseSlot(i)]])),
   };
 }
 
 export const momentFanout: QuestionSet<[MomentFanoutInput]> = {
   id: 'moment-fanout',
-  build: (input) => ({ state: momentFanoutState(input), questions: momentFanoutQuestions(input.openGoals?.length ?? 0, input.openPromises?.length ?? 0) }),
+  build: (input) => ({ state: momentFanoutState(input), questions: momentFanoutQuestions(input.openGoals?.length ?? 0) }),
   samples: () => [
     // Full width first: `judgementTrack` reads a set's ids off its first sample.
-    [{ rollup: baseRollup(), projectId: 'sundial', durationMs: 31 * 60_000, openGoals: ['a', 'b', 'c', 'd', 'e', 'f'], openPromises: ['ik stuur het vanavond door', 'I will send the deck tomorrow', 'p3', 'p4'] }],
+    [{ rollup: baseRollup(), projectId: 'sundial', durationMs: 31 * 60_000, openGoals: ['a', 'b', 'c', 'd', 'e', 'f'] }],
     [{ rollup: baseRollup({ processName: 'zoom.us', micActive: true, calendarActive: true, meetingTitle: 'Standup', meetingAttendees: ['a', 'b'], spokenExcerpt: 'x'.repeat(2000) }), projectId: null, durationMs: 15 * 60_000 }],
     [{ rollup: baseRollup({ windowTitles: Array.from({ length: 40 }, (_, i) => `tab ${i}`), notableCommands: Array.from({ length: 30 }, (_, i) => `cmd ${i}`) }), projectId: null, durationMs: 3 * 60_000 }],
   ],

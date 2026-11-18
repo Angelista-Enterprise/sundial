@@ -95,6 +95,15 @@ Gnomon answers from the record through its `gnomon_*` tools. When it refers to
 a card it links it, and it may place cards on the board, draw a figure or walk
 you through something step by step (see Auto mode below).
 
+## The slip, and working in your apps
+
+Press **⌥Space** anywhere to bring up the slip, a thin panel over your other
+apps. Type to Gnomon there, or hold the key and speak. The slip shows what
+Gnomon is doing, the step it is on, and any question it has, with a ring on the
+control the question is about. Gnomon can look at an app, point at a control,
+guide you through steps and, once you allow it, press and type for you, asking
+before every final step. All of it: [screen-acting.md](screen-acting.md).
+
 ## When Gnomon speaks first
 
 Sundial keeps noticing things: a long stretch with no project, a meeting coming
@@ -103,6 +112,16 @@ anything. A strong one appears in the Gnomon conversation, marked **Gnomon,
 unprompted**. A weaker one is not pushed to you; Gnomon has it in mind the
 next time you talk. Gnomon may hold a notice for a better moment, the same notice
 fades each time it repeats, and there is a daily limit on the quieter kind.
+
+When you stay in one window for a few minutes, Gnomon may ask your model once
+whether it can help there. The answer goes through the same bar, and at most
+four offers a day are said (`experiments.offerNow: false` turns this off).
+
+**Gnomon proposes** (under *Left for you*) holds what Gnomon learned and wants
+to change: a fix to its own failed screen steps, a route worth keeping as a
+skill, a chore you repeat each morning, a rule idea. Nothing applies before you
+press **Keep**. The **About you** card lists what Gnomon believes about you,
+each belief with its source, **Fix** and **Wrong**.
 
 Each notice has three buttons. They go straight to the record, with no model
 call:
@@ -162,7 +181,10 @@ asks. Press **Allow once** or **No**. An unanswered question is refused.
 What asks under **Ask**:
 
 - Running a shell command, writing to your calendar, and acting on a web page.
-  These tools are off until you turn them on in `config.json`:
+  A screen step (`screen_act`) asks under Ask and Auto alike, and a final step
+  such as a send or a delete always asks ([screen-acting.md](screen-acting.md)).
+  These tools are off until you turn them on with **Settings → Outward
+  actions**, or one by one in `config.json`:
 
   ```json
   { "actions": { "outward": { "run_shell": "auto", "calendar_create": "ask", "web_act": "ask" } } }
@@ -222,9 +244,17 @@ The **Engine room** card shows how Gnomon itself is doing, in tabs:
 
 ## The record in Claude Code
 
-`sundial mcp` runs a read-only MCP server over stdio. MCP (Model Context
-Protocol) lets an agent such as Claude Code call tools. This server reads the
-same database the running Sundial writes, and every tool it offers is a read.
+`sundial mcp` runs an MCP server over stdio (`sundial mcp --http` serves the
+same on `127.0.0.1:3090/mcp` behind a token). MCP (Model Context Protocol) lets
+an agent such as Claude Code call tools. This server reads the same database
+the running Sundial writes. Most tools are reads. The writes only carry your
+own words, and the running Sundial applies them: `gnomon_feedback`,
+`gnomon_assert` (a fact you state), `gnomon_owner_answer` (your answer to
+Gnomon's question), `gnomon_notice_seen`, `gnomon_rule_verdict`,
+`gnomon_ingest`, and the rule tools (`gnomon_adopt_rule`, `gnomon_drop_rule`,
+`gnomon_pause_rule`, `gnomon_resume_rule`, `gnomon_reach_revoke`), which work
+only for a host opened with the owner token. No MCP
+tool acts in your apps.
 
 `node bin/sundial install` offers to add it to Claude Code at the end. To add
 it yourself, from the repository folder:
@@ -241,7 +271,7 @@ node bin/sundial mcp
 ```
 
 What Claude Code reads through it goes to Claude Code's own model provider.
-The tools:
+The main read tools (the host's tool list has them all):
 
 | Tool | Answers |
 |---|---|

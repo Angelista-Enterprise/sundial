@@ -29,6 +29,13 @@ describe('coerceArgs', () => {
     expect(fits(fixed)).toBe(true);
   });
 
+  it('a list given by its one-item name becomes the list (query for queries)', () => {
+    const fixed = coerceArgs(tool.parameters, { query: 'weather today', weeks: 1 });
+    expect(fixed).toEqual({ queries: ['weather today'], weeks: 1 });
+    expect(fits(fixed)).toBe(true);
+    expect(coerceArgs(tool.parameters, { queries: ['a'], query: 'b' })).toEqual({ queries: ['a'], query: 'b' });
+  });
+
   it('returns the same object when nothing needed changing', () => {
     const args = Object.freeze({ weeks: 2, queries: Object.freeze(['a']), name: '7' });
     expect(coerceArgs(tool.parameters, args)).toBe(args);

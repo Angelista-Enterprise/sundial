@@ -135,11 +135,93 @@ export function sessionTurns(turns: TurnRow[], id: string) {
 const str = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null);
 const HISTORY_DAYS = 7;
 
+export interface PullRequest {
+  repo: string | null;
+  number: number;
+  title: string;
+  branch: string | null;
+  base: string | null;
+  state: string;
+  review: string | null;
+  checks: string | null;
+  additions: number | null;
+  deletions: number | null;
+  files: number | null;
+  /** GitHub's own opening time; the first sighting when the record has none. */
+  openedAt: string;
+  /** The last time the sensor reported it: an open PR is re-reported at least every six hours while Sundial runs. */
+  lastSeen: string;
+  url: string | null;
+}
+
+const PR_DAYS = 30;
+/** A PR closed this recently still counts as news beside the open ones. */
+const CLOSED_DAYS = 7;
+/**
+ * An open PR is re-reported at least every six hours while Sundial runs, so an
+ * OPEN last heard of before this is not known to be open: before the search
+ * (2026-11-04) a PR was only seen while its branch was checked out, and the
+ * live record held seven "open" PRs of which two were.
+ */
+export const PR_CONFIRMED_MS = 24 * 3_600_000;
+const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
+/** Each PR once, in its latest state: open first, newest first; then the ones merged or closed in the last week. */
+export function buildPullRequests(rows: { at: string; data: Record<string, unknown> }[], now: string, all = false): PullRequest[] {
+  const by = new Map<string, PullRequest>();
+  for (const { at, data: d } of [...rows].sort((a, b) => a.at.localeCompare(b.at))) {
+    const number = num(d.number);
+    if (number === null) continue;
+    const repo = str(d.repo) ?? str(d.url)?.match(/github\.com\/([^/]+\/[^/]+)\/pull\//)?.[1] ?? str(d.cwd)?.replace(/\/+$/, '').split('/').pop() ?? null;
+    const key = `${repo}#${number}`;
+    const was = by.get(key);
+    by.set(key, {
+      repo,
+      number,
+      title: str(d.title) ?? was?.title ?? '',
+      branch: str(d.branch) ?? was?.branch ?? null,
+      base: str(d.base) ?? was?.base ?? null,
+      state: str(d.state) ?? was?.state ?? 'OPEN',
+      review: str(d.reviewState) ?? was?.review ?? null,
+      checks: str(d.checkState) ?? was?.checks ?? null,
+      additions: num(d.additions) ?? was?.additions ?? null,
+      deletions: num(d.deletions) ?? was?.deletions ?? null,
+      files: num(d.changedFiles) ?? was?.files ?? null,
+      openedAt: str(d.createdAt) ?? was?.openedAt ?? at,
+      lastSeen: at,
+      url: str(d.url) ?? was?.url ?? null,
+    });
+  }
+  const since = new Date(Date.parse(now) - CLOSED_DAYS * 86_400_000).toISOString();
+  const confirmed = new Date(Date.parse(now) - PR_CONFIRMED_MS).toISOString();
+  const open = (p: PullRequest) => p.state === 'OPEN' || p.state === 'DRAFT';
+  for (const p of by.values()) if (open(p) && p.lastSeen < confirmed) p.state = 'UNCONFIRMED';
+  return [...by.values()]
+    .filter((p) => open(p) || (all && p.lastSeen >= since))
+    .sort((a, b) => Number(open(b)) - Number(open(a)) || b.openedAt.localeCompare(a.openedAt));
+}
+
 export const AGENT_TOOLS: GnomonTool[] = [
+  {
+    name: 'gnomon_pull_requests',
+    description:
+      "The owner's pull requests, in ONE call: every open PR they authored in any repo (GitHub's own search, polled every five minutes while Sundial runs), plus with `all` the ones merged, closed or unconfirmed in the last week. Per PR: `repo`, `number`, `title`, `branch` into `base`, `state` (OPEN, DRAFT, MERGED, CLOSED, or UNCONFIRMED: open when last seen, not seen for over a day), `review` (pending, commented, changes_requested, approved), `checks` (none, pending, success, failure, cancelled), the size (`additions`, `deletions`, `files`), `openedAt` and `lastSeen`. Use this for \"how many PRs do I have open\", \"which PRs wait on review\", \"is CI green on my PR\", \"what did I ship this week\". Count only OPEN and DRAFT as open. Use it INSTEAD of `gh` in the shell.",
+    schema: {
+      all: z.boolean().optional().describe('true = also the PRs merged or closed in the last 7 days'),
+    },
+    readOnly: true,
+    handler: async ({ all }, env) => {
+      const now = env.now.toISOString();
+      const rows = await getAllSignalsInRange(new Date(env.now.getTime() - PR_DAYS * 86_400_000).toISOString(), now, ['git:pr-status']);
+      const prs = buildPullRequests(rows.map((r) => ({ at: r.capturedAt, data: r.data })), now, all === true);
+      const open = prs.filter((p) => p.state === 'OPEN' || p.state === 'DRAFT');
+      return { open: open.length, ...(all ? { closed: prs.length - open.length } : {}), prs, note: 'Literal from the record (GitHub, via the gh CLI). open counts only PRs confirmed open in the last day.' };
+    },
+  },
   {
     name: 'gnomon_agent_sessions',
     description:
-      "Every coding-agent session the owner has open, in ONE call — Claude Code from its live registry, and Codex, Gemini, Copilot, Cursor and opencode from their recent turns. Per session: `state` and `since`, `waits` (`you`: it finished, asked, wants a plan or an approval, or failed; `itself`: it is working), `title`, `firstPrompt` (what the owner asked for, in their words), `lastPromptAt`, `lastReply` (the agent's last finished answer), counts of prompts and replies, `rejected` (a tool use the owner said no to, or a turn they stopped, with what they said), how many files it `edited` (from the hooks), `commits` on its branch since it opened and the `lastCommit`, `dirtyFiles`, `costUsd` and `usdPerCommit` (Claude's own list-price estimate, written when a session ends or resumes, so often absent), `lines`, `pr`. Waiting-on-you comes first, longest wait first. Pass `id` (an 8-character session id) for that session's whole conversation, every prompt, reply and rejection in order, with the files it edited and every commit. Use this for \"what are my agents doing\", \"which session is blocked on me\", \"what did I ask that one\", \"which are safe to close\", \"are two of them on the same problem\". Use it INSTEAD of reading ~/.claude or any agent's files with the shell: those are raw transcripts, never scrubbed of secrets, and every read costs the owner an approval. Everything here is literal from the record; it holds no token counts, and no turn from before `logStart`.",
+      "Every coding-agent session the owner has open, in ONE call — Claude Code from its live registry, and Codex, Gemini, Copilot, Cursor and opencode from their recent turns. Per session: `state` and `since`, `waits` (`you`: it finished, asked, wants a plan or an approval, or failed; `itself`: it is working), `title`, `firstPrompt` (what the owner asked for, in their words), `lastPromptAt`, `lastReply` (the agent's last finished answer), counts of prompts and replies, `rejected` (a tool use the owner said no to, or a turn they stopped, with what they said), how many files it `edited` (from the hooks), `commits` on its branch since it opened and the `lastCommit`, `dirtyFiles`, `costUsd` and `usdPerCommit` (Claude's own list-price estimate, written when a session ends or resumes, so often absent), `lines`, `pr`. Waiting-on-you comes first, longest wait first. Pass `id` (an 8-character session id) for that session's whole conversation, every prompt, reply and rejection in order, with the files it edited and every commit. Use this for \"what are my agents doing\", \"which session is blocked on me\", \"what did I ask that one\", \"which are safe to close\", \"are two of them on the same problem\". Use it INSTEAD of reading ~/.claude or any agent's files with the shell: those are raw transcripts, never scrubbed of secrets, and every read costs the owner an approval. Everything here is literal from the record; it holds no token counts, and no turn from before `logStart`. This shows the sessions open now; which repos the agents worked in on a past day is in gnomon_today_summary (`onRecord.agentRepos`).",
     schema: {
       id: z.string().min(4).optional().describe("One session's short id: its whole conversation instead of the list"),
       offset: z.number().int().min(0).optional().describe('The `nextOffset` of the previous page'),

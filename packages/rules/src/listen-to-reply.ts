@@ -25,7 +25,9 @@ import { openAsk } from '@sundial/helpers/loops.js';
  * - a reply worth keeping (level ≥ 2, "a real update" or "a decision") → a
  *   knowledge entry in the owner's own words, embedded, so the next question
  *   can find it.
- * Nothing outward, nothing irreversible: a note, a fact, a note.
+ * - a reply that hands the owner work, and asks Gnomon for nothing → an open
+ *   promise (`commitment:heard`, source `owner`), so it shows In play.
+ * Nothing outward, nothing irreversible: a note, a fact, a note, a to-do.
  */
 const MEETING_PREFIX = 'owner-ask:meeting-';
 const GOALS_PREFIX = 'owner-ask:goals-';
@@ -83,6 +85,8 @@ export const listenToReply: Rule = (state, event) => {
 
 const TRANSCRIPT = questionId(LISTEN_REPLY_QUESTIONS.wants_transcript_attached);
 const WORTH = questionId(LISTEN_REPLY_QUESTIONS.worth_remembering);
+const FOLLOWUP = questionId(LISTEN_REPLY_QUESTIONS.contains_followup);
+const ASKS = questionId(LISTEN_REPLY_QUESTIONS.asks_assistant_to_do_something);
 
 /** P(level ≥ 2) off a score's vector. */
 const massAtLeast = (answer: JudgementResultPayload['answers'][string] | undefined, level: number): number =>
@@ -132,6 +136,22 @@ export const applyOwnerReply: Rule = (state, event) => {
       },
       { type: 'Embed', id: deriveId(event.ts, event.id, 'owner-reply', 'embed'), refType: 'knowledge_entry', refId: entryId, text: `${meta.question} ${meta.answer}` },
     );
+  }
+
+  // 4. Work the reply hands the owner ("Mira handed me two tickets") → an
+  // open promise, in the owner's words. Not a request TO Gnomon ("give me a
+  // prep"): the chat turn answers that one. Measured 2026-10-07 on 18 live
+  // replies: 2 follow-ups ≥ 0.8 were the owner's work, 2 were requests ≥ 0.79.
+  if ((a.contains_followup?.noul ?? 0) >= threshold(FOLLOWUP, 0.8) && (a.asks_assistant_to_do_something?.noul ?? 0) < threshold(ASKS, 0.5)) {
+    effects.push({
+      type: 'EmitEvent',
+      event: {
+        id: deriveId(event.ts, event.id, 'owner-reply-followup', meta.askId),
+        type: 'commitment:heard',
+        ts: event.ts,
+        payload: { source: 'owner', id: `commitment:reply:${meta.askId}`, deliverable: meta.answer, quote: meta.answer },
+      },
+    });
   }
 
   return { state: state as KernelState, effects };

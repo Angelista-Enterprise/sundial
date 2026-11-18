@@ -61,7 +61,7 @@ const OBSIDIAN = {
  * loosen `run_shell`, and a test that read the live config would pass or fail
  * depending on whose laptop it ran on.)
  */
-const NO_OVERRIDES = { internal: { default: 'auto', byTool: {} }, outward: { default: 'auto', byTool: {} }, filesystemAllow: [] }
+const NO_OVERRIDES = { internal: { default: 'auto', byTool: {} }, outward: { default: 'auto', byTool: {} } }
 
 const verdict = (toolName, preset) =>
   decideAction({

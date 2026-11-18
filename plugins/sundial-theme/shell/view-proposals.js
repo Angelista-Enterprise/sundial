@@ -346,3 +346,39 @@ export function assistantProposalsSection(data) {
   )
   return section
 }
+
+/**
+ * Set 5 R3: what Gnomon learned and puts to the owner (`/gnomon/proposals`): one row each, the proposal, what it
+ * stands on with its n, and two answers. Each answer posts to the route the host named for it (an existing write:
+ * the assistant verdict, the shelf's feedback, the offer press; or the card's own "not again"), so a no is kept
+ * by the learner that made the proposal and the same one is not put again.
+ */
+export function learnedSection(data) {
+  const items = Array.isArray(data?.items) ? data.items : []
+  if (items.length === 0) return null
+  const trustN = Number(data?.trustN) || 20
+  const row = (p) => {
+    const acts = el('div', { class: 'proposal-chips' })
+    const answer = async (a, done) => {
+      for (const button of acts.querySelectorAll('button')) button.disabled = true
+      let ok = false
+      try {
+        ok = (await fetch(a.path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(a.body) })).ok
+      } catch {}
+      acts.replaceChildren(el('span', { class: 'panel-note', text: ok ? done : 'Not recorded; it stays here to answer again.' }))
+    }
+    if (p.accept) acts.append(el('button', { type: 'button', class: 'act act-small', text: p.accept.label, onclick: () => answer(p.accept, 'Done.') }))
+    if (p.dismiss) acts.append(el('button', { type: 'button', class: 'act act-small', text: p.dismiss.label, onclick: () => answer(p.dismiss, 'Noted; it will not come back.') }))
+    const n = `n ${p.n}${p.n < trustN ? ', too few to trust the bar yet' : ''}`
+    return el('article', { class: 'proposal', 'data-kind': p.kind }, [
+      el('div', { class: 'proposal-label', text: p.title }),
+      el('p', { class: 'panel-note', text: `${p.evidence} (${n})` }),
+      acts,
+    ])
+  }
+  return el('section', { class: 'panel' }, [
+    el('h2', { class: 'panel-title', text: 'Gnomon proposes' }),
+    el('p', { class: 'panel-note', text: 'Learned from what happened on this Mac. Yes applies it; a no is remembered.' }),
+    ...items.map(row),
+  ])
+}

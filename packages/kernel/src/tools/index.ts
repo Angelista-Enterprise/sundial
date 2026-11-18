@@ -7,6 +7,7 @@ import { FIGURE_TOOLS } from './figure-tools.js';
 // lane D
 import { HANDOFF_TOOLS } from './handoff-tools.js';
 import { AGENT_TOOLS } from './agent-tools.js';
+import { NOTICE_TOOLS } from './notice-tools.js';
 import { MEMORY_TOOLS } from './memory-tools.js';
 import { TREND_TOOLS } from './trend-tools.js';
 import { RECALL_TOOLS } from './recall-tools.js';
@@ -34,20 +35,11 @@ export { ASK_SYSTEM_PROMPT } from './ask-prompt.js';
  * it belongs at the end of the work.
  */
 // lane D: HANDOFF_TOOLS (#20); lane C: TREND_TOOLS; lane B: BRIEF_TOOLS; lane A: RECALL_TOOLS; W5: RELIABILITY_TOOLS; the figures stay last.
-export const TOOL_REGISTRY: GnomonTool[] = [...EVIDENCE_TOOLS, ...CONTEXT_TOOLS, ...AGENT_TOOLS, ...MEMORY_TOOLS, ...HANDOFF_TOOLS, ...TREND_TOOLS, ...BRIEF_TOOLS, ...RECALL_TOOLS, ...RELIABILITY_TOOLS, ...FIGURE_TOOLS];
-
-/**
- * What the chat may call. The same list MCP is advertised since
- * `gnomon_show_view`, the one tool that drove the app window, was deleted
- * (2026-09-28): the chat moves the owner's view through `gnomon_board`, which
- * is not a kernel tool. A tool that drives the window belongs to the surface
- * that IS the window, never to this shared list.
- */
-export const ASK_TOOL_REGISTRY: GnomonTool[] = TOOL_REGISTRY;
+export const TOOL_REGISTRY: GnomonTool[] = [...EVIDENCE_TOOLS, ...CONTEXT_TOOLS, ...AGENT_TOOLS, ...NOTICE_TOOLS, ...MEMORY_TOOLS, ...HANDOFF_TOOLS, ...TREND_TOOLS, ...BRIEF_TOOLS, ...RECALL_TOOLS, ...RELIABILITY_TOOLS, ...FIGURE_TOOLS];
 
 /** The registry as OpenAI-format function definitions, for `/ask`'s tool loop. */
 export function gnomonToolDefinitions(): ToolDefinition[] {
-  return toolDefinitions(ASK_TOOL_REGISTRY);
+  return toolDefinitions(TOOL_REGISTRY);
 }
 
 /**
@@ -56,5 +48,5 @@ export function gnomonToolDefinitions(): ToolDefinition[] {
  * into a result the model reads and retries against.
  */
 export async function executeGnomonTool(name: string, args: unknown, env?: ToolEnv): Promise<unknown> {
-  return executeTool(ASK_TOOL_REGISTRY, name, args, env);
+  return executeTool(TOOL_REGISTRY, name, args, env);
 }

@@ -3,19 +3,40 @@
 # local changes. A top-level YAML array of loader patch entries (id-targeted
 # config overrides, disables, and insert lists; `!!js` expressions allowed).
 
-# dsh-base's DeepSeek route needs a DeepSeek key. Sundial talks to any
-# OpenAI-compatible endpoint over its own route (plugins/sundial-llm-openai),
-# configured in $SUNDIAL_HOME/.env, so the unused route is hidden.
+# dsh-base's DeepSeek routes need a DeepSeek key or a DeepSeek account. Sundial
+# talks to any OpenAI-compatible endpoint over its own route
+# (plugins/sundial-llm-openai), configured in $SUNDIAL_HOME/.env, so the unused
+# routes and the account sign-in (dsh 0.2) are hidden.
 - id: llm-deepseek
   disabled: true
 
-# Compaction, which dsh-base mounts and dsh-web-app disables. Gnomon's chat is
-# one long-running conversation, and without compaction a long one silently
-# overflows the model's window. It compacts at 80% of the declared window (64k,
-# `DEFAULT_CONTEXT_WINDOW` in plugins/sundial-llm-openai, so about 51k) and
-# keeps the last 16% verbatim; `command-compact` lets you compact on demand.
+- id: llm-deepseek-account
+  disabled: true
+
+- id: deepseek-account
+  disabled: true
+
+# dsh-web-app's account API waits for that account service forever otherwise.
+- id: account-controller
+  disabled: true
+
+# dsh-base mounts its pi-ai multi-provider adapter dormant (zero routes, fed by
+# dsh's own Models page, which is dark here). Sundial mounts its own instance from
+# plugins/sundial-llm-openai with the routes config.json names; two would collide
+# on the adapter's discovery namespace.
+- id: llm-pi-ai
+  disabled: true
+
+# Compaction. Gnomon's chat is one long-running conversation, and without
+# compaction a long one silently overflows the model's window. dsh-base's
+# compaction-basic stays off: sundial-actions mounts NotesCompaction, the same
+# engine run after the turn (chat-notes.js): each chat's notes are kept after
+# every turn, and once a chat reaches the compaction point (config.json
+# `llm.compactAt`) it is made short while idle, so nothing compacts inside a
+# task. dsh's own in-turn compaction, at 80% of the model's real window, stays
+# as the overflow guard; `command-compact` lets you compact on demand.
 - id: compaction-basic
-  disabled: false
+  disabled: true
 
 - id: command-compact
   disabled: false
@@ -25,13 +46,6 @@
 # context window.
 - id: tool-result-pruner
   disabled: false
-
-# Gnomon's own agent preset (plugins/sundial-tools/presets/gnomon), reached
-# through the user preset root $DSH_HOME/.agent-presets, which the installer
-# fills with links to the repo's files.
-- id: agent-presets
-  config:
-    default: gnomon
 
 # Full-text search over your own conversations. The index opens on the first
 # search and lives in DSH_HOME.

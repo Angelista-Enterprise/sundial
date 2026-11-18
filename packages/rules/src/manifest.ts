@@ -1,4 +1,4 @@
-import type { KernelState, Rule } from '@sundial/kernel/types.js';
+import type { KernelState, Rule, SanitizedEvent } from '@sundial/kernel/types.js';
 import { anomalyZscore } from './anomaly-zscore.js';
 import { applyLlmResult } from './apply-llm-result.js';
 import { judgementTrack } from './judgement-track.js';
@@ -13,10 +13,12 @@ import { conversationTrack } from './conversation-track.js';
 import { loopTrack } from './loop-track.js';
 import { noticeGate } from './notice-gate.js';
 import { calibrate } from './calibrate.js';
+import { approvalTrack } from './approval-track.js';
 import { autonomyTrack } from './autonomy-track.js';
 // lane D
 import { noticeRoute } from './notice-route.js';
 import { routineLearn } from './routine-learn.js';
+import { choreLearn } from './chore-learn.js';
 import { assistantTrack } from './assistant-track.js';
 import { budgetTrack } from './budget-track.js';
 import { clockTick } from './clock-tick.js';
@@ -24,7 +26,6 @@ import { observedTrack } from './observed-track.js';
 import { contextUrlClassify } from './context-url-classify.js';
 import { contradictionCheck } from './contradiction-check.js';
 import { dailyJournal } from './daily-journal.js';
-import { dayShapeForecast } from './day-shape-forecast.js';
 import { hourFragmentedForecast } from './hour-fragmented-forecast.js';
 import { projectTouchForecast } from './project-touch-forecast.js';
 import { forecastTournament } from './forecast-tournament.js';
@@ -79,11 +80,11 @@ import { fileTrack } from './file-track.js';
 import { shellFailureTrack } from './shell-failure-track.js';
 import { pressureTrack } from './pressure-track.js';
 import { gitAheadTrack } from './git-ahead-track.js';
+import { boundaryTrack } from './boundary-track.js';
 import { callSpanTrack } from './call-span-track.js';
 import { browserTrack } from './browser-track.js';
 import { screenTrack } from './screen-track.js';
-import { presenceTrack } from './presence-track.js';
-import { phoneTrack } from './phone-track.js';
+import { screenRead } from './screen-read.js';
 import { projectRuleRegister } from './project-rule-register.js';
 import { projectTrack } from './project-track.js';
 import { retentionPrune } from './retention-prune.js';
@@ -101,10 +102,15 @@ import { goalCheckin, goalProgressTrack } from './goal-checkin.js';
 import { ingestAnomalyCheck } from './ingest-anomaly.js';
 import { ownerPerceive } from './owner-perceive.js';
 import { healthTrack } from './health-track.js';
+import { phoneTrack } from './phone-track.js';
 import { vaultTrack } from './vault-track.js';
-import { mailTrack } from './mail-track.js';
 import { draftTrack } from './draft-track.js';
 import { goalPursuit } from './goal-pursuit.js';
+import { appLearn, appNotes } from './app-learn.js';
+import { shellJobs } from './shell-jobs.js';
+import { awaitShelf } from './await-shelf.js';
+import { taskBoundary } from './task-boundary.js';
+import { privateReads } from './private-reads.js';
 import { windowTrack } from './window-track.js';
 import { attributionPropose } from './attribution-propose.js';
 // lane B
@@ -112,6 +118,22 @@ import { briefClock } from './brief-clock.js';
 import { mailMatters } from './mail-matters.js';
 // lane H
 import { sensorHealth } from './sensor-health.js';
+import { streamSilence } from './stream-silence.js';
+import { voiceKnock } from './voice-knock.js';
+import { overlayTrack } from './overlay-track.js';
+import { stuckSigns } from './stuck-signs.js';
+import { offerNow } from './offer-now.js';
+import { selfCorrection } from './self-correction.js';
+import { markTrack } from './mark-track.js';
+import { screenPickTrack } from './screen-pick-track.js';
+import { byGnomon, byGnomonMarked } from './by-gnomon.js';
+import { rigSessions } from './rig-sessions.js';
+import { isRigSession, sandboxed } from '@sundial/kernel/read/rig-session.js';
+import { sandbox } from './sandbox.js';
+import { routePromote } from './route-promote.js';
+import { openedTrack } from './opened-track.js';
+import { selfReview } from './self-review.js';
+import { witnessPairs } from './witness-pairs.js';
 import { llmReliability } from './llm-reliability.js';
 
 /**
@@ -194,10 +216,30 @@ import { llmReliability } from './llm-reliability.js';
  * folds nothing and returns no effects. Keeps the rule's own name, which
  * `reduce()` uses to attribute effects.
  */
-function flagged(flag: 'forecasting' | 'gateFeatures' | 'presence', rule: Rule): Rule {
+function flagged(flag: 'forecasting' | 'gateFeatures' | 'witnessPairs' | 'voiceKnock' | 'quietSummon' | 'stuckSigns' | 'screenMarks' | 'offerNow', rule: Rule): Rule {
   const gated: Rule = (state: KernelState, event) => (state.config.experiments?.[flag] === true ? rule(state, event) : { state, effects: [] });
   Object.defineProperty(gated, 'name', { value: rule.name });
   return gated;
+}
+
+/**
+ * A rule that learns about the OWNER. A row Gnomon caused with its own screen
+ * acts, or one in the screen rig's test window, is not the owner's behaviour:
+ * on such a row (`byGnomonMarked`) the rule folds nothing and returns no
+ * effects. Only focus, tab, screen-text, input and project rows, and any row
+ * whose window title is the rig's (Gnomon's own screen steps there included,
+ * so they never reach a moment's acts), are ever marked; every other event
+ * reaches the rule unchanged. A chat row in one
+ * of the rig's sessions (`isRigSession`, Round 4) is not the owner's either,
+ * nor a row of a rig chat's sandbox (`sandboxed`, S4; `reduce` already keeps
+ * one from every rule but the `sandbox` lane, and this says so where a rule is
+ * called on its own). Keeps the name.
+ */
+const rigChat = (state: KernelState, event: SanitizedEvent): boolean => event.type.startsWith('chat:') && isRigSession(state, event.payload.sessionId);
+function ownerOnly(rule: Rule): Rule {
+  const fenced: Rule = (state: KernelState, event) => (byGnomonMarked(state, event) !== null || rigChat(state, event) || sandboxed(state, event) ? { state, effects: [] } : rule(state, event));
+  Object.defineProperty(fenced, 'name', { value: rule.name });
+  return fenced;
 }
 
 export const RULE_MANIFEST: Rule[] = [
@@ -208,6 +250,11 @@ export const RULE_MANIFEST: Rule[] = [
   observedTrack,
   // W3: the one writer of `state.config` after boot, before every rule that reads it.
   configTrack,
+  // Which rows Gnomon caused (its own screen acts) or the rig's test window holds. Before every rule wrapped in
+  // `ownerOnly`, which reads the mark it leaves for the same event; it reads only its own slice.
+  byGnomon,
+  // Round 4: the rig's chat sessions, from `thread:model`. Before `ownerOnly` and every learner that asks `isRigSession`.
+  rigSessions,
   clockTick,
   budgetTrack,
   // Before every consumer of coverage, and it has no other constraint: it counts
@@ -220,37 +267,40 @@ export const RULE_MANIFEST: Rule[] = [
   // reads `state.ingestAnomaly.marked` to keep a marked title out of the
   // fan-out and the render. Also folds its own `judgement:result`.
   ingestAnomalyCheck,
-  contextSwitch,
-  momentAnalysisSchedule,
+  ownerOnly(contextSwitch),
+  ownerOnly(momentAnalysisSchedule),
   // Beside the analysis, for the same reason and under the same ordering rule:
   // both read the closing moment's rollup before `momentClose` replaces it.
-  transcriptClean,
-  transcriptAccept,
-  anomalyZscore,
+  ownerOnly(transcriptClean),
+  ownerOnly(transcriptAccept),
+  ownerOnly(anomalyZscore),
   // The Phase 2b forward-model pair (`predictionResolve`/`predictionForecast`,
   // kind `project-continuity`) sat here and was retired on 2026-07-29 — it
   // forecast the base rate from its own hit rate, which is a fixed point, and
   // measured 0.2% skill over 2,362 resolutions. `forward-model.ts` keeps the
   // shared calibration helpers and records the full argument; `dayShapeForecast`
   // below is now the only forecaster, which is deliberate rather than a gap.
-  entityExtract,
+  ownerOnly(entityExtract),
   // The commitment ledger. Beside `entityExtract` and under the same ordering
   // constraint — both read the about-to-close `state.moment` for its git
   // branch, so both must fold before `momentClose`. They derive the same task
   // name from it: `entityExtract` mints the ENTITY, this tracks the THREAD.
-  commitmentTrack,
+  ownerOnly(commitmentTrack),
   // UC1: the promise ledger — its own list in `state.commitments`, its own
   // events (`meeting:promises`, `commitment:heard`) and the evidence that keeps
   // a promise. Reads nothing another rule writes on the same event.
   // lane B: `mailMatters` goes first, so it reads a promise before this mail can close it.
   mailMatters,
-  promiseTrack,
+  ownerOnly(promiseTrack),
   contradictionCheck,
-  embeddingIndex,
+  ownerOnly(embeddingIndex),
   // Decides which screen-capture lines are content, so `momentRollup` (next)
   // can read `state.screen.kept` for the same event.
-  screenTrack,
-  momentRollup,
+  ownerOnly(screenTrack),
+  // The Jev layers over the screen (text and frames), each behind its consent.
+  // After `screenTrack`, whose `facts` and `kept` it reads for the same event.
+  ownerOnly(screenRead),
+  ownerOnly(momentRollup),
   // Decides whether ambient hearing is awake. Reads calendar and media state
   // and writes only its own field, so it has no ordering constraint with
   // anything else in the fold.
@@ -261,12 +311,24 @@ export const RULE_MANIFEST: Rule[] = [
   // may speak at all, so a settings change must be in force for the same tick.
   settingsTrack,
   boardTrack,
-  momentClose,
+  ownerOnly(momentClose),
   windowTrack,
+  // Counts the owner's own apps and their workspaces from the same title windowTrack just read. No ordering constraint: it writes `state.apps`, which nothing else writes.
+  ownerOnly(appLearn),
+  // A background shell job that ended. No ordering constraint: it writes `state.jobs`, which nothing else writes.
+  shellJobs,
+  // Set 4 R2: a job wait on the shelf, knocked when its `shell:exited` lands. After shellJobs; writes `state.awaits`, which nothing else writes.
+  awaitShelf,
+  // Where one task ends and the next begins. Must run BEFORE anything that keys on "this task".
+  taskBoundary,
+  // Set 5 R2: a failed screen step and the move that worked after it, counted per app into notes. After taskBoundary (it keys on the step's task); writes `state.appNotes`, which nothing else writes. Not `ownerOnly`: Gnomon's own steps are what it reads, and it keeps the rig's apart itself.
+  appNotes,
+  // Set 3 R3: per chat, what Gnomon read in private since that chat's last request. No ordering constraint: it writes `state.privateReads`, which nothing else writes.
+  privateReads,
   // Reads the attribution `windowTrack` just resolved for the NEW window, so it
   // must follow it: it times the unattributed ones by host/app.
-  attributionPropose,
-  projectTrack,
+  ownerOnly(attributionPropose),
+  ownerOnly(projectTrack),
   // Before focusModeTrack and after projectTrack: it writes only its own slice,
   // but `resolveAttribution`'s agent tier reads it. `windowTrack` resolves a
   // window and sits above it; that holds only because the two never fire on the
@@ -275,7 +337,7 @@ export const RULE_MANIFEST: Rule[] = [
   // The whole fleet of agent sessions, and the nudge when one waits on an owner who is elsewhere.
   agentFleetTrack,
   // One thread per ticket key, from every sense that can see one.
-  ticketTrack,
+  ownerOnly(ticketTrack),
   focusModeTrack,
   networkTrack,
   // Fold wave one (2026-09-04): five streams that were logged and never read.
@@ -284,43 +346,43 @@ export const RULE_MANIFEST: Rule[] = [
   fileTrack,
   // J3.5: the vault's notes edited today. Own event type; reads nothing else.
   vaultTrack,
-  // J3.6: mail and message subjects/senders. Own event types.
-  mailTrack,
   shellFailureTrack,
   pressureTrack,
   gitAheadTrack,
   callSpanTrack,
-  browserTrack,
-  // enhancements/presence-as-absence-ground-truth. Shares `location:network`
-  // with `networkTrack` directly above and has no ordering dependency on it:
-  // the two write different slices (`state.presence` vs `state.network`) from
-  // the same payload, and neither reads the other's. Its two other triggers
-  // (`presence:consent`, `presence:scan`) are touched by no other rule.
-  flagged('presence', presenceTrack),
-  // aspiration A01 (account for my whole day): folds the paired phone's `phone:*`
-  // reports into `state.coverage`. Its event types are touched by no other rule,
-  // so it has no ordering constraint.
+  ownerOnly(browserTrack),
+  // The presence and mail sensors were dropped on 2026-10-14 (sensor audit:
+  // presence baseline 1,393 of 2,739 and absent:flow precision 0.17; mail received
+  // dead since 09-29). Their slices stay at their defaults so every reader keeps its shape.
+  // A01: the phone's `phone:*` reports → `state.coverage`, now read from the hub
+  // inbox (`phone-inbox.ts`). Its event types are touched by no other rule.
   phoneTrack,
   // J3.1: the phone's health readings → `state.owner.energy`. Its own event types.
   healthTrack,
   fileWatcherCapacity,
   scheduleTrack,
-  contextUrlClassify,
-  projectRuleRegister,
+  ownerOnly(contextUrlClassify),
+  ownerOnly(projectRuleRegister),
   deploy,
   bigCommit,
   testRecovery,
   interruption,
-  focusFlow,
+  ownerOnly(focusFlow),
   // MUST run immediately BEFORE `idleTrack`. It reads the pre-transition
   // `state.lifeEvent.idle` (isIdle + consecutiveZeroWindows) on the very
   // `input:activity` event that ends a break — `idleTrack` resets that count to zero
   // and flips isIdle off on the same event, so a rule folded after it can no longer
   // see how long the break was. A pure producer: it only emits a `notice:candidate`,
   // never touches state. See its doc comment.
-  returnFromBreak,
+  ownerOnly(returnFromBreak),
   idleTrack,
-  thrashing,
+  // Plan 15 step 1: the ends of tasks. After `callSpanTrack` and `idleTrack`, whose results it reads on the same event.
+  flagged('voiceKnock', boundaryTrack),
+  // Plan 15 4.3: after the shell, screen and switch trackers it reads; before the gate.
+  flagged('stuckSigns', ownerOnly(stuckSigns)),
+  // S6: one offer of help for a window held a few minutes. Writes only `state.offerNow`; its candidate reaches the gate in a later pass.
+  flagged('offerNow', ownerOnly(offerNow)),
+  ownerOnly(thrashing),
   // J2.1: the owner-state filter. After `idleTrack` (it skips the judge while
   // idle) and after `contextSwitch` (it counts `lifeEvent.recentSwitches`);
   // reads `input:activity`, `clock:tick`, its own `judgement:result` and the
@@ -363,6 +425,8 @@ export const RULE_MANIFEST: Rule[] = [
   // feedbackTrack (decisions/assistant-as-an-event-source): reacts to `feedback:verdict`, an
   // event type no other rule touches, so it has no ordering constraint at all.
   feedbackTrack,
+  // Plan 15 4.5: reads `conversation.cited`; a pure producer of one `self-correction` notice.
+  selfCorrection,
   // The asking half of the same loop: reacts only to `clock:tick`, opens/expires
   // one rating request in `state.feedback.solicitation`. Reads `feedback.recent`
   // and `memory.recentInsights`; no other rule writes those on a tick, so it has
@@ -406,7 +470,11 @@ export const RULE_MANIFEST: Rule[] = [
   // which nothing else touches, so it has no ordering constraint — and unlike every
   // other `window:changed` reader it does NOT care whether the moment is closing,
   // because a routine is a sequence of steps rather than a property of a moment.
-  routineLearn,
+  ownerOnly(routineLearn),
+  // Round 5: chores with an object in them (a site most workday mornings, a ticket re-opened weekly), and the
+  // offer when today's trigger comes. Writes only `state.chores`; its `document:opened` is emitted by
+  // `contextUrlClassify` (owner-only) and arrives in a later pass, so it needs no place beyond the learners.
+  ownerOnly(choreLearn),
   // Phase 1 endogenous-life (docs/design/08 §3): surpriseDrive accumulates
   // anomaly surprise into the drive; memoryReflection (daily) and
   // endogenousReflection (drive-triggered, clock:tick) consume it;
@@ -426,7 +494,7 @@ export const RULE_MANIFEST: Rule[] = [
   // or any other consumer. The retired `predictionResolve` never hit this
   // because it only fired on `window:changed`, which `memoryReflection`
   // ignores — so this hazard arrived with this rule and stays with it.
-  flagged('forecasting', dayShapeForecast),
+  // `dayShapeForecast` (kind `day-ending`) retired 2026-10-14; its cells (`predictions.hourlyDoneRate`) stay for the readers that seed from them.
   // The forward model's SECOND forecaster (`hour-fragmented`, conditioned on
   // whether the previous hour came apart — +13.7% measured, and stable across
   // three corpus cutoffs). Reacts to `event:context-switch`/`day:boundary`.
@@ -448,7 +516,7 @@ export const RULE_MANIFEST: Rule[] = [
   // `accumulatedImportance` placement reason as its two neighbours. Reads
   // `window.attribution`, which `windowTrack` (far above) has already
   // recomputed for this event, and its own `predictions.projectTouch` only.
-  flagged('forecasting', projectTouchForecast),
+  flagged('forecasting', ownerOnly(projectTouchForecast)),
   // J2.2: the forecast tournament — two forecasters per case on three targets,
   // resolved from the log, retired by Brier. AFTER `hourFragmentedForecast`, and
   // deliberately so: it twins that rule's bet when it appears in `open` and
@@ -507,7 +575,7 @@ export const RULE_MANIFEST: Rule[] = [
   // refutation in the same fold it was proposed in.
   nightlyRefutation,
   // J2.3: the belief audit — every live inferred fact to the judge once a
-  // night (and once on the first tick after it shipped). Same job as the
+  // day, when the owner goes idle (Round 5: an event, not the night). Same job as the
   // skeptic above, different instrument: Jev flags a malformed belief (subject
   // and object swapped, a room as a person) with no false alarms; it cannot
   // see a plausible misattribution, which is why `applyFactAudit` (with the
@@ -550,8 +618,8 @@ export const RULE_MANIFEST: Rule[] = [
   // position here is readability, not correctness. It is the single writer of
   // `state.notices` and the only rule in the manifest that decides whether Gnomon
   // says anything at all; every producer above it states what it saw and stops.
-  expectationLearn,
-  expectationWatch,
+  ownerOnly(expectationLearn),
+  ownerOnly(expectationWatch),
   // The rules Gnomon writes: adopted watch specs, one interpreter. Before the gate that prices what they say.
   watchRules,
   // lane D — #6 the right channel. Before `noticeGate` (only `briefClock` sits
@@ -562,16 +630,41 @@ export const RULE_MANIFEST: Rule[] = [
   // lane B: after `promiseTrack`, which on the same tick leaves a promise due at a meeting to this rule's prep.
   briefClock,
   noticeGate,
+  // Plan 15 step 1: the knock for what the gate just delivered (`notices.lastDelivered`, the same event).
+  flagged('voiceKnock', voiceKnock),
+  flagged('quietSummon', overlayTrack),
+  // Plan 15 steps 6 to 8: the marks on the real screen, the guide, the answer to an act. Reads nothing other rules write.
+  flagged('screenMarks', markTrack),
+  // Round 2: the approvals asked and answered, joined to the call's `action:decided`. Reads only its own slice.
+  approvalTrack,
+  // Doc 16's fast path: how a screen_act pick turned out, graded so its threshold learns. Reads only its own slice.
+  screenPickTrack,
+  // Set 5 R2: what Gnomon's steps opened and the log has not seen closed. After `taskBoundary` (an item carries the chat's task);
+  // writes `state.opened`, which nothing else writes.
+  openedTrack,
+  // A screen route that ran clean, as a fact candidate about its app (provenance `act`). Reads its own slice and the mark.
+  routePromote,
+  // Round 5: Gnomon's own failed steps in clusters, reviewed on idle or a chat's end through the workbench's spare
+  // slot; proposals and skills wait for the owner's Keep. After `approvalTrack` (it reads the answered ask) and
+  // `routePromote` (the run that offered a route); not `ownerOnly`: Gnomon's own acts are what it reviews.
+  selfReview,
   // W5: the single writer of `state.calibrated`. After `noticeGate` (it reads `notices.lastDelivered`
   // on the same event), `routineLearn` (the trail) and `feedbackTrack` (the insight a verdict names).
-  calibrate,
+  ownerOnly(calibrate),
   // W5 step 10: the single writer of `state.autonomy`, after `calibrate` (it reads the numbers `calibrate` just moved).
   autonomyTrack,
   // lane H: Sundial's own health. Order-free: it reads only its own slice and
   // speaks through a `notice:candidate`, which reaches the gate in its own pass.
   sensorHealth,
+  // W6 D6: which sensor is blind, from two streams that disagree. Its `sensor:blind` reaches `sensorHealth` as an event of its own.
+  flagged('witnessPairs', witnessPairs),
+  // The streams themselves, from their own cadence: a poller that runs and emits nothing. Order-free, same as above.
+  streamSilence,
   // W5: the breaker per model route, the single writer of `state.reliability`. Order-free for the same reason.
   llmReliability,
+  // S4: the rig chats' sandboxes, the single writer of `state.sandbox` and the one rule a sandboxed row reaches (`reduce`).
+  // Last: it reads `rigSessions`, which marks a chat on the same `thread:model`, and writes nothing an owner rule reads.
+  sandbox,
   // count-office-days is intentionally NOT a rule: "days at the office" is a
   // read-time analytic over moments' `location` (Phase 5 #6,
   // `getLocationDayCounts` in @sundial/db), not something the reducer folds into

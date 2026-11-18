@@ -55,6 +55,6 @@ describe('the card catalog', () => {
     for (const c of CARDS.filter((card) => card.owns)) for (const item of c.owns) owners.set(item, [...(owners.get(item) ?? []), c.id])
     expect([...owners].filter(([, ids]) => ids.length > 1), 'facts on two cards').toEqual([])
     expect(cardOf('kanban').owns).toEqual([])
-    expect(CARDS.filter((c) => c.owns).map((c) => c.id).sort()).toEqual(['dial', 'engine', 'explore', 'kanban', 'play', 'rhythm', 'shelf', 'today', 'voice', 'work'])
+    expect(CARDS.filter((c) => c.owns).map((c) => c.id).sort()).toEqual(['beliefs', 'dial', 'engine', 'explore', 'kanban', 'play', 'rhythm', 'routes', 'shelf', 'today', 'voice', 'work'])
   })
 })

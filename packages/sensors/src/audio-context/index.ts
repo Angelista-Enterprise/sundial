@@ -1,3 +1,4 @@
+import { isOwnAudioProcess } from '@sundial/helpers/window-classification.js';
 import { type AvProcessUsage, type AvSnapshot, readAvSnapshot } from './audio-context-capture.js';
 
 export interface AudioContextEvent {
@@ -43,7 +44,9 @@ export interface MediaState {
   audioInput: boolean;
   audioOutput: boolean;
   camera: boolean;
+  /** The first holder that is not Sundial itself; `audioInputProcesses` has them all. */
   audioInputProcess: string | null;
+  audioInputProcesses: string[];
   audioOutputProcess: string | null;
   cameraProcess: string | null;
 }
@@ -51,6 +54,15 @@ export interface MediaState {
 /** First process of a list, by name — the attribution, when the sidecar can see one. */
 function primary(procs: AvProcessUsage[]): string | null {
   return procs.length > 0 ? procs[0].processName : null;
+}
+
+/**
+ * Every holder of the microphone that is not Sundial's own hearing. The first of
+ * a list used to be the attribution, and with hearing on that was Sundial itself
+ * in 58% of mic-on samples, hiding whichever call ran beside it.
+ */
+function holders(procs: AvProcessUsage[]): string[] {
+  return [...new Set(procs.map((p) => p.processName).filter((name) => name !== '' && !isOwnAudioProcess(name)))];
 }
 
 export function mediaStateFromSnapshot(snapshot: AvSnapshot): MediaState {
@@ -66,11 +78,14 @@ export function mediaStateFromSnapshot(snapshot: AvSnapshot): MediaState {
    */
   const camera = snapshot.cameraProcesses.length > 0 || snapshot.cameraActive;
 
+  const mics = holders(snapshot.audioInputProcesses);
   return {
-    audioInput: snapshot.audioInputProcesses.length > 0,
+    // The mic is "on" when someone other than Sundial holds it: own hearing is not a call.
+    audioInput: mics.length > 0,
     audioOutput: snapshot.audioOutputProcesses.length > 0,
     camera,
-    audioInputProcess: primary(snapshot.audioInputProcesses),
+    audioInputProcess: mics[0] ?? null,
+    audioInputProcesses: mics,
     audioOutputProcess: primary(snapshot.audioOutputProcesses),
     cameraProcess: primary(snapshot.cameraProcesses),
   };

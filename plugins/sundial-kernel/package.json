@@ -10,7 +10,9 @@
     }
   },
   "dependencies": {
+    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
     "@sundial/harness-runtime": "workspace:*",
-    "@sundial/helpers": "workspace:*"
+    "@sundial/helpers": "workspace:*",
+    "@sundial/llm": "workspace:*"
   }
 }
