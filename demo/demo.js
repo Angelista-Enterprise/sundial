@@ -2,10 +2,10 @@
 // every /gnomon request it makes: reads from snapshot.json (recorded from the demo install by
 // `node launch/qa.mjs --capture`), the board through the real board rule, and the chat through
 // Chrome's built-in model (the Prompt API) over the same read tools Gnomon uses. Nothing is sent
-// anywhere and nothing is saved: a reload is a fresh Thursday morning.
+// anywhere and nothing is saved: a reload is a fresh Wednesday evening.
 ;(() => {
-  // ── The demo's clock: always Thursday 1 October 2026, 09:05, the morning after the story's Wednesday.
-  const AT = Date.parse('2026-10-01T09:05:00+02:00')
+  // ── The demo's clock: Wednesday 18 November 2026, 22:00, after a full recorded day.
+  const AT = Date.parse('2026-11-18T22:00:00+01:00')
   const RealDate = Date, offset = AT - RealDate.now()
   function FakeDate(...a) {
     if (!new.target) return new RealDate(RealDate.now() + offset).toString()
@@ -112,11 +112,11 @@
   let n = 0
   const TOOLS = [
     ['gnomon_today_summary', {}, 'today so far, this morning, what is on my plate'],
-    ['gnomon_today_summary', { date: '2026-09-30' }, 'yesterday (Wednesday): what I did, got done'],
+    ['gnomon_today_summary', { date: '2026-11-17' }, 'yesterday (Tuesday): what I did, got done'],
     ['gnomon_open_commitments', {}, 'promises, what I owe, to whom, open commitments, deadlines'],
     ['gnomon_brief', { kind: 'standup' }, 'standup prep, what to say at standup'],
     ['gnomon_brief', { kind: 'week' }, 'this week, the week in review, most time spent'],
-    ['gnomon_timeline', { date: '2026-09-30' }, 'timeline of yesterday hour by hour, meetings'],
+    ['gnomon_timeline', { date: '2026-11-17' }, 'timeline of yesterday hour by hour, meetings'],
     ['gnomon_recent_activity', {}, 'recent activity, the last hours, apps, focus'],
     ['gnomon_current_context', {}, 'right now, current context'],
     ['gnomon_people', {}, 'people, colleagues, who I work with, who I met'],
@@ -160,7 +160,7 @@
     return TOOLS[best]
   }
 
-  const SYSTEM = 'You are Gnomon, the assistant inside Sundial, a local-first app that records what its owner does on their Mac and answers from that record. The owner is Alex Morgan. It is Thursday 1 October 2026, 09:05, Europe/Amsterdam; yesterday was Wednesday 30 September. Answer only from the record you are given. Be short and specific: names, times, counts, at most six lines or bullets. If the record does not say, say so plainly. Never invent people, numbers or events.'
+  const SYSTEM = 'You are Gnomon, the assistant inside Sundial, a local-first app that records what its owner does on their Mac and answers from that record. The owner is Alex Morgan. It is Wednesday 18 November 2026, 22:00, Europe/Amsterdam; yesterday was Tuesday 17 November. Answer only from the record you are given. Be short and specific: names, times, counts, at most six lines or bullets. If the record does not say, say so plainly. Never invent people, numbers or events.'
   // Answers null (no model here), 'loading' (Chrome is still downloading it), or a session.
   let modelState = null, loading = null, downloaded = 0, why = 'browser'
   async function openModel(options) {
@@ -289,7 +289,7 @@
   addEventListener('DOMContentLoaded', () => {
     const note = document.createElement('div')
     note.className = 'demo-note'
-    note.innerHTML = '<b>One made-up week</b><span>Explore the 0.2.3 record and chat. 0.3 adds native screen actions; this browser demo does not control Mac apps. Try a preview of the approval step.</span><button type="button" class="demo-screen-open">Preview approval</button><a href="../">About Sundial</a><a href="../docs/screen-acting/">Screen actions</a><button type="button" class="demo-note-x">Hide</button>'
+    note.innerHTML = '<b>One made-up week</b><span>Explore a recorded week, including Wednesday 18 November. This browser demo does not control Mac apps. Try a preview of the 0.3 approval step.</span><button type="button" class="demo-screen-open">Preview approval</button><a href="../">About Sundial</a><a href="../docs/screen-acting/">Screen actions</a><button type="button" class="demo-note-x">Hide</button>'
     const dismissOnOutside = (e) => { if (!note.contains(e.target)) hide() }
     const hide = () => { removeEventListener('pointerdown', dismissOnOutside, true); note.toggleAttribute('data-gone', true); setTimeout(() => note.remove(), 400) }
     note.querySelector('.demo-note-x').onclick = hide
