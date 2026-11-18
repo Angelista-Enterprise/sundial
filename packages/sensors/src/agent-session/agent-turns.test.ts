@@ -24,8 +24,14 @@ describe('readClaude', () => {
       cc('user', { isMeta: true, message: { content: 'Caveat: local command' } }),
       cc('user', { isSidechain: true, message: { content: 'a subagent prompt' } }),
       cc('user', { message: { content: [{ type: 'text', text: '<system-reminder>x</system-reminder>' }] } }),
+      cc('user', { origin: { kind: 'plugin', name: 'gnomon-band' }, message: { content: 'The gnomon-band plugin sent a message:\nSundial: the owner\'s context changed.' } }),
     ];
     expect(none.flatMap((r) => readClaude(r, c))).toEqual([]);
+  });
+  it('keeps a prompt the owner typed, and one a mod sent in the owner\'s own words', () => {
+    const c = ctx();
+    expect(readClaude(cc('user', { origin: { kind: 'human' }, message: { content: 'hi' } }), c)).toMatchObject([{ role: 'prompt', text: 'hi' }]);
+    expect(readClaude(cc('user', { origin: { kind: 'plugin', name: 'x', asUser: true }, message: { content: 'ship it' } }), c)).toMatchObject([{ role: 'prompt', text: 'ship it' }]);
   });
   it('a rejected tool use names the tool and keeps the reason the owner typed', () => {
     const c = ctx();
@@ -77,6 +83,9 @@ describe('AgentTurnSensor', () => {
   let home: string;
   let daemon: string;
   const T0 = Date.now();
+  // Stamped at the test's own clock: the backfill reads history inside the last week
+  // (HISTORY_MS), so a fixed date in the fixture ages out and the test fails a week later.
+  const cc = (type: string, extra: Record<string, unknown> = {}) => ({ type, timestamp: new Date(T0).toISOString(), sessionId: 'a1b2c3d4-0000', cwd: '/Users/mira/puzzlebox-studio', gitBranch: 'BOX-484-fix', ...extra });
   const line = (o: Record<string, unknown>) => `${JSON.stringify(o)}\n`;
   const claudeFile = () => path.join(home, '.claude', 'projects', '-Users-mira-p', 'a1b2c3d4-0000.jsonl');
   const sensor = (now = T0) => new AgentTurnSensor({ home, cursorPath: path.join(daemon, 'agent-turns.json'), opencodeDb: path.join(home, 'none.db'), now });

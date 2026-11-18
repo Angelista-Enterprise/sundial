@@ -5,7 +5,8 @@ This page lists every permission Sundial may ask for: what it lets Sundial see,
 which helper uses it, whether you need it, and how to grant or reset it.
 
 None of them is needed to start. Without any, Sundial still records your git
-activity, and the app in front (without its window title).
+activity, and the app in front (without its window title). Gnomon needs
+Accessibility to look at or act in your apps ([screen-acting.md](screen-acting.md)).
 
 ## How Sundial's helpers work
 
@@ -25,16 +26,17 @@ The helpers inherit that. So the grant that counts is the one you give to
 
 | Permission | What it lets Sundial see | Helper | Needed? | How it is granted |
 |---|---|---|---|---|
-| Accessibility | The title of the front window, and the badge counts on Dock icons. Never clicks or types. | window helper, notification helper | Recommended | You add Sundial.app |
-| Input Monitoring | How many keys, clicks and scrolls happen, to tell working from away. Never which keys. | input helper | Recommended | You add Sundial.app |
+| Accessibility | The title of the front window and the badge counts on Dock icons. For Gnomon: reading an app's controls, pointing at them, and, once you allow outward actions, pressing and typing in them. | window helper, notification helper, Sundial app | Recommended; needed for screen looks and acts | You add Sundial.app |
+| Input Monitoring | How many keys, clicks and scrolls happen, to tell working from away, and when your last real key press or click was, so Gnomon never acts while your hands are on the keys. Never which keys. | input helper | Recommended; needed for the hand check before a screen step | You add Sundial.app |
 | Calendars | Times, titles and attendees of your events. | calendar helper | Recommended | The helper asks |
+| Reminders | Adding a reminder, only when you approve one. | calendar helper | Optional | The helper asks |
 | Contacts | Names for calendar attendees that arrive as bare addresses. | calendar helper | Optional | The helper asks |
 | Automation | The address and title of the active browser tab. | browser helper | Optional | The helper asks, once per browser |
-| Screen Recording | Text on screen, read on this Mac. | screen-text helper | Only if you turn it on | The helper asks |
-| Microphone | Speech around you, transcribed on this Mac. | audio helper | Only if you turn it on | The helper asks |
+| Screen Recording | Text inside pictures when Gnomon looks at a window, read on this Mac by Apple Vision. The optional screen-text reader. | Sundial app, screen-text helper | Optional; without it a look still reads every control | Sundial asks; the screen-text helper asks for itself |
+| Microphone | What you say while you hold the summon key. Speech around you, if you turn hearing on. Transcribed on this Mac. | Sundial app, audio helper | Only for hold to talk or hearing | macOS asks |
 | System Audio Recording | The other side of a call: what the Mac plays, transcribed on this Mac. | audio helper | Only if you turn on hearing | macOS asks the first time hearing wakes |
 | Notifications | Gnomon's notices as macOS banners. | launcher | Only if you turn it on | The launcher asks |
-| Full Disk Access | Mail and Messages senders and subjects, and your Focus mode. | see below | Optional, off | You add it |
+| Full Disk Access | Messages senders and chats (off by default), and your Focus mode. | see below | Optional, off | You add it |
 | Location Services | Nothing. Sundial never asks where you are. | none | No | Not needed |
 
 ## Grant a permission by hand
@@ -75,14 +77,16 @@ these: macOS matches the grant to the program that asked.
   Vivaldi and Arc. It keeps the site and path, never a query string, and skips
   private windows. The grants appear under **Privacy & Security → Automation →
   Sundial Browser Helper**.
-- **Screen Recording.** Only the screen-text reader uses it, and it is off.
-  The launcher starts that helper only when `config.json` has
-  `"ocr": { "enabled": true }`. The helper then asks for Screen Recording
-  itself. An entry for Sundial.app that you added by hand does not cover it.
-- **Microphone.** Only the audio helper uses it, and it is off. The launcher
-  starts it only when `config.json` has `"audio": { "enabled": true }`. Audio is
-  transcribed on this Mac and never written to disk. Hearing needs a local
-  speech model as well; this page covers only the permission.
+- **Screen Recording.** Two things use it. The Sundial app uses it to read
+  text inside pictures when Gnomon looks at a window; without it the look still
+  works and says it had no grant. The screen-text reader uses it too, and is
+  off: the launcher starts that helper only when `config.json` has
+  `"ocr": { "enabled": true }`, and the helper then asks for itself. An entry
+  for Sundial.app that you added by hand does not cover that helper.
+- **Microphone.** The Sundial app asks the first time you hold the summon key
+  to talk. The audio helper asks only if you turn hearing on (`"audio":
+  { "enabled": true }`). Audio is transcribed on this Mac and never written to
+  disk. Both need the local speech model: `node bin/sundial hearing`.
 - **System Audio Recording.** While hearing is on, the audio helper also
   transcribes what the Mac plays, so a call's transcript has both sides, labelled
   as the call or the room. macOS asks the first time. If you refuse, hearing
@@ -96,10 +100,10 @@ reset it (below) so the helper asks again.
 
 ## Full Disk Access
 
-The setup page says to skip this, and you can. Two things use it: Mail and
-Messages capture (senders and subjects only), which is off unless
-`config.json` has `"privacy": { "mail": true }`, and reading which Focus mode is
-on. Without it, Sundial may not see your Focus mode.
+The setup page says to skip this, and you can. Two things use it: Messages
+capture (senders and chats, never text), which is off unless `config.json` has
+`"privacy": { "messages": true }`, and reading which Focus mode is on. Without
+it, Sundial may not see your Focus mode.
 
 ## Location Services
 
@@ -115,9 +119,25 @@ its exact code. When a helper is rebuilt, for example when `install` runs after
 you pull new code, the hash changes and macOS treats it as a new program. The
 entry in System Settings can still look switched on while it no longer applies.
 
-When that happens, remove the entry with **−**, add it again, and restart.
-Helpers that ask for themselves will ask again. A Developer ID signature, which
-would keep grants across updates, is planned.
+When that happens, re-grant:
+
+1. In **System Settings → Privacy & Security**, open each pane where Sundial is
+   listed (Accessibility, Input Monitoring, Screen Recording, and Full Disk
+   Access if you added it).
+2. Select **Sundial** and remove it with **−**.
+3. Add `/Applications/Sundial.app` again with **+** and switch it on.
+4. Restart Sundial: `node bin/sundial restart`.
+5. Accept the prompts that helpers raise for themselves (Calendars, Screen
+   Recording for the screen-text reader, Microphone, Automation).
+
+Pulling new code and running `install` rebuilds the helpers only when their
+source changed. A release that changes them says so. A Developer ID signature,
+which would keep grants across updates, is planned.
+
+The packaged release app checks for an update once a day and asks before it
+installs one. Each update it installs is a new identity to macOS until the app
+is signed with a Developer ID, so answer Install when you have time to grant
+the permissions again.
 
 ## Sundial.app is the app macOS starts
 

@@ -1,5 +1,10 @@
 // Trust — is the machine working: how long the daemon watched (the honest denominator), the pipeline's coverage, embeddings, sensor freshness, redaction, retractions, the notices' precision per kind and the judge's record.
 import { judgementTrust, noticesByKind, perception } from '@sundial/kernel/read/trust.js'
+import { readKnockStats } from '@sundial/kernel/read/knock-stats.js'
+import { readOfferStats } from '@sundial/kernel/read/offer-stats.js'
+import { readSummonStats } from '@sundial/kernel/read/summon-stats.js'
+import { readStuckStats } from '@sundial/kernel/read/stuck-stats.js'
+import { readVoiceStats } from '@sundial/kernel/read/voice-stats.js'
 import { loadSundialConfig } from '@sundial/helpers/sundial-config.js'
 import { localDate } from '@sundial/helpers/local-day.js'
 import { getEmbeddingHealth, getObservedHours, getPipelineCoverage, getRedactionHealth, getSignalFreshness, listRetractedFacts } from '@sundial/db/index.js'
@@ -14,7 +19,7 @@ export async function readTrust({ state, now, questions }) {
   // the ledger beside what the thinking cost (L9). A trust surface answers
   // how much of the owner's life was seen and what became of it; how many
   // rows that filled is a different question and was the loudest panel here.
-  const [pipeline, embeddings, freshness, redaction, retracted, observedDays] = await Promise.all([
+  const [pipeline, embeddings, freshness, redaction, retracted, observedDays, knocks, summons, stuck, voice, offers] = await Promise.all([
     getPipelineCoverage(),
     getEmbeddingHealth(),
     getSignalFreshness(),
@@ -24,6 +29,11 @@ export async function readTrust({ state, now, questions }) {
     // bounded mirror keeps — see `getObservedHours` for why the surface and
     // the fold read different sources for the same measure.
     getObservedHours(),
+    readKnockStats({ now }),
+    readSummonStats({ now }),
+    readStuckStats({ now }),
+    readVoiceStats({ now }),
+    readOfferStats({ now }),
   ])
 
   // UTC hours folded into LOCAL days here rather than in SQL, where the
@@ -56,6 +66,16 @@ export async function readTrust({ state, now, questions }) {
     feedback: { countsByVerdict: state?.feedback?.countsByVerdict ?? {}, lastVerdictAt: state?.feedback?.lastVerdictAt ?? null },
     // N1 / W4 step 8: of the notices judged in thirty days, how many were worth hearing — per kind, with n, folded.
     noticePrecision: noticesByKind(state, now),
+    // Plan 15 step 1: what became of each knock, per kind, from the log.
+    knocks,
+    // Plan 15 step 2: the first move after each summon, and how often the guess held, from the log.
+    summons,
+    // Plan 15 4.3: each stuck sign, its notices and the verdicts on them.
+    stuck,
+    // Plan 15 step 3: time to the nod and to the first spoken word, p50 and p90 with n.
+    voice,
+    // Set 2 R3: offers pressed over offers shown, the slip and the knock apart, from the log.
+    offers,
     // J2.3: the belief audit — when it last ran, and every retraction with
     // the answers behind it (null when an owner tap closed the fact).
     beliefAudit: { lastRunAt: state?.memory?.lastBeliefAuditAt ?? null, retracted },
@@ -84,9 +104,12 @@ export async function readTrust({ state, now, questions }) {
       clipboardEnabled: Boolean(config.clipboardEnabled),
       ocr: Boolean(config.ocr?.enabled),
       vision: Boolean(config.ocr?.vision?.enabled),
+      jevFrames: Boolean(config.ocr?.enabled && config.ocr?.jev?.frames === true),
       vault: typeof config.vault === 'string' && config.vault !== '',
       mail: config.privacy?.mail === true,
       messages: config.privacy?.messages === true,
     },
+    // What leaves this Mac for a picture, beyond the model routes the ledger shows: one plain line each.
+    outbound: [{ name: 'Atlas', does: 'a few search words from an atlas ask go to Wikimedia Commons, Poly Pizza, Smithsonian 3D and BodyParts3D; the files they name are fetched once and kept on this Mac.' }],
   }
 }

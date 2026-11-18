@@ -2,6 +2,7 @@
 // every change reaches `state.config` as a `config:changed` event (`configTrack`),
 // from the route that wrote the file or from the boot that found it changed, so
 // a replay runs on the config that was in force at the time.
+import { DEFAULT_PRIVATE_HOSTS } from '@sundial/helpers/privacy-config.js';
 import { resolveActions, type ResolvedSundialConfig } from '@sundial/helpers/sundial-config.js';
 import type { KernelConfig } from './types.js';
 
@@ -12,6 +13,8 @@ export function kernelConfigOf(c: ResolvedSundialConfig): KernelConfig {
     screenTextRetentionDays: c.ocr.retentionDays,
     transcriptRetentionDays: c.audio.retentionDays,
     autoHearMeetings: c.audio.autoMeetings,
+    screenJevText: c.ocr.enabled && c.ocr.jev.text,
+    sensorsOn: { ocr: c.ocr.enabled, audio: c.audio.enabled },
     decayFactor: c.decayFactor,
     projectRules: c.projectRules,
     sharedPlaces: c.sharedPlaces,
@@ -19,9 +22,13 @@ export function kernelConfigOf(c: ResolvedSundialConfig): KernelConfig {
     orgByPath: c.orgByPath,
     locationLabels: c.locationLabels,
     ownerAliases: c.ownerAliases,
+    workdays: c.workdays,
+    choreDays: c.choreDays,
+    offerBar: c.offerBar,
     timezone: c.timezone,
     refutationEnabled: c.refutationEnabled,
     leisureRules: c.leisureRules,
+    privateHosts: [...new Set([...DEFAULT_PRIVATE_HOSTS, ...c.privacy.extraPrivateHosts.map((h) => h.trim().toLowerCase()).filter(Boolean)])],
     experiments: c.experiments,
     notifications: { pushAtMac: c.notifications.pushAtMac, enabled: c.notifications.enabled },
     vault: c.vault,
@@ -29,7 +36,7 @@ export function kernelConfigOf(c: ResolvedSundialConfig): KernelConfig {
     jobs: c.jobs,
     // Overrides, not resolved caps: JSON has no `Infinity`. Keys never live in config.json.
     budgets: c.budgets,
-    llm: { use: c.llm.use, providers: c.llm.providers },
+    llm: { use: c.llm.use, providers: c.llm.providers, sources: c.llm.sources, roles: c.llm.roles },
     actions: c.actions,
   };
 }
@@ -93,13 +100,13 @@ export function applyConfigDiff(config: KernelConfig, diff: readonly ConfigDiffE
  * The `config.json` paths only a restart applies (W3): the redaction tier is
  * module state, sensors and the microphone are spawned at start, model routes
  * and MCP mounts are registered at start, the delivery transports and the
- * Claude hand are built at start, and the vault sensor and night-shift tools
+ * jobs runtime are built at start, and the vault sensor and night-shift tools
  * exist only if their switch was on at start. Everything else a rule reads is
  * live through `state.config`.
  */
-export const RESTART_PATHS = ['privacy', 'ocr', 'audio', 'browser', 'clipboardEnabled', 'pollIntervalMs', 'llm.providers', 'integrations', 'notifications', 'hands', 'vault', 'jobs.enabled', 'experiments.presence'];
+export const RESTART_PATHS = ['privacy', 'ocr', 'audio', 'browser', 'clipboardEnabled', 'sensors', 'pollIntervalMs', 'llm.providers', 'llm.sources', 'llm.roles.jobs', 'integrations', 'notifications', 'hands', 'vault', 'jobs.enabled', 'experiments.presence'];
 /** Under a restart path, but read by rules from `state.config`. */
-const LIVE_UNDER_RESTART = new Set(['ocr.retentionDays', 'audio.retentionDays', 'audio.autoMeetings', 'notifications.pushAtMac']);
+const LIVE_UNDER_RESTART = new Set(['ocr.retentionDays', 'ocr.jev.text', 'audio.retentionDays', 'audio.autoMeetings', 'notifications.pushAtMac']);
 
 /** The restart-only leaves that differ between two raw `config.json` objects. */
 export function restartPaths(was: unknown, now: unknown): string[] {

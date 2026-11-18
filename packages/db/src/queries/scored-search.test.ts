@@ -326,6 +326,16 @@ describe('scoredSearch', () => {
     expect(queryNames('ab', 'ab')).toBe(false);
   });
 
+  it('since/until keep only the hits of that period, by day, inclusive', async () => {
+    await upsertEntity({ id: 'owner:pat', kind: 'owner', canonicalName: 'pat', createdAt: '2023-01-01T00:00:00.000Z' });
+    for (const [id, day] of [['feb', '2023-02-27'], ['mar1', '2023-03-01'], ['mar31', '2023-03-31'], ['apr', '2023-04-01']]) {
+      await insertEntityFact({ id, entityId: 'owner:pat', predicate: 'attended', object: `a doctor's appointment (${id})`, confidence: 80, validFrom: `${day}T09:00:00.000Z`, sourceEventId: null, createdAt: `${day}T09:00:00.000Z` });
+      await insertEmbedding({ id: `e-${id}`, refType: 'entity_fact', refId: id, model: 'local-hash-256-v1', vector: computeLocalEmbedding(`pat attended a doctor's appointment (${id})`), createdAt: `${day}T09:00:00.000Z` });
+    }
+    const hits = await scoredSearch("doctor's appointment", 10, '2023-05-01T00:00:00.000Z', { since: '2023-03-01', until: '2023-03-31' });
+    expect(hits.map((h) => h.refId).sort()).toEqual(['mar1', 'mar31']);
+  });
+
   it('respects the limit', async () => {
     for (let i = 0; i < 5; i++) {
       await insertMoment({

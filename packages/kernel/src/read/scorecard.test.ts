@@ -13,7 +13,7 @@ describe('the folded scorecard rows (W5 step 9)', () => {
     s.calibrated.params = { 'notice.precision': stats(12, 7), 'notice.precision:owner-question': stats(12, 3), 'notice.seen': stats(76, 61), 'presence.baseline': stats(1000, 490), 'action.outward:calendar_create': stats(82, 55) };
     s.calibrated.noticeByKind = { 'owner-question': { '2026-09-28': { delivered: 10, labelled: 4, useful: 3, wrong: 9, notNow: 0, seen: 2, acted: 3, explored: 0 } } };
     const rows = Object.fromEntries(foldedScorecard(s, NOW).map((r) => [r.id, r]));
-    expect(Object.keys(rows).map(Number)).toEqual([1, 2, 3, 4, 5, 11]);
+    expect(Object.keys(rows).map(Number)).toEqual([1, 2, 3, 4, 5, 11, 14]);
     expect(rows[1]).toMatchObject({ value: '99% (n = 200)', meets: true });
     expect(rows[2]).toMatchObject({ value: 'openai 14', meets: false });
     expect(rows[3]).toMatchObject({ value: '40% (n = 10, too small to trust)', meets: false });
@@ -34,6 +34,23 @@ describe('the folded scorecard rows (W5 step 9)', () => {
     s.calibrated.params['action.outward:t'] = stats(50, 50);
     s.calibrated.params['action.performed:t'] = stats(50, 49);
     expect(actionRates(s).meets).toBe(true);
+    // A read tool's calls never count toward an action's "did not fail".
+    s.calibrated.params['action.performed:gnomon_today_summary'] = stats(500, 500);
+    s.calibrated.params['action.performed:mcp__notes__list_files'] = stats(10, 10);
+    s.calibrated.params['action.performed:mcp__notes__create_file'] = stats(10, 0);
+    expect(actionRates(s).performed).toEqual({ value: 49 / 60, n: 60 });
+  });
+});
+
+describe('row 14: the retention prune', () => {
+  it('says when it last ran, and fails once it has missed two day boundaries', () => {
+    const s = createInitialState('d1');
+    const row = () => foldedScorecard(s, NOW).find((r) => r.id === 14)!;
+    expect(row()).toMatchObject({ value: 'not yet', n: 0, meets: null });
+    s.retention = { lastPrunedAt: '2026-09-29T00:00:00.000Z' };
+    expect(row()).toMatchObject({ value: '2026-09-29T00:00:00.000Z (12 h ago)', n: 1, meets: true });
+    s.retention = { lastPrunedAt: '2026-09-26T00:00:00.000Z' };
+    expect(row()).toMatchObject({ value: '2026-09-26T00:00:00.000Z (84 h ago)', meets: false });
   });
 });
 

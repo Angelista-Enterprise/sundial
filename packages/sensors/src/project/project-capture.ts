@@ -178,7 +178,8 @@ function toProject(dir: string, indicators: string[]): CachedProject {
   // Canonicalized through the same helper the git sensor uses, so a repo has
   // one spelling no matter which sensor names it (see `canonicalizeRepoDir`).
   const root = canonicalizeRepoDir(dir);
-  return { projectRoot: root, projectName: path.basename(root), projectId: null, indicators };
+  // The id is the canonical root: the same value `projectTrack` derives from `projectRoot`. It was `null` on every row until 2026-10-14.
+  return { projectRoot: root, projectName: path.basename(root), projectId: root, indicators };
 }
 
 /**

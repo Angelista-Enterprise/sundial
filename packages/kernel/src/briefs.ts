@@ -200,6 +200,22 @@ export function briefHeader(state: KernelState, m: PrepMeeting): string {
   return `${m.title || 'A meeting'} at ${formatClock(m.start, state.config.timezone)}${people ? ` with ${people}` : ''}.`;
 }
 
+/**
+ * Today's standup and its draft, for the first touch of the day (the draft used
+ * to be said ten minutes before the call, when the owner was mostly not at the
+ * Mac yet). Null when no standup is still ahead or under way today, the owner
+ * silenced the kind, or the fold holds no earlier day to read back.
+ */
+export function standupToday(state: KernelState, now: string): { meeting: UpcomingEvent; key: string; lines: string[] } | null {
+  const tz = state.config.timezone;
+  const today = localDate(now, tz);
+  const meeting = state.schedule.upcoming
+    .filter((m) => localDate(m.start, tz) === today && Date.parse(m.end) > Date.parse(now) && isStandupLike(state, m))
+    .sort((a, b) => Date.parse(a.start) - Date.parse(b.start))[0];
+  if (!meeting || silenced(state, 'standup-draft') || !Object.keys(briefsOf(state).days).some((d) => d < today)) return null;
+  return { meeting, key: briefKey({ kind: 'standup-draft', title: meeting.title, start: meeting.start }, tz), lines: standupLines(state, now, meeting) };
+}
+
 /** Whether the week's review belongs on Today: Friday from 13:00, and the weekend after it. */
 export function weekReviewDue(now: string, tz: string): boolean {
   const wd = localWeekday(now, tz);

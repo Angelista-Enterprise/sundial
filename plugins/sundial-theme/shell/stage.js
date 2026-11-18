@@ -16,6 +16,7 @@ import { el } from './surfaces.js'
 import { icon } from './icons.js'
 import { renderMarkdown } from './markdown.js'
 import { lensNode, lensSpec } from './lens.js'
+import { cardSpec, nodusNode } from '@sundial/nodus/card.js'
 import { SETTINGS, settingsNode } from './settings.js'
 
 const headers = { accept: 'application/json', 'content-type': 'application/json' }
@@ -238,11 +239,6 @@ function openComment(id) {
   post({ action: 'place', id, comment: next.trim() })
 }
 
-export function setReading(id, text) {
-  const p = panes.get(id)
-  if (p) p.head.children[1].textContent = text
-}
-
 /**
  * A pane with no card yet asks the record for one. The RULE chooses the spot
  * (nearest free place to the wish, per-kind size floors), so the client never
@@ -359,6 +355,12 @@ async function materialize(id, card) {
     // The spec is the card's text: a view Gnomon composed, drawn live (lens.js).
     const spec = lensSpec(card.text)
     pane(id, { title: spec?.title ?? 'Lens', node: spec ? lensNode(spec) : el('div', { class: 'none', text: 'This lens has no readable spec.' }), reading: 'lens' })
+    return
+  }
+  if (card.kind === 'nodus') {
+    // A figure Gnomon composed from the record (packages/nodus): its spec, or its recipe off the shelf, is the card's text.
+    const spec = cardSpec(card.text)
+    pane(id, { title: spec?.title ?? 'Figure', node: spec ? nodusNode(spec, { id, text: card.text }) : el('div', { class: 'none', text: 'This figure has no readable spec.' }), reading: 'live figure' })
     return
   }
   const made = await resolver(id, card)
@@ -657,9 +659,9 @@ export function applyBoard(next, { first = false } = {}) {
       if ((panes.get(id).filtersKey ?? 'null') !== JSON.stringify(card.filters ?? null)) void refill(id, card)
       const note = panes.get(id).body.querySelector('.note-text')
       if (note && note !== document.activeElement && note.value !== (card.text ?? '')) note.value = card.text ?? ''
-      // The rendered text follows the record, unless the owner is mid-edit.
+      // The rendered text follows the record, unless the owner is mid-edit (a Nodus figure's: Gnomon's walk replacing the numbers').
       if (!note || note.hidden) {
-        for (const md of panes.get(id).body.querySelectorAll('.note-md, .web-excerpt')) if (md.dataset.text !== (card.text ?? '')) md.dispatchEvent(new Event('sync'))
+        for (const md of panes.get(id).body.querySelectorAll('.note-md, .web-excerpt, .nodus')) if (md.dataset.text !== (card.text ?? '')) md.dispatchEvent(new CustomEvent('sync', { detail: card.text ?? '' }))
       }
     } else materialize(id, card)
   }

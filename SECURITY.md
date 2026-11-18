@@ -26,9 +26,34 @@ is discussed in public.
 The whole folder is created 0700 and every process runs under `umask 077`.
 `SUNDIAL_HOME` moves it.
 
+## An agent that can click
+
+Gnomon can press and type in your other apps through macOS Accessibility, once
+you allow outward actions (off on a new install). The controls, in full in
+[docs/screen-acting.md](docs/screen-acting.md):
+
+- **Every screen step asks**, under Ask and Auto alike. Only when you set
+  outward actions to Auto, a plain step (not typing, not a final) stops asking in
+  one app after ten yeses in a row there (`actions.earnAfter`).
+- **A final step always asks**, in every mode: send, pay, submit, delete,
+  discard, post, update, overwrite, archive, leave, block, share, transfer,
+  merge, approve or decline, and a Return on something no look can name. A
+  blind final, a final with no app named, and a final with nobody to ask are
+  refused. After a no, the same final is refused for the rest of the turn.
+- **Private apps are never looked at or touched**: messaging, mail, Slack,
+  Notes, Calendar, password managers, banking, health, and any you add. Nor
+  System Settings, password fields, sign-in windows or secure input.
+- **Your hands win.** A step waits while you type, and is refused if you keep
+  typing.
+- **Data leaving after a private read asks first**: a web call or shell call
+  that carries something that looks like data, or goes to an unknown host.
+- **Always refused**: inline scripts that hold an address, destructive shell
+  commands, writing to Sundial's database from the shell, and any outward step
+  in a background job.
+
 ## Threat model
 
-**In scope — Sundial defends against:**
+**In scope. Sundial defends against:**
 
 - **Web pages in your browser.** Every route of the local web client checks the
   Host header, the Origin and `Sec-Fetch-Site`, and requires the session cookie.
@@ -41,7 +66,7 @@ The whole folder is created 0700 and every process runs under `umask 077`.
   Reach it from your phone through Tailscale Serve, never by changing the bind.
 - **Text Sundial reads that tries to give orders** (window titles, web pages,
   screen text, mail subjects, calendar invites). This is prompt injection, and it
-  is only partly solved — see *Known limits*. What is in place: background jobs
+  is only partly solved; see *Known limits*. What is in place: background jobs
   cannot write to your services or run commands; a web page Gnomon links on the
   board loads only when you click it; Gnomon's web tools cannot reach this Mac or
   your local network; under the default permission preset, every write Gnomon
@@ -57,21 +82,19 @@ The whole folder is created 0700 and every process runs under `umask 077`.
 
 ## What leaves the machine
 
-Nothing, until you configure it. Then only:
+The full list of network calls, with what is sent, when, and the switch for
+each, is in [docs/privacy.md](docs/privacy.md#what-can-leave-your-mac). In short:
 
-| What | Where to | When |
-|---|---|---|
-| Sanitized text from your record: rollups of what you worked on, window titles, page excerpts, calendar titles | The model endpoint you set (`SUNDIAL_LLM_BASE_URL`, or a provider in `llm.providers`) | When Gnomon writes or answers. Point it at a local model (Ollama) and nothing leaves. Every call is listed in the Ledger. |
-| What you type in the chat, and any image you attach, as you wrote it | The same endpoint | When you send a message. Only the record is cleaned at ingest; your own words are sent as they are. |
-| Nothing else from the record | — | Embeddings are computed on this Mac; a remote embedding server is refused. |
-| The embedding model weights (a download, no data sent) | Hugging Face | Once, the first time embeddings run |
-| A notice's title and text (up to 1,200 characters), and titles of work Gnomon shelved | ntfy.sh (or the ntfy server you name) | Only if you configure `notifications.ntfy` |
-| A request for the pull request of the branch you are on | GitHub, with your own `gh` login | Every 5 minutes, only if `gh` is installed and signed in and a repository is on a non-default branch |
-| Tool calls to a service you connected | That service (for example your notes app's MCP server) | Only for services you list under `integrations` in `config.json` |
-| Questions for the hosted judge | api.typesafe.ai | Only if you set `TYPESAFE_API_KEY` |
-| Web searches and page reads | the search server and the site | When you ask, or when a background job researches something you have open (its brief asks for two searches and three pages at most). Every request is in the log as `web:search` / `web:fetch` |
-| A request for the update feed (no data sent) | GitHub, this repository's releases | Once a day, only in the release app. A source install has no feed |
-| A background job's prompt, and whatever Claude reads from your record over Sundial's read-only MCP server | Anthropic, through your own Claude Code login | Only if you set `hands.claude` in `config.json`. Every job is a row in the Ledger (purpose `hand`) |
+- **With nothing configured:** a one-time download of the embedding model from
+  Hugging Face (no data sent); a search of your open pull requests through your
+  own `gh` login every five minutes, if `gh` is signed in; five lines of context
+  added to each new Claude Code session, if you use Claude Code; and, in the
+  packaged release app only, a daily update check that installs updates.
+- **Once you set a model:** sanitized text from the record, what you type, and
+  the text of any window Gnomon looks at go to that endpoint. A model on
+  `127.0.0.1` keeps all of it on the Mac.
+- **When you ask for it:** web searches and page reads, ntfy pushes, connected
+  services, Claude Code or Copilot as a model, the hosted judge.
 
 If you connect Sundial to another agent over MCP (for example Claude Code), what
 that agent reads from your record goes on to *its* model provider.
@@ -80,12 +103,14 @@ that agent reads from your record goes on to *its* model provider.
 secret-looking strings (passwords, bearer tokens, GitHub/OpenAI/AWS/Slack keys,
 JWTs) are removed, URL query strings are dropped, file paths lose your user name,
 e-mail addresses become a name or an alias, and apps you mark sensitive or hidden
-are cleared. Every later reader — the model, the MCP server, the page — reads the
+are cleared. Every later reader (the model, the MCP server, the page) reads the
 already-cleaned value.
 
-**No telemetry.** Sundial sends no usage data. The harness it runs on (dsh) has
-an optional OpenTelemetry exporter; Sundial starts it with
-`DSH_TELEMETRY_DISABLED=1`.
+**No telemetry.** The Sundial app sends no usage data, crash reports or
+analytics. The harness it runs on (dsh) has an optional OpenTelemetry exporter
+that would upload a conversation when you give feedback; both of Sundial's
+launchers start it with `DSH_TELEMETRY_DISABLED=1`. The public demo web page
+counts named events with GoatCounter, never text.
 
 ## macOS permissions
 
@@ -94,12 +119,12 @@ them. The `/setup` page explains each one and shows its state.
 
 | Permission | What it lets Sundial read |
 |---|---|
-| Accessibility | The front app and its window title |
-| Input Monitoring | Counts of key presses and clicks per minute — never which keys |
+| Accessibility | The front app and its window title; for Gnomon, an app's controls, and pressing and typing in them once you allow outward actions |
+| Input Monitoring | Counts of key presses and clicks, and the time of the last one, never which keys |
 | Calendars, Contacts | Event times, titles and attendee names |
-| Screen Recording | Only for the optional screen-text reader (off by default) |
-| Microphone, System Audio Recording | Only for optional hearing (off by default); audio is transcribed on the Mac and never written to disk |
-| Full Disk Access | Only if you add it (off by default): Mail and Messages senders and subjects, and your Focus mode. Never message bodies |
+| Screen Recording | Text inside pictures when Gnomon looks at a window, and the optional screen-text reader (off by default). Read on the Mac |
+| Microphone, System Audio Recording | Hold to talk, and optional hearing (off by default); audio is transcribed on the Mac and never written to disk |
+| Full Disk Access | Only if you add it (off by default): Messages senders and chats, and your Focus mode. Never message text |
 | Notifications | Only if you turn banners on |
 | Automation (browser) | The site and path of the front browser tab, never query strings. Private windows are skipped in Chrome, Brave, Edge and Vivaldi; Safari and Arc do not tell a private window apart, so their private tabs are read too |
 
@@ -128,6 +153,17 @@ drops the grants and asks again.
 - **Person aliases** (`person-<hash>`) are an unsalted hash of an e-mail address
   and can be reversed with a list of candidate addresses.
 - **Ad-hoc signing**: see above. A Developer ID signature is planned.
+- **No sandbox for screen acting.** Gnomon acts in your real apps, as you. The
+  confirm is a gate, not isolation.
+- **Final steps are recognised by control names in seven languages** (English,
+  Dutch, German, French, Spanish, Portuguese, Italian) and by keys. A button in
+  another language asks as an ordinary step, not as a final, and a button
+  Gnomon has no word for never stops asking.
+- **The text of a window Gnomon looks at goes to your chat model**, after the
+  same cleaning as the record. Use a local model if that is not acceptable.
+- **Embedding model download and pull request checks** happen by default.
+  `install` asks about the first, and Settings has a switch for both, under
+  What may leave this Mac (see [docs/privacy.md](docs/privacy.md)).
 
-A full security, privacy and naming audit was done before v0; every finding above
-is from it.
+A full security, privacy and naming audit was done before v0; the findings
+above started from it and are kept current with each release.

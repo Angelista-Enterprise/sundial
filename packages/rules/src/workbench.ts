@@ -2,11 +2,17 @@ import type { Effect, KernelState, Rule, WorkJob, WorkJobRecord } from '@sundial
 import { deriveId } from '@sundial/helpers/derive-id.js';
 import { promiseLine } from './promise-track.js';
 import { samePerson } from './promise-terms.js';
-import { localDate } from '@sundial/helpers/local-day.js';
+import { formatClock, localDate } from '@sundial/helpers/local-day.js';
 import { lastOccurrence, parseRepeat, repeatKey } from '@sundial/helpers/repeat-schedule.js';
+import { briefHeader, standupToday } from '@sundial/kernel/briefs.js';
+import { ticketKeys } from './ticket-track.js';
+import { keepWords, proposalOf } from './review-proposal.js';
 
 /** Jobs a day, meeting briefs excepted — they are owed to the calendar, not to spare time. */
 export const MAX_JOBS_PER_DAY = 3;
+/** Gnomon's reviews of its own failed steps, their own budget, never the day's jobs: the gap rules; 12 a day only stops a runaway. */
+export const MAX_REVIEWS_PER_DAY = 12;
+export const REVIEW_GAP_MS = 30 * 60 * 1000;
 /** A job with no result after this is closed `timed-out`; the worker took too long or died. */
 export const JOB_TIMEOUT_MS = 20 * 60 * 1000;
 /** Breathing room between two spare-time jobs. */
@@ -26,6 +32,23 @@ export const MAX_QUEUED_JOBS = 5;
 export const MAX_REPEATS = 10;
 /** An occurrence missed by more than this (the Mac was asleep all morning) is skipped, not run late. */
 export const REPEAT_GRACE_MS = 6 * 60 * 60 * 1000;
+/** Rule ideas are seeded by a crossed chore; at most one in this long, what the weekly job used to spend. */
+export const RULE_IDEA_GAP_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * Set 5 R3: the learners' own jobs get one retry. On the record both morning packets and the one self-review failed
+ * in 3 to 5 s ("the worker ended without reporting"): the packet runs on the owner's first touch, right after the
+ * Mac wakes, when the model route is coldest, and a failed job was done for the day. Requeued once, after this.
+ * (Set 5 R3 jobs: those three were a 401, the child running on a stale route; the close now names the error.)
+ */
+export const RETRY_KINDS = new Set<WorkJob['kind']>(['day-packet', 'self-review']);
+export const RETRY_AFTER_MS = 10 * 60 * 1000;
+/**
+ * A failure that says the model route was not there yet (a network error, a timeout, a 5xx, both hedged attempts
+ * failing): the route is cold, not wrong, so the one retry comes sooner, once it has had a minute or two to warm.
+ * An auth error is not one: the same key fails the same way.
+ */
+export const COLD_RETRY_MS = 2 * 60 * 1000;
+export const COLD_ROUTE = /both failed|fetch failed|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|socket hang up|\bNETWORK\b|\bTIMEOUT\b|timed out|not answering|overloaded|\b50[0-4]\b/i;
 
 interface RequestedPayload {
   subject?: string;
@@ -35,9 +58,18 @@ interface RequestedPayload {
   stepId?: string;
   /** A schedule in plain words; the job is kept and run on it instead of once now. */
   repeat?: string;
-  /** `rule`: a watch rule's action (UC4 F19), not the owner's own ask. */
+  /** `rule`: a watch rule's action (UC4 F19), not the owner's own ask. `review`: Gnomon's own self-review (`selfReview`). */
   by?: string;
   rule?: string;
+  /** With `by: 'review'`: the cluster the job reads. */
+  review?: unknown;
+}
+
+/** A self-review job's facts, from the cluster `selfReview` sent: strings only, as a job's detail is. */
+function reviewDetail(review: unknown): WorkJob['detail'] {
+  const r = (review ?? {}) as Record<string, unknown>;
+  const s = (v: unknown) => (typeof v === 'string' ? v.slice(0, 200) : null);
+  return { app: s(r.app), session: s(r.session), cluster: s(r.kind), failures: typeof r.n === 'number' ? String(r.n) : null, steps: Array.isArray(r.steps) ? r.steps.filter((x): x is string => typeof x === 'string').slice(0, 5).map((x) => x.slice(0, 200)) : [] };
 }
 
 interface ShelvedPayload {
@@ -140,11 +172,13 @@ export function pickJob(state: KernelState, nowIso: string): WorkJob | null {
     };
   }
 
-  // Once a week: look for one thing worth noticing unasked, and propose it as a
-  // tested watch rule (kernel/watch.ts). The owner's Keep on the shelf adopts it.
-  const ideaKey = `rule-idea:${Math.floor(now / (7 * 86_400_000))}`;
-  if (!done[ideaKey]) {
-    return { id: deriveId(nowIso, 'workbench', ideaKey), kind: 'rule-idea', key: ideaKey, subject: 'a rule worth watching for', reason: 'the weekly look for something to notice on its own', detail: {}, openedAt: nowIso };
+  // Round 5 (FORESIGHT 4e): look for one thing worth noticing unasked when a chore crossed its count
+  // (`choreLearn`), seeded with it, never on a clock; at most one rule idea a week, the old job's spend.
+  // Proposed as a tested watch rule (kernel/watch.ts); the owner's Keep on the shelf adopts it.
+  const crossed = state.chores?.crossed;
+  const ideaKey = `rule-idea:${crossed?.key}`;
+  if (crossed && !done[ideaKey] && !Object.entries(done).some(([k, at]) => k.startsWith('rule-idea:') && now - Date.parse(at) < RULE_IDEA_GAP_MS)) {
+    return { id: deriveId(nowIso, 'workbench', ideaKey), kind: 'rule-idea', key: ideaKey, subject: 'a rule worth watching for', reason: `${crossed.key.replace(/^host:/, '')} became a chore (${crossed.days} days)`, detail: { seed: crossed.key, days: String(crossed.days) }, openedAt: nowIso };
   }
 
   for (const entityId of state.memory.recentEntityIds) {
@@ -163,6 +197,101 @@ export function pickJob(state: KernelState, nowIso: string): WorkJob | null {
   }
 
   return null;
+}
+
+/** Days of the week a morning packet is made on when config names none (0 = Sunday). */
+export const DEFAULT_WORKDAYS = [1, 2, 3, 4, 5];
+/** What a morning packet carries, in the order the worker writes it. */
+export const PACKET_PARTS = ['pull-requests', 'tickets', 'calendar', 'standup'] as const;
+/** The line a packet says instead of a mail summary: mail and chat reach the record only through private apps. */
+export const PACKET_LEFT_OUT = 'Mail and Messages are left out: they reach the record only through private apps.';
+const PACKET_MAX_LINES = 8;
+
+const dayBefore = (day: string, days: number): string => new Date(Date.parse(`${day}T12:00:00Z`) - days * 86_400_000).toISOString().slice(0, 10);
+
+/** The model route the work agent starts on (its chat default), for the breaker check. Pure: config only, no environment. */
+function chatRoute(state: KernelState): string {
+  return (state.config.llm?.roles?.chat?.[0] ?? state.config.llm?.use?.default ?? 'openai').split(':')[0]!;
+}
+
+/** Self-reviews asked for today, and when the newest was (`workbench.reviews`, folded on each review request). */
+function reviewsOf(state: KernelState, ts: string): { today: number; last: string | null } {
+  const r = state.workbench.reviews;
+  return { today: r && r.day === localDate(ts, state.config.timezone) ? r.n : 0, last: r?.last ?? null };
+}
+
+/**
+ * Whether a self-review may take the work slot now, never starving what the owner waits on: no job open or queued,
+ * the day's reviews not spent and past the gap after the last one, and the work agent's route not held by its
+ * breaker. The day's spare-time jobs (`MAX_JOBS_PER_DAY`) are not its budget: Gnomon's own picks spend those first.
+ * Pure: state and the event's time.
+ */
+export function spareSlot(state: KernelState, ts: string): boolean {
+  const wb = state.workbench;
+  if (wb.open !== null || (wb.queue ?? []).length > 0) return false;
+  const reviews = reviewsOf(state, ts);
+  if (reviews.today >= MAX_REVIEWS_PER_DAY || (reviews.last && Date.parse(ts) - Date.parse(reviews.last) < REVIEW_GAP_MS)) return false;
+  const held = state.reliability?.llm?.[chatRoute(state)]?.openUntil;
+  return !(held && Date.parse(held) > Date.parse(ts));
+}
+
+/**
+ * The morning packet's facts, as far as the fold holds them: today's calendar
+ * (the calendar sensor, never the Calendar app), the tickets the owner opened
+ * on this weekday a week ago and on another day too (the weekly re-open) plus
+ * the ones today's meetings name, and the standup draft (`standupToday`). Pull
+ * requests are not in the fold; the worker reads them with gnomon_pull_requests.
+ */
+export function dayPacket(state: KernelState, ts: string, day: string): WorkJob['detail'] {
+  const tz = state.config.timezone;
+  const today = localDate(ts, tz);
+  const meetings = state.schedule.upcoming.filter((m) => localDate(m.start, tz) === today && Date.parse(m.end) > Date.parse(ts)).sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
+  const calendar = meetings.slice(0, PACKET_MAX_LINES).map((m) => (m.isAllDay ? `${m.title} (all day)` : briefHeader(state, m)));
+  const named = new Set(meetings.flatMap((m) => ticketKeys(m.title)));
+  const weekAgo = dayBefore(day, 7);
+  const tickets = Object.values(state.tickets ?? {})
+    .filter((t) => named.has(t.id) || (t.days.includes(weekAgo) && t.days.length >= 2))
+    .sort((a, b) => Number(named.has(b.id)) - Number(named.has(a.id)) || b.days.length - a.days.length)
+    .slice(0, PACKET_MAX_LINES)
+    .map((t) => `${t.id}${t.pr?.number ? ` (PR #${t.pr.number}${t.pr.state ? ` ${t.pr.state.toLowerCase()}` : ''})` : t.stage !== 'seen' ? ` (${t.stage})` : ''}${named.has(t.id) ? ', in a meeting today' : `, opened ${t.days.length} days`}`);
+  const standup = standupToday(state, ts);
+  return {
+    day,
+    parts: [...PACKET_PARTS],
+    calendar,
+    tickets,
+    standup: standup ? [briefHeader(state, standup.meeting), ...standup.lines] : null,
+    leftOut: PACKET_LEFT_OUT,
+    firstTouch: formatClock(ts, tz),
+  };
+}
+
+/**
+ * The morning packet, asked for by the first touch of a workday
+ * (`owner:first-touch`, raised once a waking day by `idleTrack`, never for
+ * Gnomon's own input). It takes the queue like any job, so it waits for the one
+ * open slot and is closed by the same timeout; and, like a rule's job, it
+ * spends the day's job budget. Not asked for on a day off (`config.workdays`),
+ * once a packet for the day exists, when the day's jobs are spent, inside the
+ * gap after the last job, or while the work agent's route has its breaker open.
+ */
+function requestPacket(state: KernelState, event: { id: string; ts: string; payload: Record<string, unknown> }): { state: KernelState; effects: Effect[] } {
+  const none = { state, effects: [] };
+  const day = typeof event.payload.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(event.payload.day) ? event.payload.day : null;
+  if (day === null || !(state.config.workdays ?? DEFAULT_WORKDAYS).includes(new Date(`${day}T12:00:00Z`).getUTCDay())) return none;
+  const key = `day-packet:${day}`;
+  const wb = state.workbench;
+  const queue = wb.queue ?? [];
+  if (wb.done[key] || wb.open?.key === key || queue.some((j) => j.key === key) || queue.length >= MAX_QUEUED_JOBS) return none;
+  const today = localDate(event.ts, state.config.timezone);
+  const spent = wb.day === today ? wb.countToday : 0;
+  if (spent >= MAX_JOBS_PER_DAY) return none;
+  const last = wb.recent[wb.recent.length - 1];
+  if (last && Date.parse(event.ts) - Date.parse(last.closedAt) < MIN_GAP_MS) return none;
+  const held = state.reliability?.llm?.[chatRoute(state)]?.openUntil;
+  if (held && Date.parse(held) > Date.parse(event.ts)) return none;
+  const job: WorkJob = { id: deriveId(event.ts, event.id, 'workbench', key), kind: 'day-packet', key, subject: `the morning packet for ${day}`, reason: 'your first touch of the day', detail: dayPacket(state, event.ts, day), openedAt: event.ts };
+  return drain({ ...state, workbench: { ...wb, day: today, countToday: spent + 1, queue: [...queue, job] } }, event.ts);
 }
 
 /** The `done`/`briefPoints` key for a meeting brief. Named once: `meetingFollowup` reads the same key to offer the brief's points, and a re-typed literal is how the two silently stop matching. */
@@ -212,10 +341,13 @@ function close(state: KernelState, job: WorkJob, outcome: WorkJobRecord['outcome
  */
 function drain(state: KernelState, ts: string): { state: KernelState; effects: Effect[] } {
   const queue = state.workbench.queue ?? [];
-  if (state.workbench.open !== null || queue.length === 0) return { state, effects: [] };
-  const job: WorkJob = { ...queue[0]!, openedAt: ts };
+  // The first job that may run now: a retry waits for its `notBefore` without holding up the jobs behind it.
+  const next = state.workbench.open === null ? queue.findIndex((j) => !j.notBefore || j.notBefore <= ts) : -1;
+  if (next < 0) return { state, effects: [] };
+  const { notBefore: _wait, ...queued } = queue[next]!;
+  const job: WorkJob = { ...queued, openedAt: ts };
   return {
-    state: { ...state, workbench: { ...state.workbench, open: job, queue: queue.slice(1) } },
+    state: { ...state, workbench: { ...state.workbench, open: job, queue: queue.filter((_, i) => i !== next) } },
     effects: [{ type: 'StartSubagent', job: { ...job } }],
   };
 }
@@ -271,7 +403,10 @@ export const workbench: Rule = (state, event) => {
     const matches = open !== null && open.id === payload.jobId;
     const closed = matches ? close(state, open, 'shelved', title, event.ts, body) : state;
     const { state: next, effects: nextJob } = drain(closed, event.ts);
-    const fullBody = sources.length > 0 ? `${body}\n\nSources:\n${sources.map((source) => `- ${source}`).join('\n')}` : body;
+    // A self-review's proposal, in words: what the owner's Keep will do, so Keep applies what they read (`selfReview`).
+    const proposal = matches && open.kind === 'self-review' ? proposalOf((event.payload as { review?: unknown }).review, open.subject) : null;
+    const said = proposal ? `${body}\n\n${keepWords(proposal)} Wrong throws it away.` : body;
+    const fullBody = sources.length > 0 ? `${said}\n\nSources:\n${sources.map((source) => `- ${source}`).join('\n')}` : said;
     return {
       state: next,
       effects: [
@@ -328,7 +463,12 @@ export const workbench: Rule = (state, event) => {
     const open = state.workbench.open;
     if (open === null || open.id !== payload.jobId) return { state, effects: [] };
     const outcome = payload.outcome === 'failed' ? 'failed' : 'nothing';
-    const { state: next, effects } = drain(close(state, open, outcome, null, event.ts), event.ts);
+    const closed = close(state, open, outcome, null, event.ts);
+    // A learner's job that failed (not one the owner stopped) waits for its one retry.
+    const retry = outcome === 'failed' && RETRY_KINDS.has(open.kind) && (open.tries ?? 0) < 1 && payload.note !== 'stopped by owner';
+    const wait = COLD_ROUTE.test(payload.note ?? '') ? COLD_RETRY_MS : RETRY_AFTER_MS;
+    const requeued = retry ? { ...closed, workbench: { ...closed.workbench, queue: [...(closed.workbench.queue ?? []), { ...open, tries: (open.tries ?? 0) + 1, notBefore: new Date(Date.parse(event.ts) + wait).toISOString() }] } } : closed;
+    const { state: next, effects } = drain(requeued, event.ts);
     // A job the OWNER asked for that came back empty is news they are waiting
     // on; Gnomon's own empty jobs are not (nothing was promised).
     if (open.kind !== 'owner-request') return { state: next, effects };
@@ -380,17 +520,23 @@ export const workbench: Rule = (state, event) => {
     }
     const queue = state.workbench.queue ?? [];
     if (queue.length >= MAX_QUEUED_JOBS) return { state, effects: [] };
-    // A rule's job was not asked for in the moment: it spends the day's job budget like Gnomon's own.
+    // A rule's job was not asked for in the moment: it spends the day's job budget like Gnomon's own. Round 5's
+    // review of Gnomon's own failed steps (`selfReview`) is a job of its own kind with a budget of its own (`spareSlot`).
+    const review = payload.by === 'review';
     const byRule = payload.by === 'rule';
     const today = localDate(event.ts, state.config.timezone);
     const spent = state.workbench.day === today ? state.workbench.countToday : 0;
-    if (byRule && spent >= MAX_JOBS_PER_DAY) return { state, effects: [] };
-    const key = `owner:${subject.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48)}:${event.ts.slice(0, 10)}`;
+    if ((byRule && spent >= MAX_JOBS_PER_DAY) || (review && reviewsOf(state, event.ts).today >= MAX_REVIEWS_PER_DAY)) return { state, effects: [] };
+    const key = `${review ? 'self-review' : 'owner'}:${subject.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48)}:${review ? event.ts : event.ts.slice(0, 10)}`;
     const forGoal = typeof payload.goalId === 'string' && typeof payload.stepId === 'string';
-    const job: WorkJob = { id: deriveId(event.ts, event.id, 'workbench', key), kind: 'owner-request', key, subject, reason: forGoal ? 'a step toward a goal you marked active' : byRule ? 'a rule you adopted fired' : 'you asked', detail: { brief, ...(forGoal ? { goalId: payload.goalId!, stepId: payload.stepId! } : {}) }, openedAt: event.ts };
-    const counted = byRule ? { day: today, countToday: spent + 1 } : {};
+    const job: WorkJob = review
+      ? { id: deriveId(event.ts, event.id, 'workbench', key), kind: 'self-review', key, subject, reason: 'my own steps kept failing here', detail: { brief, ...reviewDetail(payload.review) }, openedAt: event.ts }
+      : { id: deriveId(event.ts, event.id, 'workbench', key), kind: 'owner-request', key, subject, reason: forGoal ? 'a step toward a goal you marked active' : byRule ? 'a rule you adopted fired' : 'you asked', detail: { brief, ...(forGoal ? { goalId: payload.goalId!, stepId: payload.stepId! } : {}) }, openedAt: event.ts };
+    const counted = byRule ? { day: today, countToday: spent + 1 } : review ? { reviews: { day: today, n: reviewsOf(state, event.ts).today + 1, last: event.ts } } : {};
     return drain({ ...state, workbench: { ...state.workbench, ...counted, queue: [...queue, job] } }, event.ts);
   }
+
+  if (event.type === 'owner:first-touch') return requestPacket(state, event);
 
   // W3: the owner's Stop. The executor aborts the child and answers `work:closed`, which closes the record.
   if (event.type === 'work:stop-requested') {
@@ -424,6 +570,9 @@ export const workbench: Rule = (state, event) => {
     if (now - Date.parse(open.openedAt) < JOB_TIMEOUT_MS) return { state, effects: [] };
     return drain(close(state, open, 'timed-out', null, event.ts), event.ts);
   }
+  // A retry whose wait is over opens on the tick that finds the slot free.
+  const due = drain(state, event.ts);
+  if (due.effects.length > 0) return due;
 
   const day = localDate(event.ts, state.config.timezone);
   const dayState = state.workbench.day === day ? state : { ...state, workbench: { ...state.workbench, day, countToday: 0 } };

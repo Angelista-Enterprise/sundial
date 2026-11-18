@@ -6,7 +6,7 @@ import { AUDIT_FACT_QUESTIONS, auditFact } from './questions/audit-fact.js';
 /**
  * J2.3 — the nightly belief audit, re-scoped to what the bench earned.
  *
- * Every live inferred fact goes to the judge (`audit-fact`) once a night. The
+ * Every live inferred fact goes to the judge (`audit-fact`) once a day. The
  * bench (RESULTS: audit, 2026-09-22) said what Jev can and cannot see on a
  * fact's text: it CANNOT tell a plausible misattribution ("sundial usesTool
  * Photos") from a true belief — AUC 0.54 against same-predicate corruption,
@@ -38,11 +38,19 @@ export interface FactAuditMetadata {
 
 const isMeta = (m: unknown): m is FactAuditMetadata => typeof m === 'object' && m !== null && typeof (m as FactAuditMetadata).factId === 'string' && typeof (m as FactAuditMetadata).provenance === 'string';
 
-/** Once on the first tick after it ships (`lastBeliefAuditAt` null), then on every day boundary. The executor does the DB read a pure rule cannot. */
+/** At most once a day, when the owner goes idle. */
+export const BELIEF_AUDIT_MIN_INTERVAL_MS = 20 * 60 * 60 * 1000;
+
+/**
+ * When the owner goes idle (`idle:start`), at any hour, at most once per `BELIEF_AUDIT_MIN_INTERVAL_MS`; the first
+ * idle after it ships (`lastBeliefAuditAt` null) runs it. Round 5: on an event, never on the day boundary's clock.
+ * The executor does the DB read a pure rule cannot.
+ */
 export const nightlyBeliefAudit: Rule = (state, event) => {
+  if (event.type !== 'idle:start') return { state, effects: [] };
   // `?? null`: a snapshot from before this field rehydrates it as undefined, and the first pass must still run.
-  const first = (state.memory.lastBeliefAuditAt ?? null) === null && event.type === 'clock:tick';
-  if (!first && event.type !== 'day:boundary') return { state, effects: [] };
+  const last = state.memory.lastBeliefAuditAt ?? null;
+  if (last !== null && Date.parse(event.ts) - Date.parse(last) < BELIEF_AUDIT_MIN_INTERVAL_MS) return { state, effects: [] };
   return {
     state: { ...state, memory: { ...state.memory, lastBeliefAuditAt: event.ts } },
     effects: [{ type: 'RunBeliefAudit', ts: event.ts }],

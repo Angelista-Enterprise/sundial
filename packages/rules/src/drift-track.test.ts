@@ -70,6 +70,12 @@ describe('driftTrack: the weekly check', () => {
     expect(trends[0]!.baselineWeeks).toBe(4);
   });
 
+  it('totals each week\'s active minutes, for "was I at it more this week than last"', () => {
+    const weeks = weeklyDrift(weeksOfDays(monday, 0));
+    expect(weeks[0]!.activeMin).toBe(Math.round((7 * 2000) / 6));
+    expect(heldTrends(weeks, addDays(monday, 49)).map((t) => t.metric)).not.toContain('activeMin'); // a total, never raised on its own
+  });
+
   it('says it once, when it starts to hold, through a notice candidate', () => {
     const state = withDays(weeksOfDays(monday, 60), addDays(monday, 42));
     const out = driftTrack(state, tick(addDays(monday, 49)));

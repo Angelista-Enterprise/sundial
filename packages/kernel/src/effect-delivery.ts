@@ -122,6 +122,11 @@ export function effectDeliveryGuarantee(effect: Effect): DeliveryGuarantee {
     case 'StartSubagent':
       return 'at-most-once';
 
+    /** Plan 15, 2.3: a sentence said late, or marks drawn on a screen that moved on, is worse than none. */
+    case 'Speak':
+    case 'Mark':
+      return 'at-most-once';
+
     /** Stopping twice stops once: the second finds nothing running. */
     case 'StopJob':
     case 'StopSubagent':
@@ -290,4 +295,6 @@ export const EFFECT_FAMILY: Record<Effect['type'], EffectFamily> = {
   EmitEvent: 'itself',
 
   Notify: 'you',
+  Speak: 'you',
+  Mark: 'you',
 };

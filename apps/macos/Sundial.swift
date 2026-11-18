@@ -24,18 +24,19 @@
 
 import AppKit
 import ApplicationServices
+import Carbon.HIToolbox
 #if canImport(Sparkle)
 import Sparkle
 #endif
 import ServiceManagement
 import WebKit
 
-private func log(_ message: String) {
+func log(_ message: String) {
     FileHandle.standardError.write("[sundial-app] \(message)\n".data(using: .utf8)!)
 }
 
 /// The data folder: the bundle's own folder when it was installed into one.
-private let home: URL = {
+let home: URL = {
     if let h = ProcessInfo.processInfo.environment["SUNDIAL_HOME"], !h.isEmpty { return URL(fileURLWithPath: h) }
     let parent = Bundle.main.bundleURL.deletingLastPathComponent()
     if FileManager.default.fileExists(atPath: parent.appendingPathComponent(".sundial-install.json").path) { return parent }
@@ -58,8 +59,8 @@ private let env: [String: String] = {
 
 private let webPort = env["SUNDIAL_WEB_PORT"] ?? "3080"
 private let helpersOn = env["SUNDIAL_NATIVE_HELPERS"] != "0"
-private let resources = Bundle.main.resourceURL ?? Bundle.main.bundleURL.appendingPathComponent("Contents/Resources")
-private let daemonDir = home.appendingPathComponent(".daemon")
+let resources = Bundle.main.resourceURL ?? Bundle.main.bundleURL.appendingPathComponent("Contents/Resources")
+let daemonDir = home.appendingPathComponent(".daemon")
 
 /// A path from the environment, else from Contents/Resources (what `apps/macos/build.sh` writes).
 private func setting(_ key: String, file: String) -> String? {
@@ -68,7 +69,7 @@ private func setting(_ key: String, file: String) -> String? {
 }
 
 /// The checkout to run, or nil: then the app runs its own Resources/app.
-private let repo = setting("SUNDIAL_REPO", file: "repo-path")
+let repo = setting("SUNDIAL_REPO", file: "repo-path")
 private let nodePath = setting("SUNDIAL_NODE", file: "node-path") ?? resources.appendingPathComponent("node").path
 
 // MARK: - Children
@@ -305,9 +306,13 @@ private let setupDoneFile = daemonDir.appendingPathComponent("setup-done")
 // `apps/macos/scripts/package.sh` links Sparkle; a checkout install updates
 // with git, and its build (`swift.sh`) compiles the empty variant below.
 //
-// Downloads happen in the background. The install waits until the web process
-// answers, so an update never cuts into Node's boot, then relaunches the app.
-// The notes of what was installed are kept for the next launch ("what's new").
+// Sparkle looks for an update once a day (SUEnableAutomaticChecks, package.sh);
+// the menu's "Check for Updates Daily" turns that off and on, and Sparkle keeps
+// the choice. An update it finds is shown and downloaded only on the owner's yes
+// (SUAutomaticallyUpdate false: nothing installs unasked). The install waits
+// until the web process answers, so an update never cuts into Node's boot, then
+// relaunches the app. The notes of what was installed are kept for the next
+// launch ("what's new").
 //
 // Until the app is signed with a team ID, every update is a new ad-hoc
 // identity: macOS asks for the permissions again. Sparkle accepts it, because
@@ -335,6 +340,14 @@ final class Updates: NSObject, SPUUpdaterDelegate {
 
     @objc func checkForUpdates(_ sender: Any?) {
         controller.checkForUpdates(sender)
+    }
+
+    /// The daily check, the owner's switch in the menu (2026-11-17); Sparkle keeps it in the app's defaults.
+    var checksDaily: Bool { controller.updater.automaticallyChecksForUpdates }
+
+    @objc func toggleDailyCheck(_ sender: NSMenuItem) {
+        controller.updater.automaticallyChecksForUpdates = !checksDaily
+        sender.state = checksDaily ? .on : .off
     }
 
     /// Run `block` once the web process answers, checking every 5 s.
@@ -366,8 +379,572 @@ final class Updates: NSObject, SPUUpdaterDelegate {
 final class Updates: NSObject {
     static func start(ready: @escaping () -> Bool) -> Updates? { nil }
     @objc func checkForUpdates(_ sender: Any?) {}
+    var checksDaily: Bool { false }
+    @objc func toggleDailyCheck(_ sender: NSMenuItem) {}
 }
 #endif
+
+// MARK: - The overlay
+//
+/// An event the hardware made, not one a process posted (macos-input-helper.swift `isHardware`): Gnomon posts from a private source.
+private func fromHardware(_ event: CGEvent) -> Bool {
+    event.getIntegerValueField(.eventSourceStateID) == Int64(CGEventSourceStateID.hidSystemState.rawValue)
+}
+
+// The summon: one slip of paper, Gnomon's rings and tags on other apps, and the
+// Nodus sheet, drawn over whatever the owner is doing. The board stays in the
+// app window. A borderless, transparent, non-activating panel over the whole
+// screen but the menu bar (whose privacy dots it must never cover), hosting the
+// page in overlay mode (`/?overlay=slip`, plugins/sundial-theme/shell/overlay.js). The page reports where it is solid;
+// everywhere else the panel ignores the mouse, so a click lands in the app
+// underneath. The frontmost app stays frontmost, so what the window helper
+// last wrote (`.daemon/window-info.json`) is what the owner is looking at, and
+// the page carries it into the turn as its place. No screenshot, no new sensor.
+//
+// On unless `overlay.enabled` is false in config.json (read at launch); the
+// hotkey is `overlay.hotkey`, default "option+space".
+
+/// `overlay` in config.json: whether the summon exists, and its hotkey.
+let overlayConfig: (enabled: Bool, hotkey: String) = {
+    let json = (try? Data(contentsOf: home.appendingPathComponent("config.json"))).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+    let section = json?["overlay"] as? [String: Any]
+    return (section?["enabled"] as? Bool ?? true, section?["hotkey"] as? String ?? "option+space")
+}()
+
+/// "option+space" → "⌥Space": the summon key as the owner sees it on the keyboard.
+func keyName(_ text: String) -> String {
+    let marks = ["option": "⌥", "opt": "⌥", "alt": "⌥", "cmd": "⌘", "command": "⌘", "ctrl": "⌃", "control": "⌃", "shift": "⇧"]
+    return text.lowercased().split(separator: "+").map { part in let p = part.trimmingCharacters(in: .whitespaces); return marks[p] ?? (p == "space" ? "Space" : p.uppercased()) }.joined()
+}
+
+/// "option+space", "cmd+shift+g": Carbon's key code and modifiers, or nil when it does not parse.
+func parseHotkey(_ text: String) -> (key: UInt32, modifiers: UInt32)? {
+    // ANSI key codes 0-47 in order (kVK_ANSI_A = 0, kVK_ANSI_S = 1, ...); § holds 10, \r holds 36 (Return).
+    let ansi = Array("asdfhgzxcv§bqweryt123465=97-80]ou[ip\rlj'k;\\,/nm.")
+    var key: UInt32?
+    var modifiers: UInt32 = 0
+    for part in text.lowercased().split(separator: "+").map({ $0.trimmingCharacters(in: .whitespaces) }) {
+        switch part {
+        case "option", "opt", "alt": modifiers |= UInt32(optionKey)
+        case "cmd", "command": modifiers |= UInt32(cmdKey)
+        case "ctrl", "control": modifiers |= UInt32(controlKey)
+        case "shift": modifiers |= UInt32(shiftKey)
+        case "space": key = UInt32(kVK_Space)
+        default:
+            guard part.count == 1, let at = ansi.firstIndex(of: Character(part)) else { return nil }
+            key = UInt32(at)
+        }
+    }
+    guard let key, modifiers != 0 else { return nil }
+    return (key, modifiers)
+}
+
+/// Each hotkey's handler by its id, reached from Carbon's C callback (which cannot capture).
+var hotKeys: [UInt32: () -> Void] = [:]
+/// Plan 15 step 3: a handler for the key coming up, for a hotkey that tells a tap from a hold.
+var hotKeysUp: [UInt32: () -> Void] = [:]
+private var hotKeyHandlerInstalled = false
+
+/// One global hotkey; nil when the keys are taken.
+func registerHotKey(id: UInt32, key: UInt32, modifiers: UInt32, _ run: @escaping () -> Void) -> EventHotKeyRef? {
+    if !hotKeyHandlerInstalled {
+        hotKeyHandlerInstalled = true
+        var specs = [EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)), EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))]
+        InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
+            var pressed = EventHotKeyID()
+            GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &pressed)
+            let id = pressed.id
+            let up = GetEventKind(event) == UInt32(kEventHotKeyReleased)
+            DispatchQueue.main.async { (up ? hotKeysUp[id] : hotKeys[id])?() }
+            return noErr
+        }, 2, &specs, nil, nil)
+    }
+    var ref: EventHotKeyRef?
+    guard RegisterEventHotKey(key, modifiers, EventHotKeyID(signature: OSType(0x53_44_4C_59), id: id), GetApplicationEventTarget(), 0, &ref) == noErr else { return nil }
+    hotKeys[id] = run
+    return ref
+}
+
+/// A borderless panel may take the keyboard: the composer needs it.
+private final class OverlayPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+
+/// The panel takes the mouse only on a solid region, so a click that reaches this view is meant for the page:
+/// it takes the keyboard and reaches the page in the same click (a field gets the cursor at once).
+private final class OverlayWebView: WKWebView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeKey()
+        // Doc 29: a Stop says whether a hand pressed it or a click was posted (the rig's), on its `chat:stop` row.
+        evaluateJavaScript("document.documentElement.dataset.press = '\(event.cgEvent.map(fromHardware) ?? true ? "hand" : "posted")'")
+        super.mouseDown(with: event)
+    }
+}
+
+private final class Overlay: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
+    private var panel: OverlayPanel?
+    private var webView: WKWebView?
+    /// The page's solid rects, in its CSS pixels from the top left (= points).
+    private var regions: [CGRect] = []
+    /// The slip's own rect, same units (the page's `slip` message; nil while it is hidden): what the screen stage keeps clear of.
+    private var slipBox: CGRect?
+    /// The pointer, watched only while the panel is up (plan 15 I9).
+    private var monitors: [Any] = []
+    /// Gnomon's hands are posting a click or a scroll (`slipHands`): the panel lets the mouse through until they are done.
+    private var handsBusy = false
+    /// Whether the panel took the mouse when Gnomon's hands began: what it does again when they are done.
+    private var tookMouse = false
+    /// Doc 32 item 1: the last time the hands had the slip let the mouse through (uptime, as an event's timestamp), the owner's
+    /// pointer before it and Gnomon's target; and a press meant for the slip in that time, pressed on the page when they are done.
+    private var hands: (start: TimeInterval, end: TimeInterval?, back: CGPoint?, target: CGPoint?)?
+    private var missed: (point: CGPoint, hand: Bool)?
+    /// A quiet summon (plan 15 step 2): its id, its Esc, and the 1 Hz look for keys typed into the app below.
+    private var summonId: String?
+    private var summonedAt = Date.distantPast
+    private var esc = false
+    private var keysBelow: Timer?
+    private let stamp: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private var triedSignIn = false
+    /// What the last summon found under it, as JSON for the page.
+    private var context = "{}"
+    /// The app that was frontmost at the summon: it gets the keyboard back.
+    private var previous: NSRunningApplication?
+    /// The page's composer holds the cursor (`messageHandlers.composer`).
+    private var typing = false
+    private let url = URL(string: "http://127.0.0.1:\(webPort)/?overlay=slip")!
+
+    var shown: Bool { panel?.isVisible == true }
+
+    /// The hotkey, Escape while it is up, and the lock screen.
+    func start() {
+        if let hotkey = parseHotkey(overlayConfig.hotkey) {
+            // While a knock waits, the same keys are the owner's go.
+            if registerHotKey(id: 1, key: hotkey.key, modifiers: hotkey.modifiers, { [weak self] in self?.keyDown() }) != nil {
+                hotKeysUp[1] = { [weak self] in self?.keyUp() }
+                log("overlay: summon with \(overlayConfig.hotkey)")
+            } else {
+                log("overlay: \(overlayConfig.hotkey) is taken; summon from the menu")
+            }
+        } else {
+            log("overlay: cannot read the hotkey \"\(overlayConfig.hotkey)\"; summon from the menu")
+        }
+        drawMarks = { [weak self] marks, judge in self?.showMarks(marks, judge: judge) }
+        slipFrame = { [weak self] in
+            guard let self, self.shown, let panel = self.panel, let box = self.slipBox else { return nil }
+            return CGRect(x: panel.frame.minX + box.minX, y: panel.frame.maxY - box.maxY, width: box.width, height: box.height)
+        }
+        slipHands = { [weak self] busy, back, target in
+            guard let self else { return }
+            // Run 248 T18: done, the panel took the pointer's place where the act had put it back (a spot the rig's glide had
+            // left mid-way), let go, and the rig's Stop press went through to Finder. Pointer moves during the act are not
+            // read (track), so the panel takes the mouse again as it did before the act; the next real move decides anew.
+            let now = ProcessInfo.processInfo.systemUptime
+            if busy, !self.handsBusy { self.tookMouse = self.panel?.ignoresMouseEvents == false; self.hands = (now, nil, back, target) }
+            if !busy, self.handsBusy { self.hands?.end = now }
+            self.handsBusy = busy
+            if busy { self.panel?.ignoresMouseEvents = true } else if self.shown { self.panel?.ignoresMouseEvents = !self.tookMouse }
+            if !busy, let missed = self.missed {
+                self.missed = nil
+                self.press(missed.point, hand: missed.hand)
+            }
+        }
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, self.shown, event.keyCode == UInt16(kVK_Escape), event.window === self.panel else { return event }
+            // Esc stops the voice first; a second Esc hides the panel.
+            if voice.speaking { voice.stop() } else { self.hide() }
+            return nil
+        }
+        DistributedNotificationCenter.default().addObserver(forName: Notification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in self?.hide() }
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in self?.hide() }
+    }
+
+    @objc func toggle() {
+        shown ? hide() : summon()
+    }
+
+    /// Who opened the slip, because it decides where the keyboard goes.
+    ///
+    /// Reaching for Gnomon by hand means you want to write to it: the panel takes the keyboard and the
+    /// cursor sits in the field, so typing and the mouse just work. Holding the key to TALK, or Gnomon
+    /// opening itself to say something, must take nothing from the app you are in — you were busy, and
+    /// it interrupted you. Before this it was the other way round, and the test runner had to find the
+    /// field by reading the screen and clicking a pixel under it, which broke the moment the field moved.
+    private var openedToTalk = false
+
+    // Plan 15 step 3: the summon key. A tap shows or hides the panel, as before; held past 250 ms it talks.
+    // 2026-11-13: the app records from key-down (the page's mic opened too late), and a press while Gnomon speaks
+    // stops the voice AND listens, so the owner can cut in. A knock that waits takes the press as its go.
+    private var downAt: Date?
+    private var wasShown = false
+    private var talking = false
+    private var interrupted = false
+    private var holdStart: DispatchWorkItem?
+
+    private func keyDown() {
+        interrupted = voice.speaking
+        if interrupted { voice.stop() } else if voice.go() { downAt = nil; return }
+        guard holdToTalkOn else { if !interrupted { toggle() }; return }
+        downAt = Date()
+        wasShown = shown
+        holdEars.start()
+        if !shown { summon(toTalk: true) }
+        let start = DispatchWorkItem { [weak self] in
+            guard let self, self.downAt != nil, self.shown else { return }
+            self.talking = true
+            self.webView?.evaluateJavaScript("window.sundialOverlay?.hold(true)")
+        }
+        holdStart = start
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: start)
+    }
+
+    private func keyUp() {
+        holdStart?.cancel()
+        defer { downAt = nil }
+        guard downAt != nil else { return }
+        if talking {
+            talking = false
+            voice.nod()
+            webView?.evaluateJavaScript("window.sundialOverlay?.hold(false)")
+            // The last word ends after the key comes up.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                let wav = holdEars.stop()?.base64EncodedString()
+                self?.webView?.evaluateJavaScript("window.sundialOverlay?.heard(\(wav.map { "'\($0)'" } ?? "null"))")
+            }
+        } else {
+            _ = holdEars.stop()
+            if wasShown && !interrupted { hide() }
+        }
+    }
+
+    private func summon(toTalk: Bool = false) {
+        openedToTalk = toTalk
+        // Never over a password field: secure input means the owner is typing a secret.
+        guard !IsSecureEventInputEnabled() else { return log("overlay: not now, secure input is on") }
+        // What is under it, read before the panel exists on screen.
+        let info = (try? Data(contentsOf: daemonDir.appendingPathComponent("window-info.json"))).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        let own = info?["bundleId"] as? String == Bundle.main.bundleIdentifier
+        let front = NSWorkspace.shared.frontmostApplication
+        previous = front?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : front
+        var under: [String: Any] = own ? [:] : ["app": info?["processName"] as? String ?? "", "title": info?["windowTitle"] as? String ?? ""]
+        summonId = quietSummonOn ? UUID().uuidString : nil
+        if let id = summonId {
+            under["quiet"] = true
+            under["keyName"] = keyName(overlayConfig.hotkey)
+            under["summonId"] = id
+            if !own, let text = selectedText(previous) { under["selected"] = text }
+        }
+        context = (try? JSONSerialization.data(withJSONObject: under)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+
+        let panel = self.panel ?? makePanel()
+        // Set 3 R5: the screen that holds the front window's middle (window-info.json, top-left points), where the owner
+        // looks; else the one the pointer is on. Minus the menu bar.
+        let screens = NSScreen.screens
+        let position = info?["position"] as? [String: Double], size = info?["size"] as? [String: Double]
+        let middle = own ? nil : position.flatMap { p in size.map { s in CGPoint(x: (p["x"] ?? 0) + (s["width"] ?? 0) / 2, y: (p["y"] ?? 0) + (s["height"] ?? 0) / 2) } }
+        let screen = middle.flatMap { lookScreenIndex($0, screens.map(\.frame)) }.map { screens[$0] }
+            ?? screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main ?? screens[0]
+        var frame = screen.frame
+        frame.size.height = screen.visibleFrame.maxY - frame.minY
+        panel.setFrame(frame, display: false)
+        if webView?.url == nil { webView?.load(URLRequest(url: url)) }
+
+        let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        panel.alphaValue = reduce ? 1 : 0
+        panel.ignoresMouseEvents = true
+        panel.orderFrontRegardless()
+        if let id = summonId {
+            summonedAt = Date()
+            Summon.summoned(id)
+            esc = true
+            Esc.want("summon") { [weak self] in if voice.speaking { voice.stop() } else { self?.hide() } }
+        }
+        if summonId != nil, !openedToTalk {
+            // Opened by hand: the owner came to write, so the field has the cursor and the panel the mouse.
+            panel.makeKey()
+            panel.makeFirstResponder(webView)
+            typing = true  // summoned() puts the cursor in the composer; the page confirms or denies it.
+        } else {
+            // Opened to talk, or opened by Gnomon: the app below keeps the keyboard until the owner reaches over.
+            typing = false
+            keysBelow = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.lookForKeysBelow() }
+        }
+        if !reduce { fade(to: 1) }
+        webView?.evaluateJavaScript("window.sundialOverlay?.summoned(\(context))")
+        marksOnly = false
+        watchPointer()
+        log("overlay: summoned\((under["app"] as? String).map { $0.isEmpty ? "" : " over \($0)" } ?? "")\(summonId == nil ? "" : ", quiet")")
+    }
+
+    /// Where the pointer is decides whether the panel takes the click: checked when it moves, and on a click in the app below.
+    private func watchPointer() {
+        for monitor in monitors { NSEvent.removeMonitor(monitor) }
+        let pointer: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDown, .leftMouseUp, .leftMouseDragged, .rightMouseDown]
+        monitors = [
+            NSEvent.addGlobalMonitorForEvents(matching: pointer) { [weak self] event in
+                guard let self else { return }
+                // The owner's own click steps back; Gnomon's posted clicks do not (run202: the slip dimmed to 0.4 while Gnomon acted).
+                // A press meant for the slip that went through it while Gnomon clicked is the slip's (doc 32 item 1), no step back.
+                if !self.caught(event), event.type == .leftMouseDown || event.type == .rightMouseDown, event.cgEvent.map(fromHardware) ?? true { self.stepBack() }
+                self.track()
+            },
+            NSEvent.addLocalMonitorForEvents(matching: pointer) { [weak self] event in self?.track(); return event },
+        ].compactMap { $0 }
+        track()
+    }
+
+    /// Doc 32 item 1 (run 258 T18): the rig pressed Stop while Gnomon clicked, the slip let the press through to Finder, and Gnomon
+    /// renamed all 8 files. A press that went past the slip while the hands had it let the mouse through, and was meant for it
+    /// (`slipMissed`), is pressed on the page when the hands are done, or at once when they already are.
+    private func caught(_ event: NSEvent) -> Bool {
+        guard event.type == .leftMouseDown, let panel, let cg = event.cgEvent else { return false }
+        let hand = fromHardware(cg)
+        let origin = CGPoint(x: panel.frame.minX, y: primaryHeight() - panel.frame.maxY)
+        guard let point = slipMissed(cg.location, time: event.timestamp, hand: hand, window: hands, origin: origin, regions: regions) else { return false }
+        if handsBusy { missed = missed ?? (point, hand) } else { press(point, hand: hand) }
+        return true
+    }
+
+    /// The page's own click at a point of it, as the mouse would have given it: a Stop there says how it was pressed (doc 29).
+    private func press(_ point: CGPoint, hand: Bool) {
+        guard shown else { return }
+        log("overlay: a \(hand ? "hand's" : "posted") press on the slip came while Gnomon clicked; pressed now")
+        webView?.evaluateJavaScript("(() => { const e = document.elementFromPoint(\(point.x), \(point.y)); if (!e) return; document.documentElement.dataset.press = '\(hand ? "hand" : "posted")'; e.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })) })()")
+    }
+
+    // Plan 15 step 6: the marks on the real screen are drawn on this panel. Down, it comes up for the marks alone:
+    // the board stays away and every click goes through. It goes down again when the marks clear (after the
+    // "Right spot?" line, when the marks were to be judged).
+    private var marksOnly = false
+    private var marksGen = 0
+
+    private func showMarks(_ marks: [[String: Any]], judge: Bool) {
+        if marks.isEmpty && !shown { return }
+        let panel = self.panel ?? makePanel()
+        // Set 2 R5: a marks-only panel covers the display that holds the first mark, so a mark on a second display draws
+        // there and not off the edge of the main one. A summoned slip stays on the display the owner called it to.
+        let first = marks.first.map { CGPoint(x: ($0["x"] as? Double ?? 0) + ($0["w"] as? Double ?? 0) / 2, y: ($0["y"] as? Double ?? 0) + ($0["h"] as? Double ?? 0) / 2) }
+        if !shown || marksOnly, let screen = first.flatMap(screenHolding) {
+            var frame = screen.frame
+            frame.size.height = screen.visibleFrame.maxY - frame.minY
+            if panel.frame != frame { panel.setFrame(frame, display: false) }
+        }
+        if !shown {
+            if webView?.url == nil { webView?.load(URLRequest(url: url)) }
+            panel.alphaValue = 1
+            panel.ignoresMouseEvents = true
+            panel.orderFrontRegardless()
+            marksOnly = true
+            watchPointer()
+        }
+        // From top-left global points (anchored at the primary display, on every display) to the panel's own CSS points.
+        let top = primaryHeight() - panel.frame.maxY
+        let local: [[String: Any]] = marks.map { mark in
+            var m = mark
+            m["x"] = (mark["x"] as? Double ?? 0) - panel.frame.minX
+            m["y"] = (mark["y"] as? Double ?? 0) - top
+            return m
+        }
+        let json = (try? JSONSerialization.data(withJSONObject: local)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        webView?.evaluateJavaScript("window.sundialOverlay?.marks(\(json), \(marksOnly), \(judge))")
+        if marks.isEmpty && marksOnly {
+            marksGen += 1
+            let gen = marksGen
+            DispatchQueue.main.asyncAfter(deadline: .now() + (judge ? 10 : 0.3)) { [weak self] in if self?.marksOnly == true, self?.marksGen == gen { self?.hide() } }
+        }
+    }
+
+    func hide() {
+        guard let panel, panel.isVisible else { return }
+        marksOnly = false
+        if talking {
+            talking = false
+            _ = holdEars.stop()
+            webView?.evaluateJavaScript("window.sundialOverlay?.hold(false)")
+        }
+        for monitor in monitors { NSEvent.removeMonitor(monitor) }
+        monitors = []
+        if let id = summonId { Summon.dismissed(id) }
+        summonId = nil
+        endQuietWatch()
+        giveBackKeys()
+        let done = { panel.orderOut(nil); panel.alphaValue = 1 }
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { done() } else { fade(to: 0, then: done) }
+    }
+
+    /// The one easing (DESIGN.md: cubic-bezier(0.2, 0, 0, 1)), 160 ms.
+    private func fade(to alpha: CGFloat, then: (() -> Void)? = nil) {
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.16
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1)
+            panel?.animator().alphaValue = alpha
+        }, completionHandler: then)
+    }
+
+    /// The owner went back to their work: a click or keys in the app below. The panel dims, once per summon.
+    private func stepBack() {
+        guard let id = summonId, esc || keysBelow != nil else { return }
+        endQuietWatch()
+        Summon.steppedBack(id)
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { panel?.alphaValue = 0.4 } else { fade(to: 0.4) }
+    }
+
+    private func endQuietWatch() {
+        if esc { Esc.drop("summon") }
+        esc = false
+        keysBelow?.invalidate()
+        keysBelow = nil
+    }
+
+    /// Keys typed while the panel does not hold the keyboard went to the app below. The input helper counts them
+    /// each second; the hotkey that summoned the panel falls in the first 1.5 s and does not count.
+    private func lookForKeysBelow() {
+        guard let panel, downAt == nil else { return }
+        if IsSecureEventInputEnabled() { return hide() }
+        guard !panel.isKeyWindow,
+              let data = try? Data(contentsOf: daemonDir.appendingPathComponent("input-activity.json")),
+              let input = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              // The owner's keys alone when the helper counts them apart (`ownerOnly`): Gnomon's typing is not the owner going back to work.
+              (input[input["ownerOnly"] as? Bool == true ? "ownerKeyDownCount" : "keyDownCount"] as? Int ?? 0) > 0,
+              let at = (input["timestamp"] as? String).flatMap({ stamp.date(from: $0) }),
+              at.timeIntervalSince(summonedAt) > 1.5 else { return }
+        stepBack()
+    }
+
+    /// The text selected in the app below, read once at a quiet summon and only handed to the page; never written down.
+    private func selectedText(_ app: NSRunningApplication?) -> String? {
+        guard let app, AXIsProcessTrusted() else { return nil }
+        var focused: CFTypeRef?
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(element, 0.3)
+        guard AXUIElementCopyAttributeValue(element, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+              let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
+        var text: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(focused as! AXUIElement, kAXSelectedTextAttribute as CFString, &text) == .success,
+              let selected = text as? String, !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return String(selected.prefix(2000))
+    }
+
+    /// Solid under the pointer: take the mouse; elsewhere let it through. Left alone
+    /// mid-drag, so a selection that wanders off the page still ends where it began.
+    /// Secure input coming on while it is up hides it.
+    private func track() {
+        guard let panel, !handsBusy else { return }
+        if IsSecureEventInputEnabled() { return hide() }
+        guard NSEvent.pressedMouseButtons == 0 else { return }
+        let p = NSEvent.mouseLocation
+        let point = CGPoint(x: p.x - panel.frame.minX, y: panel.frame.maxY - p.y)
+        let inside = regions.contains { $0.contains(point) }
+        if panel.ignoresMouseEvents == inside { panel.ignoresMouseEvents = !inside }
+        // Dimmed after a step back: the pointer on a card brings it back.
+        if inside, panel.alphaValue < 1, summonId != nil { panel.alphaValue = 1 }
+        // Keys come here only while the pointer is on a card or the composer has
+        // the cursor; otherwise a Return meant for the app underneath lands there.
+        if panel.isKeyWindow, !inside, !typing { giveBackKeys() }
+    }
+
+    /// The keyboard back to the app that had it. A non-activating panel takes the
+    /// keys without making Sundial active, so ordering it out alone leaves them nowhere.
+    private func giveBackKeys() {
+        guard panel?.isKeyWindow == true || NSApp.isActive, let previous, !previous.isTerminated else { return }
+        previous.activate()
+    }
+
+    private func makePanel() -> OverlayPanel {
+        let panel = OverlayPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.becomesKeyOnlyIfNeeded = false
+        let config = WKWebViewConfiguration()
+        config.userContentController.add(self, name: "regions")
+        config.userContentController.add(self, name: "slip")
+        config.userContentController.add(self, name: "composer")
+        config.userContentController.add(self, name: "focus")
+        config.userContentController.add(self, name: "open")
+        let webView = OverlayWebView(frame: .zero, configuration: config)
+        webView.uiDelegate = self
+        // A transparent page shows the screen under it only when the view paints no ground of its own.
+        webView.setValue(false, forKey: "drawsBackground")
+        webView.underPageBackgroundColor = .clear
+        webView.navigationDelegate = self
+        webView.autoresizingMask = [.width, .height]
+        panel.contentView = webView
+        self.panel = panel
+        self.webView = webView
+        return panel
+    }
+
+    // MARK: The page
+
+    /// `regions`, `[{x, y, w, h}]`: where the page is solid; `slip`, `{x, y, w, h}` or null: the slip alone;
+    /// `composer`, whether it holds the cursor. Only from Sundial's own page.
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        let origin = message.frameInfo.securityOrigin
+        guard origin.host == "127.0.0.1", String(origin.port) == webPort else { return }
+        if message.name == "composer" { typing = message.body as? Bool ?? false; return }
+        if message.name == "focus" { panel?.makeKey(); panel?.makeFirstResponder(webView); typing = true; return }
+        if message.name == "open" { hide(); (NSApp.delegate as? AppDelegate)?.openFromMenu(); return }
+        let rect = { (r: [String: Any]) -> CGRect? in
+            guard let x = r["x"] as? Double, let y = r["y"] as? Double, let w = r["w"] as? Double, let h = r["h"] as? Double else { return nil }
+            return CGRect(x: x, y: y, width: w, height: h)
+        }
+        if message.name == "slip" { slipBox = (message.body as? [String: Any]).flatMap(rect); return }
+        guard let rects = message.body as? [[String: Any]] else { return }
+        regions = rects.compactMap(rect)
+        if shown { track() }
+    }
+
+    /// Plan 15 step 3: the microphone for hold to talk, for Sundial's own page only. macOS asks the owner once for the app.
+    func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+        decisionHandler(origin.host == "127.0.0.1" && String(origin.port) == webPort && type == .microphone ? .grant : .deny)
+    }
+
+    /// Signed out (a 401): sign in once with the app's link, as the window does.
+    func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        if (response.response as? HTTPURLResponse)?.statusCode == 401, !triedSignIn, let signIn = signInURL() {
+            triedSignIn = true
+            decisionHandler(.cancel)
+            webView.load(URLRequest(url: signIn))
+            return
+        }
+        decisionHandler(.allow)
+    }
+
+    /// The sign-in answers with a redirect to a clean `/`: the cookie is set by
+    /// then, so the overlay goes straight back to itself instead of booting the board.
+    /// Anything that is not Sundial's goes to macOS, as in the window.
+    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard let target = action.request.url else { return decisionHandler(.allow) }
+        let own = target.host == "127.0.0.1" && target.port.map(String.init) == webPort
+        if own && target.path == "/" && target.query == nil {
+            decisionHandler(.cancel)
+            webView.load(URLRequest(url: url))
+            return
+        }
+        if own || target.scheme == "about" { return decisionHandler(.allow) }
+        NSWorkspace.shared.open(target)
+        decisionHandler(.cancel)
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard webView.url?.query?.contains("overlay=") == true else { return }
+        triedSignIn = false
+        // A summon that raced the load: the page learns what is under it now.
+        if shown { webView.evaluateJavaScript("window.sundialOverlay?.summoned(\(context))") }
+    }
+}
+
+private let overlay = Overlay()
 
 // MARK: - The app
 
@@ -429,6 +1006,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     private var statusLine: NSMenuItem!
     private var permissionsItem: NSMenuItem!
     private var loginItem: NSMenuItem!
+    private var quietItem: NSMenuItem?
     private var window: NSWindow?
     private var signedIn = false
     /// The last answer each helper gave, to act on changes only.
@@ -473,6 +1051,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         menu.addItem(statusLine)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Open Sundial", action: #selector(openFromMenu), keyEquivalent: "o"))
+        if overlayConfig.enabled {
+            let summon = NSMenuItem(title: "Summon Gnomon", action: #selector(Overlay.toggle), keyEquivalent: "")
+            summon.target = overlay
+            menu.addItem(summon)
+        }
+        if voiceKnockOn {
+            let quiet = NSMenuItem(title: "Quiet for one hour", action: #selector(toggleQuiet), keyEquivalent: "")
+            menu.addItem(quiet)
+            quietItem = quiet
+        }
         permissionsItem = NSMenuItem(title: "Permissions…", action: #selector(openPermissions), keyEquivalent: "")
         menu.addItem(permissionsItem)
         loginItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
@@ -483,6 +1071,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
             let check = NSMenuItem(title: "Check for Updates…", action: #selector(Updates.checkForUpdates(_:)), keyEquivalent: "")
             check.target = updates
             menu.addItem(check)
+            let daily = NSMenuItem(title: "Check for Updates Daily", action: #selector(Updates.toggleDailyCheck(_:)), keyEquivalent: "")
+            daily.target = updates
+            daily.state = updates.checksDaily ? .on : .off
+            menu.addItem(daily)
         }
         let local = NSMenuItem(title: "Your data stays on this Mac", action: nil, keyEquivalent: "")
         local.isEnabled = false
@@ -500,6 +1092,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
             self?.quietUntil = Date().addingTimeInterval(10)
         }
 
+        if overlayConfig.enabled { overlay.start() }
+        voice.start()
         takeOverLaunchAgent()
         launcher.start()
         web.start()
@@ -561,6 +1155,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         image?.isTemplate = true
         statusItem.button?.image = image
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        let quiet = voice.quietUntil
+        quietItem?.title = quiet.map { "Quiet until \(DateFormatter.localizedString(from: $0, dateStyle: .none, timeStyle: .short))" } ?? "Quiet for one hour"
+        quietItem?.state = quiet == nil ? .off : .on
+    }
+
+    @objc func toggleQuiet() {
+        voice.toggleQuiet()
+        refresh()
     }
 
     /// Any HTTP answer (401 included) means the web process is past its boot.
@@ -709,21 +1311,28 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // The screen stage: every window Gnomon placed goes back where it was.
+        looks.unplace([:], wait: true)
         web.stop()
         launcher.stop()
         try? FileManager.default.removeItem(at: pidFile)
     }
 }
 
-// Everything Sundial writes is private to this user, as start.sh's `umask 077`.
-umask(0o077)
-private let app = NSApplication.shared
 private let delegate = AppDelegate()
-app.delegate = delegate
-app.setActivationPolicy(.accessory)
-// SIGTERM (`sundial stop`, logout) quits cleanly, children included.
-signal(SIGTERM, SIG_IGN)
 private let termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-termSource.setEventHandler { NSApp.terminate(nil) }
-termSource.resume()
-app.run()
+
+@main enum Main {
+    static func main() {
+        // Everything Sundial writes is private to this user, as start.sh's `umask 077`.
+        umask(0o077)
+        let app = NSApplication.shared
+        app.delegate = delegate
+        app.setActivationPolicy(.accessory)
+        // SIGTERM (`sundial stop`, logout) quits cleanly, children included.
+        signal(SIGTERM, SIG_IGN)
+        termSource.setEventHandler { NSApp.terminate(nil) }
+        termSource.resume()
+        app.run()
+    }
+}

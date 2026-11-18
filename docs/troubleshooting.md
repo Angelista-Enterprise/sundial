@@ -120,8 +120,9 @@ never starts them.
 node bin/sundial restart
 ```
 
-Do not start `Sundial.app` with `open -a` or from Finder; see
-[permissions.md](permissions.md#never-start-sundialapp-with-open--a).
+`Sundial.app` may be started from Applications, Spotlight or a double-click;
+macOS then gives it its own grants (see
+[permissions.md](permissions.md#sundialapp-is-the-app-macos-starts)).
 
 ## Gnomon does not answer in the chat
 
@@ -130,6 +131,85 @@ your day, but the chat and the written summaries need a model.
 
 **Fix:** open <http://127.0.0.1:3080/setup>, choose a model under "A model for
 Gnomon", and press **Restart Sundial**. See [models.md](models.md).
+
+## Permissions stopped working after an update
+
+**Cause:** the update rebuilt a Swift helper. Sundial signs its helpers on your
+Mac without a developer certificate, so macOS knows a helper by a hash of its
+code. A rebuilt helper is a new program, and the old entry in System Settings no
+longer applies, even when it still looks switched on.
+
+**Fix:** remove Sundial with **−** in each Privacy & Security pane, add
+`/Applications/Sundial.app` again, restart, and accept the prompts helpers
+raise for themselves. The steps: [permissions.md](permissions.md#rebuilding-changes-the-identity).
+
+## Gnomon cannot look at or act in an app
+
+Check in this order:
+
+- **Accessibility.** Without it every look and act answers `no-access`. Grant
+  it, or re-grant it after an update (above).
+- **Outward actions are off.** Acting is off on a new install. Set **Settings →
+  Outward actions** to **Ask** and restart. See
+  [screen-acting.md](screen-acting.md#what-is-on-by-default).
+- **The app is private.** Gnomon never looks at or acts in Mail, Messages,
+  Slack, Notes, Calendar, password managers and the other apps listed in
+  [screen-acting.md](screen-acting.md#private-apps). That is by design.
+- **Your hands are on the keys.** The slip says *Waiting: your hands are on the
+  keys*. Stop typing for two seconds.
+
+## Hold to talk or the microphone button gives an error
+
+**Cause:** speech is transcribed by a local Whisper server on
+`127.0.0.1:8771`, and it is not installed or not running.
+
+**Fix:** install it, then restart:
+
+```bash
+node bin/sundial hearing
+```
+
+A second question asks whether calls open hearing by themselves
+(`audio.autoMeetings`). The answer is no unless you type `y`; leave it no if you
+only want hold to talk.
+
+## The web process will not start after an update: "does not provide an export named …"
+
+**Cause:** a stale build. The harness loads the built `dist/` folders, and one
+of them is older than the code that imports it.
+
+**Fix:** rebuild, then restart:
+
+```bash
+npx tsc -b tsconfig.json
+```
+
+```bash
+node bin/sundial restart
+```
+
+`node bin/sundial install` does the same build and keeps your data.
+
+## Ports Sundial uses
+
+Everything listens on `127.0.0.1` only.
+
+| Port | What | When |
+|---|---|---|
+| 3080 | The web client (`SUNDIAL_WEB_PORT`) | Always |
+| 3090 | The MCP server over HTTP | Only with `sundial mcp --http` |
+| 8767 | The listener for ntfy verdict buttons (`SUNDIAL_PHONE_PORT`) | Only with `notifications.verdictUrl` |
+| 8771 | The local Whisper server | Only with hearing or hold to talk set up |
+| 9223 | The headless Chrome Gnomon reads pages with (`SUNDIAL_CHROME_PORT`) | When Gnomon reads the web |
+
+Sundial also calls these on `127.0.0.1` when you set them up: Ollama on 11434,
+LM Studio on 1234, SearXNG on 8888. If a browser of yours already listens for
+remote debugging on 9222, Gnomon's web tools use it instead of their own, with
+that browser's sign-ins. To find what holds a port:
+
+```bash
+lsof -nP -iTCP:3080 -sTCP:LISTEN
+```
 
 ## Install fails
 
@@ -165,13 +245,18 @@ node bin/sundial install --timeout 300
   ```
 
 - **Install again** after you pull new code, or when files in `~/.sundial` are
-  broken. It rebuilds and rewrites the start script and LaunchAgent, and keeps
+  broken. It rebuilds, restages `Sundial.app` and rewrites its start files, and keeps
   your database, `config.json` and `.env`. If a Swift helper changed, macOS
   asks for its permissions again.
 
   ```bash
   node bin/sundial install
   ```
+
+  Update only after a clean stop. If Sundial last stopped by a crash or a power
+  loss, start the old code once and stop it with `node bin/sundial stop` before
+  you pull: new code replaying the old code's last minute can skip or repeat a
+  few effects.
 
 ## Uninstall cleanly
 
@@ -187,10 +272,13 @@ Then remove it:
 node bin/sundial uninstall --yes
 ```
 
-This stops Sundial, removes the LaunchAgent and deletes `~/.sundial`: the
-database, config, `.env`, logs and the app bundles. It removes a folder only if
-it holds the installer's marker for that folder. The repository folder is not
-touched.
+This stops Sundial and deletes `~/.sundial` (the database, config, `.env`,
+logs) and `/Applications/Sundial.app`, with its Login Items entry. It also
+removes a LaunchAgent install's agent, Sundial's Claude Code hooks, and Sundial
+from the MCP hosts `mcp-hosts` added it to. It removes a folder only if it
+holds the installer's marker for that folder, and the app only if its bundle
+id is this install's. The repository folder is not touched. Daily backups kept
+outside the folder are listed, and stay.
 
 Three things stay, and you remove them yourself:
 

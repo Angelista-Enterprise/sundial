@@ -14,11 +14,17 @@ describe('retentionPrune', () => {
     expect(effects[0]).toEqual({ type: 'DeleteRows', olderThan: '2026-01-18T00:00:00.000Z' });
   });
 
+  it('sweeps judgements at 60 days and keeps the fact audit\'s answers', () => {
+    const state = createInitialState('d1');
+    const { effects } = retentionPrune(state, { id: 'e1', type: 'day:boundary', ts: '2026-12-31T22:00:00.000Z', payload: {}, sanitized: true });
+    expect(effects).toContainEqual({ type: 'DeleteRows', olderThan: '2026-11-01T22:00:00.000Z', signalTypes: ['judgement'], eventTypes: ['result'], keepQuestionSets: ['audit-fact'] });
+  });
+
   it('sweeps raw screen text on its own, shorter horizon (14 days by default)', () => {
     const state = createInitialState('d1');
     const event: SanitizedEvent = { id: 'e1', type: 'day:boundary', ts: '2026-07-17T00:00:00.000Z', payload: {}, sanitized: true };
     const { effects } = retentionPrune(state, event);
-    expect(effects).toHaveLength(7);
+    expect(effects).toHaveLength(8);
     expect(effects[1]).toEqual({ type: 'DeleteRows', olderThan: '2026-07-03T00:00:00.000Z', signalTypes: ['screen'] });
   });
 

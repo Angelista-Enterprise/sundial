@@ -11,6 +11,15 @@ export interface InputActivitySnapshot {
   listenAccessGranted?: boolean;
   /** The event tap is installed and enabled. Absent from an older helper. */
   tapActive?: boolean;
+  /**
+   * Set 2 R5: the owner's hand alone (hardware keys and clicks, never a posted event: Gnomon's acts, a rig's keys).
+   * `ownerOnly` says the helper writes these; the counts are this second's, the times the last ever seen (absent until one).
+   */
+  ownerOnly?: boolean;
+  ownerKeyDownCount?: number;
+  ownerClickCount?: number;
+  lastKeyAt?: string;
+  lastClickAt?: string;
 }
 
 const STALE_MS = 5000;
@@ -30,6 +39,15 @@ export function readInputActivitySidecar(): InputActivitySnapshot | null {
       scrollCount: parsed.scrollCount ?? 0,
       ...(typeof parsed.listenAccessGranted === 'boolean' ? { listenAccessGranted: parsed.listenAccessGranted } : {}),
       ...(typeof parsed.tapActive === 'boolean' ? { tapActive: parsed.tapActive } : {}),
+      ...(parsed.ownerOnly === true
+        ? {
+            ownerOnly: true,
+            ownerKeyDownCount: parsed.ownerKeyDownCount ?? 0,
+            ownerClickCount: parsed.ownerClickCount ?? 0,
+            ...(typeof parsed.lastKeyAt === 'string' ? { lastKeyAt: parsed.lastKeyAt } : {}),
+            ...(typeof parsed.lastClickAt === 'string' ? { lastClickAt: parsed.lastClickAt } : {}),
+          }
+        : {}),
     };
   } catch {
     return null;

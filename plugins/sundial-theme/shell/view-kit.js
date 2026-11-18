@@ -132,28 +132,6 @@ export function table(columns, rows, expand) {
   ])
 }
 
-/** Motion is a courtesy, not a requirement: honour the system's request to skip it. */
-export const stillness = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
-
-/**
- * A number that arrives rather than appears. Counts from zero to the value over
- * `ms`, formatting each frame with `format`. Under reduced motion it just lands.
- */
-export function countUp(node, value, format, ms = 700) {
-  if (stillness() || !(value > 0)) {
-    node.textContent = format(value)
-    return
-  }
-  const t0 = performance.now()
-  const step = (t) => {
-    const k = Math.min(1, (t - t0) / ms)
-    const eased = 1 - Math.pow(1 - k, 3)
-    node.textContent = format(value * eased)
-    if (k < 1) requestAnimationFrame(step)
-  }
-  requestAnimationFrame(step)
-}
-
 /**
  * A bar that grows to its share after it is on the page, so the growth is seen.
  * `share` is 0…1. The bar is a hairline of paper with an ink fill.

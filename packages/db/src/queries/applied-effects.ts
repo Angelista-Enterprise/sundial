@@ -350,3 +350,40 @@ export async function getEffectsForEvents(eventIds: readonly string[]): Promise<
     emittedEventId: row.emittedEventId ?? null,
   }));
 }
+
+/** One journal row as a live host sees it (`sundial://fold`): which rule did what kind of thing, on which event — never the rest of the detail. */
+export interface FoldRow {
+  event_id: string;
+  effect_index: number;
+  applied_at: string;
+  rule_name: string | null;
+  event_type: string | null;
+  /** The first token of `effect_detail`: the effect's variant name. */
+  kind: string | null;
+  /** For an `EmitEvent`, the type it raised (the detail's second token); null for every other kind. */
+  emitted: string | null;
+  status: string;
+}
+
+/**
+ * The newest `limit` journal rows, oldest first, for `sundial://fold`. The
+ * detail is cut to its kind (and an emit's type) here, so nothing else in it —
+ * a notice's words, a fact — leaves the process.
+ */
+export async function getRecentFoldRows(limit = 200): Promise<FoldRow[]> {
+  const db = getDb();
+  const rows = await db.all<{ event_id: string; effect_index: number; applied_at: string; rule_name: string | null; event_type: string | null; effect_detail: string | null; status: string }>(
+    sql`SELECT event_id, effect_index, applied_at, rule_name, event_type, effect_detail, status FROM applied_effects ORDER BY rowid DESC LIMIT ${limit}`,
+  );
+  return rows.reverse().map(({ effect_detail, ...row }) => {
+    const [kind, second] = (effect_detail ?? '').split(' ');
+    return { ...row, kind: kind || null, emitted: kind === 'EmitEvent' ? (second ?? null) : null };
+  });
+}
+
+/** The journal's newest rowid: it moves when a row lands, so a poll can tell "something was folded" with one indexed read. */
+export async function getLatestFoldRowid(): Promise<number> {
+  const db = getDb();
+  const rows = await db.all<{ id: number | null }>(sql`SELECT max(rowid) AS id FROM applied_effects`);
+  return rows[0]?.id ?? 0;
+}

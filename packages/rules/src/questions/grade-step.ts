@@ -25,7 +25,7 @@ export const gradeStep: QuestionSet<[GradeStepInput]> = {
     questions: GRADE_STEP_QUESTIONS,
   }),
   samples: () => [
-    [{ goal: 'work like Jarvis: proactive, show things unprompted', step: 'List the three notices of last week the owner marked useful and what they had in common', resultTitle: 'Useful notices, last week', resultBody: 'Three notices were marked useful: …'.padEnd(900, 'x') }],
+    [{ goal: 'work like a lookout: proactive, show things unprompted', step: 'List the three notices of last week the owner marked useful and what they had in common', resultTitle: 'Useful notices, last week', resultBody: 'Three notices were marked useful: …'.padEnd(900, 'x') }],
     [{ goal: 'g', step: 's', resultTitle: 't', resultBody: '' }],
   ],
 };

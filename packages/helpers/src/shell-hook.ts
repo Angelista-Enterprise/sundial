@@ -37,9 +37,11 @@ export interface ShellHookEntry {
   durationMs?: number | null;
   /** ISO timestamp; defaults to now. */
   timestamp?: string;
+  /** Set 4 R1: the chat whose gnomon_run_shell ran it, so its task object can name a failed command. */
+  session?: string;
 }
 
-/** Serialize one entry to the terse on-disk shape (`c`ommand, `d`ir, `e`xit, `t`ime, `m`illis). */
+/** Serialize one entry to the terse on-disk shape (`c`ommand, `d`ir, `e`xit, `t`ime, `m`illis, `s`ession). */
 export function encodeShellHookEntry(entry: ShellHookEntry): string {
   const wire: Record<string, unknown> = {
     c: entry.command,
@@ -48,6 +50,7 @@ export function encodeShellHookEntry(entry: ShellHookEntry): string {
   if (entry.cwd !== undefined && entry.cwd !== null) wire.d = entry.cwd;
   if (typeof entry.exitCode === 'number') wire.e = entry.exitCode;
   if (typeof entry.durationMs === 'number' && entry.durationMs >= 0) wire.m = entry.durationMs;
+  if (typeof entry.session === 'string' && entry.session !== '') wire.s = entry.session;
   // One line, no embedded newline: the reader splits on '\n' and skips
   // anything that will not parse, so a multi-line command must not break the
   // line framing. JSON.stringify escapes newlines inside the string already.

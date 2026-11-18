@@ -21,5 +21,8 @@
   "dependencies": {
     "@sundial/db": "workspace:*",
     "@sundial/helpers": "workspace:*"
+  },
+  "optionalDependencies": {
+    "@github/copilot-sdk": "1.0.16"
   }
 }

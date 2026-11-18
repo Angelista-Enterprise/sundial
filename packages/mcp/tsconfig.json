@@ -5,12 +5,42 @@
     "rootDir": "./src",
     "baseUrl": ".",
     "paths": {
-      "@sundial/helpers/*": ["../helpers/src/*"],
-      "@sundial/db/*": ["../db/src/*"],
-      "@sundial/kernel/*": ["../kernel/src/*"]
+      "@sundial/helpers/*": [
+        "../helpers/src/*"
+      ],
+      "@sundial/db/*": [
+        "../db/src/*"
+      ],
+      "@sundial/kernel/*": [
+        "../kernel/src/*"
+      ],
+      "@sundial/rules/*": [
+        "../rules/src/*"
+      ],
+      "@modelcontextprotocol/ext-apps/server": [
+        "./node_modules/@modelcontextprotocol/ext-apps/dist/src/server/index.d.ts"
+      ]
     }
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"],
-  "references": [{ "path": "../helpers" }, { "path": "../db" }, { "path": "../kernel" }]
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ],
+  "references": [
+    {
+      "path": "../helpers"
+    },
+    {
+      "path": "../db"
+    },
+    {
+      "path": "../kernel"
+    },
+    {
+      "path": "../rules"
+    }
+  ]
 }

@@ -57,6 +57,8 @@ export async function ledgerView(rerender, spanLine = null) {
             'An error message named an endpoint and that endpoint carried a key. New rows are stripped at the write path, so these were written by something that bypasses it — find that caller before clearing them.',
           )
         : null,
+      // Round 5: what Gnomon did today, above what its thinking cost (Today says the same line).
+      data.didToday?.line ? el('p', { class: 'panel-note', text: data.didToday.line }) : null,
       panel(
         'This window',
         [

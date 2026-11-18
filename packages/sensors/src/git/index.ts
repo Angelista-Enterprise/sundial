@@ -1,4 +1,6 @@
-import { GIT_MUTATING_RE, isGitRepo, parseGitPush, readCommitStats, readGitStatus } from './git-capture.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { GIT_MUTATING_RE, countPushedCommits, isGitRepo, parseGitPush, parsePushReflogLine, readCommitStats, readGitStatus } from './git-capture.js';
 import { canonicalizeRepoDir } from '../project/project-capture.js';
 
 export interface GitEvent {
@@ -8,6 +10,9 @@ export interface GitEvent {
 
 const DEBOUNCE_MS = 1000;
 const PERIODIC_POLL_MS = 60_000;
+/** A reflog line older than this is history (the file was touched by something else), not a push that just happened. */
+const PUSH_FRESH_MS = 60_000;
+const REMOTE_REFLOGS = path.join('.git', 'logs', 'refs', 'remotes');
 
 /**
  * Ported from WCS's `GitSensor` (plugins/git/sensor.ts) with two deliberate
@@ -35,6 +40,8 @@ export class GitSensor {
   // `knownRoots`). Per-root map means each repo's debounce is independent.
   private debounceTimers = new Map<string, NodeJS.Timeout>();
   private periodicTimer: NodeJS.Timeout | null = null;
+  private pushWatchers = new Map<string, fs.FSWatcher>();
+  private lastPushTo = new Map<string, string>();
 
   constructor(onEvent: (event: GitEvent) => void) {
     this.onEvent = onEvent;
@@ -43,12 +50,56 @@ export class GitSensor {
   start(): void {
     this.periodicTimer = setInterval(() => {
       for (const root of this.knownRoots) {
+        this.watchPushes(root);
         void this.checkGit(root);
       }
     }, PERIODIC_POLL_MS);
   }
 
+  /**
+   * W6 D4: every push writes one line in the remote branch's reflog, whoever pushed (a shell, an editor, an agent, a worktree).
+   * One watch per repository: a known root is always the main checkout, and its worktrees share its git folder.
+   * ponytail: a push made while Sundial is down is not replayed; read the reflog since the last `git:push` at boot if that gap shows.
+   */
+  private watchPushes(root: string): void {
+    if (this.pushWatchers.has(root)) return;
+    try {
+      // macOS can replay a change from just before the watch began: a push from before `since` was the last run's to report.
+      const since = Date.now();
+      const watcher = fs.watch(path.join(root, REMOTE_REFLOGS), { recursive: true }, (_change, file) => {
+        if (file) void this.onReflogChange(root, file, Date.now(), since);
+      });
+      watcher.on('error', () => {
+        watcher.close();
+        this.pushWatchers.delete(root);
+      });
+      this.pushWatchers.set(root, watcher);
+    } catch {
+      // No remote yet (or no reflog): the next sweep tries again, and the shell and the ahead count stay the sources.
+    }
+  }
+
+  /** `file` is `<remote>/<branch>` under the remote reflogs. Emits `git:push` once per pushed commit id. */
+  async onReflogChange(root: string, file: string, now = Date.now(), since = 0): Promise<void> {
+    const [remote, ...rest] = file.split(path.sep);
+    const branch = rest.join('/');
+    if (!remote || branch === '' || branch === 'HEAD') return;
+    let last = '';
+    try {
+      last = fs.readFileSync(path.join(root, REMOTE_REFLOGS, file), 'utf-8').trimEnd().split('\n').pop() ?? '';
+    } catch {
+      return;
+    }
+    const push = parsePushReflogLine(last);
+    // The reflog time is in whole seconds, so a push in the second the watch began still counts.
+    if (!push || now - Date.parse(push.at) > PUSH_FRESH_MS || Date.parse(push.at) + 1000 <= since || this.lastPushTo.get(`${root}\0${file}`) === push.to) return;
+    this.lastPushTo.set(`${root}\0${file}`, push.to);
+    this.onEvent({ type: 'git:push', payload: { timestamp: push.at, cwd: root, branch, remote, commits: await countPushedCommits(root, push.from, push.to, `${remote}/${branch}`), source: 'reflog' } });
+  }
+
   stop(): void {
+    for (const watcher of this.pushWatchers.values()) watcher.close();
+    this.pushWatchers.clear();
     for (const timer of this.debounceTimers.values()) clearTimeout(timer);
     this.debounceTimers.clear();
     if (this.periodicTimer) clearInterval(this.periodicTimer);
@@ -75,6 +126,7 @@ export class GitSensor {
     const canonical = canonicalizeRepoDir(root);
     const isNew = !this.knownRoots.has(canonical);
     this.knownRoots.add(canonical);
+    this.watchPushes(canonical);
     if (isNew) this.scheduleCheck(canonical);
   }
 
@@ -85,7 +137,8 @@ export class GitSensor {
     }
 
     const push = parseGitPush(command);
-    if (push && cwd && exitCode !== 1 && exitCode !== 128) {
+    // A repository with a reflog watch reports its own pushes, with the true branch and time: the typed command would be a double.
+    if (push && cwd && exitCode !== 1 && exitCode !== 128 && !this.pushWatchers.has(cwd)) {
       this.onEvent({
         type: 'git:push',
         // W6 D2: a bare `git push` names no branch; the one the last status read saw is the one pushed.

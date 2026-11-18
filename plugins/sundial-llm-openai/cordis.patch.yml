@@ -6,7 +6,7 @@
 # applyEntryPatches in @deepseek-ai/cordis-plugin-include), so the full config
 # is restated: `provider` + `model` (both required by AgentDefaultModelConfig).
 # The model id resolves at entry activation: process.env wins, then
-# $SUNDIAL_HOME/.env, then the plugin's default (qwen/qwen3.8-flash-next). The expression only ever reads
+# $SUNDIAL_HOME/.env, then the plugin's default (z-ai/glm-5.3-flash). The expression only ever reads
 # SUNDIAL_LLM_MODEL — never the API key line.
 - insert:
     - id: sundial-llm-openai

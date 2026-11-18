@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { countSignalsInRange, getCodeActivityForDate, getSignalsInRange } from '@sundial/db/index.js';
 import { localDate, localDayRange } from '@sundial/helpers/local-day.js';
 import { loadSundialConfig } from '@sundial/helpers/sundial-config.js';
+import { rigRow } from '../read/rig-session.js';
 import type { GnomonTool } from './registry.js';
 
 function ownerTimeZone(): string {
@@ -130,14 +131,20 @@ export function pageWithinBudget<T>(items: readonly T[], options: { offset?: num
   const { kept } = takeWithinBudget(items.slice(offset, offset + limit), options.budget);
   const nextOffset = offset + kept.length;
   const remaining = total - nextOffset;
+  // A page that kept nothing makes no progress: its `nextOffset` would equal
+  // `offset`, and a caller that follows it reads the same page forever (the
+  // day view did, 24 full-day reads a figure). So it ends the paging instead.
+  const more = remaining > 0 && kept.length > 0;
   return {
     rows: kept,
     total,
     offset,
-    ...(remaining > 0 ? { nextOffset } : {}),
-    ...(remaining > 0
+    ...(more ? { nextOffset } : {}),
+    ...(more
       ? { note: `${remaining} more of ${total} rows not shown — call this tool again with offset: ${nextOffset} to read the next page. Do NOT re-run the same query with a different limit; that returns rows you already have.` }
-      : {}),
+      : remaining > 0
+        ? { note: `${remaining} more of ${total} rows not shown: the size budget held no more rows, so there is no next page to ask for.` }
+        : {}),
   };
 }
 
@@ -161,6 +168,9 @@ export function slimSignalData(data: Record<string, unknown>, cap = MAX_SIGNAL_F
     if (typeof value === 'string' && value.length > cap) {
       out[key] = `${value.slice(0, cap)}…`;
       capped = true;
+    } else if (key === 'elements' && Array.isArray(value)) {
+      // A look (`screen:looked`) lists every thing in a window, 30 to 80 KB: a list of rows says how many; screen_look reads them.
+      out[key] = value.length;
     } else {
       out[key] = value;
     }
@@ -231,7 +241,7 @@ export const EVIDENCE_TOOLS: GnomonTool[] = [
   {
     name: 'gnomon_code_activity',
     description:
-      'The file-level record of a day\'s coding: which files were edited (with the function names touched inside them and how many times each file was revisited), which commits landed with their subjects, which branches, and which projects were touched. This is primary evidence from the `symbol:edited`, `git:commit`, and `file:changed` sensors — use it for any question about files, functions, commits, or "what did I actually build", in preference to a moment narrative, which is a model\'s earlier guess about the same period. Returns one page of FILES, most-edited first: `fileCount` is how many the day holds in all, and when `nextOffset` is present, call again with it for the next page rather than re-running with a larger limit.',
+      'The file-level record of a day\'s coding: which files were edited (with the function names touched inside them and how many times each file was revisited), which commits landed with their subjects, which branches, and which projects were touched. This is primary evidence from the `symbol:edited`, `git:commit`, and `file:changed` sensors — use it for any question about files, functions, commits, or "what did I actually build", in preference to a moment narrative, which is a model\'s earlier guess about the same period. Returns one page of FILES, most-edited first: `fileCount` is how many the day holds in all, and when `nextOffset` is present, call again with it for the next page rather than re-running with a larger limit. Notes edited in the owner\'s vault are not code files: they are in gnomon_today_summary (`onRecord.notesEdited`).',
     schema: {
       date: z.string().optional().describe('YYYY-MM-DD in the owner timezone, defaults to today'),
       projectRoot: z
@@ -316,7 +326,10 @@ export const EVIDENCE_TOOLS: GnomonTool[] = [
       // `rows` is one page: without it `total` would only ever report the page
       // size back to the caller, which is the blindness that made a model ask
       // for `limit: 200` on half of these calls.
-      const [total, rows] = await Promise.all([countSignalsInRange(start, end, types, needle), getSignalsInRange(start, end, want, types, from, needle)]);
+      const [total, read, state] = await Promise.all([countSignalsInRange(start, end, types, needle), getSignalsInRange(start, end, want, types, from, needle), env.state()]);
+      // S4: never a rig chat's row (its sessionId, session or sandbox mark): the rig's tests are not the owner's day.
+      // `total` still counts the day's rows; the page's offsets stay the record's.
+      const rows = read.filter((row) => !rigRow(state, row.data));
       const cap = signalType && (TEXT_SIGNAL_TYPES.has(String(signalType)) || TEXT_SIGNAL_TYPES.has(String(signalType).split(':')[0]!)) ? TEXT_FIELD_CHARS : MAX_SIGNAL_FIELD_CHARS;
       const wrapper = {
         date: day,
@@ -336,7 +349,8 @@ export const EVIDENCE_TOOLS: GnomonTool[] = [
         rows.map((row) => ({ capturedAt: row.capturedAt, type: `${row.signalType}:${row.eventType}`, data: slimSignalData(row.data, cap) })),
         RESULT_BUDGET_CHARS - JSON.stringify(wrapper).length,
       );
-      const nextOffset = from + kept.length;
+      // The record's offset: past the rows read, a rig row left out included.
+      const nextOffset = from + (kept.length === rows.length ? read.length : read.indexOf(rows[kept.length]!));
       const remaining = total - nextOffset;
       return {
         ...wrapper,

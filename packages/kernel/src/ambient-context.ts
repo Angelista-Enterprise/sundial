@@ -53,6 +53,8 @@ export const RECENT_KNOWLEDGE_MS = 48 * 60 * 60 * 1000;
 const MIN_RESOLVED_FOR_RATE = 10;
 
 export interface AmbientOwnerFact {
+  /** The fact row, so a reply that cites it can be corrected later (plan 15 4.5). */
+  id?: string;
   predicate: string;
   object: string;
   provenance: string;
@@ -89,6 +91,7 @@ function daysBetween(fromIso: string, toIso: string): number {
 function provenanceNote(provenance: string): string {
   if (provenance === 'assertion') return 'the owner said so';
   if (provenance === 'conversation') return 'from a conversation';
+  if (provenance === 'act') return "from Gnomon's own acts";
   return 'inferred';
 }
 
@@ -141,7 +144,8 @@ export function composeAmbientContext(input: AmbientInput): string {
 
   // One line, first: which moment of the day it is and what the owner is most
   // likely to want from it. The screen leads with the same question.
-  if (input.moment) blocks.push(`Right now it is ${input.moment.phase.replace(/-/g, ' ')} — the question of this moment is "${input.moment.question}"${input.moment.next ? `; next: ${input.moment.next}` : ''}. Answer it first when the owner's message leaves room.`);
+  // "Answer it first when the message leaves room" turned a "hey" into a day recap: the moment is offered, not imposed (lab/chat).
+  if (input.moment) blocks.push(`Right now it is ${input.moment.phase.replace(/-/g, ' ')}${input.moment.next ? `; next: ${input.moment.next}` : ''}. The question this moment usually holds is "${input.moment.question}" — answer it when they ask it or ask something that open. A greeting gets a greeting back and at most one line from it, never the whole answer.`);
 
   const facts = selectOwnerFacts(input.ownerFacts);
   if (facts.length > 0) {
@@ -280,7 +284,7 @@ export async function gatherAmbientInput(options: GatherAmbientOptions): Promise
       seenEntityIds.add(entity.id);
       const facts = await getCurrentEntityFacts(entity.id);
       for (const fact of facts) {
-        ownerFacts.push({ predicate: fact.predicate, object: fact.object, provenance: fact.provenance, validFrom: fact.validFrom });
+        ownerFacts.push({ id: fact.id, predicate: fact.predicate, object: fact.object, provenance: fact.provenance, validFrom: fact.validFrom });
       }
     }
   }

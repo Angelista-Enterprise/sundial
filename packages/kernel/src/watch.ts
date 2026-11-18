@@ -33,12 +33,16 @@
  *   - `during`: the days and hours, in the owner's zone, the rule may count
  *     and speak in ("after 22:00", "on workdays").
  *   - `say`: the sentence, with `{field}` filled from the matching payload.
+ *   - `emit`: a `custom:<name>` event the fire also raises, so another rule
+ *     can hear it. A flow is rules that hear each other (`validateWatchFlow`);
+ *     a rule that emits may leave `say` out and fire silently.
  *   - `cooldownMin`: a rule (or, with `by`, one thing) is quiet this long after it fires.
  */
 
 import { createHash } from 'node:crypto';
 import { localMinuteOfDay, localWeekday } from '@sundial/helpers/local-day.js';
 import type { NoticeCandidate } from './types.js';
+import type { WatchFlowRef } from './watch-flow.js';
 
 /**
  * `ne` is not-eq, `in` is eq to one of a list, `exists` asks whether the field
@@ -48,7 +52,15 @@ import type { NoticeCandidate } from './types.js';
  */
 export type WatchOp = 'eq' | 'ne' | 'in' | 'exists' | 'contains' | 'matches' | 'gt' | 'lt' | 'ageGt' | 'ageLt';
 
-export type WatchAction = { wakeup: { inMin: number; reason: string } } | { job: { subject: string; brief: string } } | { ask: { question: string; choices?: string[] } };
+/**
+ * `reach`: one outward act, through the action gate — a tool the gate knows
+ * (one of Gnomon's own, or `mcp__<server>__<tool>` of a mounted integration),
+ * and the brief that says what to do with it. It is asked first, every time:
+ * it compiles to a question whose yes is the owner's tap, until the owner lets
+ * that rule run that tool alone (`rule:auto-granted`, offered after
+ * `REACH_AUTO_AFTER` yeses in a row).
+ */
+export type WatchAction = { wakeup: { inMin: number; reason: string } } | { job: { subject: string; brief: string } } | { ask: { question: string; choices?: string[] } } | { reach: { tool: string; brief: string } };
 
 export interface WatchThen {
   type: string;
@@ -107,8 +119,15 @@ export interface WatchRule {
   absent?: { forMin: number; clock: WatchClock };
   /** A sequence: after a `when` match, the `then` event about the same thing (`by`, or its own `by` for the second type) within `withinMin` — `absent: true` (the default) fires when it does NOT come. */
   then?: WatchThen;
+  /** The sentence. Empty only with `emit`: a silent step, which raises its event and says nothing. */
   say: string;
   cooldownMin: number;
+  /**
+   * `custom:<name>`: an event each fire raises (an `EmitEvent`, the way the
+   * built-in rules raise theirs), which re-enters the fold like any other — so
+   * a later rule can watch it. Never the rule's own `when` or `then` type.
+   */
+  emit?: string;
 }
 
 export interface WatchRuntime {
@@ -171,7 +190,8 @@ export interface WatchFlags {
  * its older name). Measured 2026-09-28: 62% of the month's microphone-on rows
  * were Sundial listening, so "in a call" without this meant "Gnomon is listening".
  */
-export const NOT_A_CALL_APPS = ['sundial', 'gnomon', 'coreaudiod'];
+export { NOT_A_CALL_APPS } from '@sundial/helpers/window-classification.js';
+import { NOT_A_CALL_APPS } from '@sundial/helpers/window-classification.js';
 
 /** The owner's situation a rule may require, each true or false: in a meeting, in a call, Focus on, away. */
 export interface WatchWhile {
@@ -245,10 +265,13 @@ export const WATCH_GRAMMAR = [
   "during?: {days?: [1..7, Monday = 1], from?: 'HH:MM', to?: 'HH:MM'} and while?: {meeting?, call?, focus?, away?: true | false} — when it may count and speak, in the owner's zone; quiet?: the same window shape, hours whose fires are held and said when they end;",
   "escalate?: {afterMin} — said once more, as an interruption, if a held state or silence is still so;",
   "plain?: true — said as its own sentence (banner, push), no model turn;",
-  "do?: [{wakeup: {inMin, reason}} | {job: {subject, brief}} (a read-only background job) | {ask: {question, choices?}} (then the question is how it speaks)] — internal only; anything outward is an ask's choice for the owner to tap; {said} is the sentence;",
-  "say: 'the sentence, {field} and {minutes}/{count}/{sum} filled in', cooldownMin.}",
+  "do?: [{wakeup: {inMin, reason}} | {job: {subject, brief}} (a read-only background job) | {ask: {question, choices?}} (then the question is how it speaks) | {reach: {tool, brief}} (one outward act through the action gate, asked of the owner first: a question whose yes performs it)] — {said} is the sentence;",
+  "emit?: 'custom:<name>' — each fire also raises that event, with {rule, flow?, said?, key, from: the matched payload}, for another rule to watch (a flow: rules that hear each other; never the rule's own when or then type);",
+  "a branch on the owner's answer to a rule's ask: when: {type: 'ask:owner-answered', where: [{field: 'rule', op: 'eq', value: '<asking rule id>'}, {field: 'answer', op: 'eq', value: '<choice>'}]};",
+  "say: 'the sentence, {field} and {minutes}/{count}/{sum} filled in' (optional with emit: the step then fires silently), cooldownMin.}",
 ].join(' ');
 
+/** Rules and flows at once: a flow of several steps counts once, a rule adopted on its own is a flow of one. */
 export const MAX_WATCH_RULES = 20;
 /** Things one rule tracks at once. Enough for every open PR, repo or meeting; the least recently matched goes first. */
 export const MAX_WATCH_KEYS = 50;
@@ -322,14 +345,20 @@ export function inWindow(w: WatchWindow, ts: string, timeZone = 'UTC'): boolean 
 const OPS = new Set<WatchOp>(['eq', 'ne', 'in', 'exists', 'contains', 'matches', 'gt', 'lt', 'ageGt', 'ageLt']);
 const AGE_OPS = new Set<WatchOp>(['ageGt', 'ageLt']);
 /** Types that are pure telemetry or Gnomon's own bookkeeping — a watch on them would watch the machine, not the owner. */
-const UNWATCHABLE = new Set(['clock:tick', 'input:activity', 'privacy:redacted', 'llm:dispatched', 'llm:result', 'judgement:result', 'notice:candidate', 'entity:fact-candidate', 'rule:adopted', 'rule:dropped', 'rule:paused', 'rule:resumed']);
+const UNWATCHABLE = new Set(['clock:tick', 'input:activity', 'privacy:redacted', 'llm:dispatched', 'llm:result', 'judgement:result', 'notice:candidate', 'entity:fact-candidate', 'rule:adopted', 'rule:dropped', 'rule:paused', 'rule:resumed', 'rule:auto-granted', 'rule:auto-revoked', 'rule:verdict']);
+
+/** A tool a reach may name, by shape: the action gate decides at adoption whether it knows it (`reachRefusal` in gate.js). */
+const REACH_TOOL = /^(gnomon_[a-z_]{1,48}|web_act|mcp__[A-Za-z0-9_-]{1,32}__[A-Za-z0-9_.-]{1,64})$/;
+
+/** What a rule may emit: its own namespace, so a watch can never forge a type a sensor or a built-in rule owns. */
+const EMIT = /^custom:[a-z-]+$/;
 
 /** A group holding a quantifier, itself quantified: `(a+)+`, `(.*x)*`, `(a|b+){2,}` — the catastrophic-backtracking shape. */
 const NESTED_QUANTIFIER = /\([^)]*[+*}][^)]*\)\s*[+*{]/;
 
 export const emptyWatchRuntime = (): WatchRuntime => ({ hits: [], since: null, lastMatchAt: null, lastFiredAt: null, last: null });
 
-const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+export const ruleSlug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
 const posNum = (v: unknown, max: number): number | null => (typeof v === 'number' && Number.isFinite(v) && v > 0 && v <= max ? v : null);
 
 /** A list of conditions, checked. The fold runs these on every event of the type, so what they may ask is bounded. */
@@ -408,7 +437,7 @@ export function validateWatchRule(input: unknown): { rule: WatchRule } | { error
   }
   const triggers = ['count', 'dwell', 'absent', 'then'].filter((k) => r[k] !== undefined);
   if (triggers.length > 1) return { error: 'one trigger at most: count, dwell, absent or then' };
-  const rule: WatchRule = { id: typeof r.id === 'string' && r.id.trim() ? slug(r.id) : slug(title), title, when: { type, ...(where.length ? { where } : {}), ...(anyOf.length ? { anyOf } : {}) }, say: '', cooldownMin: 60 };
+  const rule: WatchRule = { id: typeof r.id === 'string' && r.id.trim() ? ruleSlug(r.id) : ruleSlug(title), title, when: { type, ...(where.length ? { where } : {}), ...(anyOf.length ? { anyOf } : {}) }, say: '', cooldownMin: 60 };
   if (r.count !== undefined) {
     const c = r.count as Record<string, unknown>;
     const sum = c.sum;
@@ -451,8 +480,14 @@ export function validateWatchRule(input: unknown): { rule: WatchRule } | { error
     }
     rule.then = { type: ttype, ...(twhere.length ? { where: twhere } : {}), ...(tby ? { by: tby } : {}), withinMin, absent: t.absent !== false, ...(clock === 'active' ? { clock } : {}) };
   }
+  if (r.emit !== undefined) {
+    const emit = typeof r.emit === 'string' ? r.emit.trim() : '';
+    if (!EMIT.test(emit)) return { error: 'emit is one custom event type, custom:<name> (lowercase letters and dashes)' };
+    if (emit === type || emit === rule.then?.type) return { error: `emit ${emit} is what this rule watches: it would hear itself` };
+    rule.emit = emit;
+  }
   const say = typeof r.say === 'string' ? r.say.trim().slice(0, 300) : '';
-  if (!say) return { error: 'say is required: the sentence Gnomon says when it fires' };
+  if (!say && !rule.emit) return { error: 'say is required: the sentence Gnomon says when it fires (only a rule that emits may fire silently)' };
   rule.say = say;
   rule.cooldownMin = posNum(r.cooldownMin, 7 * 24 * 60) ?? 60;
   // A state stream is grouped by the thing it is about unless the spec says otherwise; a count keeps one stream.
@@ -471,14 +506,17 @@ export function validateWatchRule(input: unknown): { rule: WatchRule } | { error
     const text = (v: unknown, max: number) => (typeof v === 'string' && v.trim() !== '' && v.trim().length <= max ? v.trim() : null);
     for (const a of list as Record<string, Record<string, unknown>>[]) {
       const keys = Object.keys(a ?? {});
-      if (keys.length !== 1) return { error: 'each action is one of {wakeup}, {job}, {ask}' };
+      if (keys.length !== 1) return { error: 'each action is one of {wakeup}, {job}, {ask}, {reach}' };
       const [verb] = keys;
       const v = a[verb!] ?? {};
       if (verb === 'wakeup' && posNum(v.inMin, 14 * 24 * 60) && text(v.reason, 200)) acts.push({ wakeup: { inMin: v.inMin as number, reason: text(v.reason, 200)! } });
       else if (verb === 'job' && text(v.subject, 140) && text(v.brief, 600)) acts.push({ job: { subject: text(v.subject, 140)!, brief: text(v.brief, 600)! } });
       else if (verb === 'ask' && text(v.question, 200) && (v.choices === undefined || (Array.isArray(v.choices) && v.choices.length >= 2 && v.choices.length <= 4 && v.choices.every((c) => text(c, 48))))) acts.push({ ask: { question: text(v.question, 200)!, ...(v.choices ? { choices: (v.choices as string[]).map((c) => c.trim()) } : {}) } });
-      else return { error: `action ${verb}: wakeup {inMin (≤ 14 days), reason}, job {subject, brief}, or ask {question, choices?: 2–4 short labels}. Nothing outward: a calendar block or a draft is an ask's choice, for the owner to tap.` };
+      else if (verb === 'reach' && typeof v.tool === 'string' && REACH_TOOL.test(v.tool.trim()) && text(v.brief, 600)) acts.push({ reach: { tool: v.tool.trim(), brief: text(v.brief, 600)! } });
+      else return { error: `action ${verb}: wakeup {inMin (≤ 14 days), reason}, job {subject, brief}, ask {question, choices?: 2–4 short labels}, or reach {tool: a gnomon_* tool or mcp__<server>__<tool>, brief}. Anything outward is a reach, asked of the owner first.` };
     }
+    // One question per fire: the owner has one open at a time.
+    if (acts.filter((a) => 'ask' in a || 'reach' in a).length > 1) return { error: 'one ask or one reach per rule: each fire puts at most one question to the owner' };
     rule.do = acts;
   }
   if (r.escalate !== undefined) {
@@ -500,6 +538,9 @@ export function validateWatchRule(input: unknown): { rule: WatchRule } | { error
   }
   return { rule };
 }
+
+/** Steps in one flow: a chain, a branch and its two arms, with room to spare. */
+export const MAX_FLOW_STEPS = 8;
 
 /**
  * Every value a path reaches. A `list[]` segment reaches each item of the list
@@ -853,28 +894,52 @@ export function backtestWatch(
   events: { id?: string; type: string; ts: string; payload: unknown }[],
   opts: { daytime: (ts: string) => boolean; timeZone?: string },
 ): { matched: number; fires: BacktestFire[]; nearest: number } {
-  let rt = emptyWatchRuntime();
+  return replayWatches([rule], events, opts)[0]!;
+}
+
+/**
+ * Several rules over one replay — a flow, in step order. Each event steps
+ * every rule; what a fire `emit`s is folded at once, before the next row,
+ * depth first and at the same instant, as the effect executor ingests an
+ * `EmitEvent` inline. So a later step hears an earlier one exactly as it will
+ * live. The events should not hold the flow's own emitted types: those are
+ * made here. Returns one result per rule.
+ */
+export function replayWatches(
+  rules: WatchRule[],
+  events: { id?: string; type: string; ts: string; payload: unknown }[],
+  opts: { daytime: (ts: string) => boolean; timeZone?: string; flow?: string },
+): { matched: number; fires: BacktestFire[]; nearest: number }[] {
+  const rts = rules.map(() => emptyWatchRuntime());
+  const out = rules.map(() => ({ matched: 0, fires: [] as BacktestFire[], nearest: 0 }));
+  // The last matching row about each thing, per rule: with the firing event, the evidence behind a fire.
+  const lastRow: Record<string, string>[] = rules.map(() => ({}));
   let flags = emptyWatchFlags();
-  let matched = 0;
-  let nearest = 0;
-  const fires: BacktestFire[] = [];
-  // The last matching row about each thing: with the firing event, the evidence behind a fire.
-  const lastRow: Record<string, string> = {};
-  for (const e of events) {
-    if (matchesWatch(rule, e.type, e.payload, e.ts)) {
-      matched++;
-      if (e.id) for (const [k, item] of rowsByKey(keyed(rule) ? rule.by : undefined, e.payload)) if (matchesWatch(rule, e.type, item, e.ts)) lastRow[k] = e.id;
-    }
+  const fold = (e: { id?: string; type: string; ts: string; payload: unknown }, depth: number) => {
     flags = stepWatchFlags(flags, e);
-    const out = stepWatch(rule, rt, e, { daytime: opts.daytime(e.ts), flags, timeZone: opts.timeZone });
-    rt = out.rt;
-    if (out.fires.length === 0) nearest = Math.max(nearest, progress(rule, rt, e.ts));
-    for (const f of out.fires) {
-      const evidence = [...new Set([lastRow[f.key ?? ''], e.id].filter((x): x is string => typeof x === 'string'))];
-      fires.push({ at: e.ts, text: f.text, key: f.key, evidence, candidate: watchCandidate(rule, f.text, f.payload, e.ts, f.key, undefined, f.escalated), ...(rule.do ? { wouldDo: describeActions(watchActions(rule, f, e.ts)) } : {}) });
-    }
-  }
-  return { matched, fires, nearest };
+    const ctx = { daytime: opts.daytime(e.ts), flags, timeZone: opts.timeZone };
+    const emitted: { type: string; ts: string; payload: unknown }[] = [];
+    rules.forEach((rule, i) => {
+      const r = out[i]!;
+      if (matchesWatch(rule, e.type, e.payload, e.ts)) {
+        r.matched++;
+        if (e.id) for (const [k, item] of rowsByKey(keyed(rule) ? rule.by : undefined, e.payload)) if (matchesWatch(rule, e.type, item, e.ts)) lastRow[i]![k] = e.id;
+      }
+      const step = stepWatch(rule, rts[i]!, e, ctx);
+      rts[i] = step.rt;
+      if (step.fires.length === 0) r.nearest = Math.max(r.nearest, progress(rule, step.rt, e.ts));
+      for (const f of step.fires) {
+        const evidence = [...new Set([lastRow[i]![f.key ?? ''], e.id].filter((x): x is string => typeof x === 'string'))];
+        r.fires.push({ at: e.ts, text: f.text, key: f.key, evidence, candidate: watchCandidate(rule, f.text, f.payload, e.ts, f.key, undefined, f.escalated), ...(rule.do || rule.emit ? { wouldDo: [...describeActions(watchActions(rule, f, e.ts)), ...(rule.emit ? [`emits ${rule.emit}`] : [])] } : {}) });
+        const ev = watchEmit(rule, f, opts.flow);
+        if (ev) emitted.push({ ...ev, ts: e.ts });
+      }
+    });
+    // A flow cannot loop (`validateWatchFlow`); the bound is for rules replayed together that were never checked as one.
+    if (depth < MAX_FLOW_STEPS) for (const ev of emitted) fold(ev, depth + 1);
+  };
+  for (const e of events) fold(e, 0);
+  return out;
 }
 
 /**
@@ -954,13 +1019,30 @@ export interface WatchStats {
   verdicts: { useful: number; wrong: number; 'not-now': number };
   /** When the review last asked about this rule. */
   askedAt?: string;
+  /** The flow it was adopted in, kept across versions adopted without one. */
+  flow?: WatchFlowRef;
+  /**
+   * Per reach tool: yeses in a row (a "not now" starts again), whether the
+   * owner let it run alone, and when the review last offered that.
+   */
+  reach?: Record<string, { approvals: number; auto: boolean; offeredAt?: string }>;
+  /** Reach questions still open, by ask id: the tool each would run and its brief. The newest `MAX_REACH_ASKS`. */
+  reachAsks?: Record<string, { tool: string; brief: string }>;
+  /** The reach tool the review last offered to let run alone, so the answer finds it. */
+  reachOffer?: string;
+  /** The owner's verdicts on single fires (`rule:verdict`), newest last, at most `MAX_JUDGED`: precision over time. */
+  judged?: { fireId: string; useful: boolean; ts: string }[];
 }
 
 export const MAX_RECENT_FIRES = 20;
+/** Verdicts on single fires a rule keeps, for its precision over time. */
+export const MAX_JUDGED = 50;
+/** Open reach questions a rule remembers; an older one's answer no longer counts. */
+export const MAX_REACH_ASKS = 5;
 /** Verdicts before they move a rule's precision, and before a mostly-wrong rule is put to the owner. */
 export const VERDICTS_TO_JUDGE = 5;
 
-export const newWatchStats = (ts: string, version: number, predicted?: WatchStats['predicted']): WatchStats => ({ version, adoptedAt: ts, ...(predicted ? { predicted } : {}), fires: 0, recent: [], verdicts: { useful: 0, wrong: 0, 'not-now': 0 } });
+export const newWatchStats = (ts: string, version: number, predicted?: WatchStats['predicted'], flow?: WatchFlowRef): WatchStats => ({ version, adoptedAt: ts, ...(predicted ? { predicted } : {}), fires: 0, recent: [], verdicts: { useful: 0, wrong: 0, 'not-now': 0 }, ...(flow ? { flow } : {}) });
 
 /** A `predicted` block from a `rule:adopted` payload, checked. */
 export function predictedFrom(v: unknown): WatchStats['predicted'] | undefined {
@@ -1012,7 +1094,6 @@ export function ruleReview(rule: WatchRule, stats: WatchStats | undefined, now: 
 
 /** The ask id a rule's review uses, so its answer finds the rule again. */
 export const reviewAskId = (id: string) => `owner-ask:rule-${id}`;
-
 const OP_WORDS: Record<WatchOp, string> = { eq: 'is', ne: 'is not', in: 'is one of', exists: 'is set', contains: 'contains', matches: 'matches', gt: '>', lt: '<', ageGt: 'more than', ageLt: 'less than' };
 const condWords = (c: WatchCondition) =>
   c.op === 'exists' ? `${c.field} ${c.value ? 'is set' : 'is not set'}` : c.op === 'ageGt' || c.op === 'ageLt' ? `${c.field} ${OP_WORDS[c.op]} ${c.value} min ago` : `${c.field} ${OP_WORDS[c.op]} ${Array.isArray(c.value) ? c.value.join(' / ') : String(c.value)}`;
@@ -1037,27 +1118,60 @@ export function describeRule(rule: WatchRule): string {
   return `${what}: ${trigger}${per}${when ? ` (${when})` : ''}`;
 }
 
-/** Whether a rule speaks through a question instead of a notice: then the ask is its voice. */
-export const asksInstead = (rule: WatchRule) => (rule.do ?? []).some((a) => 'ask' in a);
+/** Whether a rule speaks through a question instead of a notice: then the ask (or a reach not yet let run alone) is its voice. */
+export const asksInstead = (rule: WatchRule, auto: Set<string> = new Set()) => (rule.do ?? []).some((a) => 'ask' in a || ('reach' in a && !auto.has(a.reach.tool)));
 
+/** The two answers a reach question offers: the first is the yes. */
+export const REACH_CHOICES = ['Yes, do it', 'Not now'] as const;
 /**
  * The events one fire's actions append, all internal. Rendered with the
  * fire's own payload, plus `{said}` for the sentence the rule said. The same
  * function the fold emits from and the backtest lists as `wouldDo`.
  */
-export function watchActions(rule: WatchRule, fire: WatchFire, ts: string): { type: string; payload: Record<string, unknown> }[] {
+export function watchActions(rule: WatchRule, fire: WatchFire, ts: string, auto: Set<string> = new Set()): { type: string; payload: Record<string, unknown> }[] {
   const tag = createHash('sha256').update(`${rule.id}\u0001${fire.key ?? ''}`).digest('hex').slice(0, 8);
   const fill = (text: string) => render(text, fire.payload, { said: fire.text });
   return (rule.do ?? []).map((a) => {
+    if ('reach' in a) {
+      const brief = fill(a.reach.brief);
+      // Let run alone: the approval the owner gave once for all, journaled like a tap.
+      if (auto.has(a.reach.tool)) return { type: 'reach:approved', payload: { rule: rule.id, tool: a.reach.tool, brief, auto: true } };
+      // Otherwise a question whose yes is the owner's tap. Same id shape as an ask's, so the answer names the rule.
+      return { type: 'ask:owner-opened', payload: { askId: `owner-ask:watch-${rule.id}-${tag}-${ts.slice(0, 16)}`, question: `${brief} (${a.reach.tool})`, reason: `watch rule "${rule.title}": ${fire.text}`, choices: [...REACH_CHOICES], rule: rule.id, reach: { tool: a.reach.tool, brief } } };
+    }
     if ('wakeup' in a) return { type: 'wakeup:scheduled', payload: { at: new Date(Date.parse(ts) + a.wakeup.inMin * 60_000).toISOString(), reason: fill(a.wakeup.reason), key: `watch-${rule.id}-${tag}` } };
     if ('job' in a) return { type: 'work:requested', payload: { subject: fill(a.job.subject), brief: `${fill(a.job.brief)}\n\nFrom the watch rule "${rule.title}": ${fire.text}`, by: 'rule', rule: rule.id } };
-    return { type: 'ask:owner-opened', payload: { askId: `owner-ask:watch-${rule.id}-${tag}-${ts.slice(0, 16)}`, question: fill(a.ask.question), reason: `watch rule "${rule.title}": ${fire.text}`, ...(a.ask.choices ? { choices: a.ask.choices } : {}) } };
+    // The id names the rule (`watchAskRule` reads it back), so the answer can be branched on.
+    return { type: 'ask:owner-opened', payload: { askId: `owner-ask:watch-${rule.id}-${tag}-${ts.slice(0, 16)}`, question: fill(a.ask.question), reason: `watch rule "${rule.title}": ${fire.text}`, ...(a.ask.choices ? { choices: a.ask.choices } : {}), rule: rule.id } };
   });
+}
+
+/** How much of the matched row an emitted event carries: its top-level fields, small values whole. */
+const EMIT_FIELDS = 20;
+const EMIT_VALUE_CHARS = 500;
+
+/**
+ * The event one fire raises under `emit`, as the fold emits it and the
+ * backtest replays it. `from` is the matched row, shallow: its first
+ * `EMIT_FIELDS` top-level fields, a string cut at `EMIT_VALUE_CHARS`, a list or
+ * object kept only when it is that small as JSON — enough for the next step to
+ * read `from.cwd` or group by `from.number`, never a second copy of a big row.
+ * The id is the caller's: the fold derives it from the event it folded.
+ */
+export function watchEmit(rule: WatchRule, fire: WatchFire, flow?: string): { type: string; payload: Record<string, unknown> } | null {
+  if (!rule.emit) return null;
+  const from: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(fire.payload ?? {}).slice(0, EMIT_FIELDS)) {
+    if (typeof v === 'string') from[k] = v.slice(0, EMIT_VALUE_CHARS);
+    else if (typeof v === 'number' || typeof v === 'boolean' || v === null) from[k] = v;
+    else if (v !== undefined && JSON.stringify(v).length <= EMIT_VALUE_CHARS) from[k] = v;
+  }
+  return { type: rule.emit, payload: { rule: rule.id, ...(flow ? { flow } : {}), ...(fire.text ? { said: fire.text } : {}), key: fire.key, from } };
 }
 
 /** One line per action, for a backtest example. */
 export const describeActions = (events: { type: string; payload: Record<string, unknown> }[]) =>
-  events.map((e) => (e.type === 'wakeup:scheduled' ? `wake-up at ${String(e.payload.at).slice(0, 16)}: ${e.payload.reason}` : e.type === 'work:requested' ? `job: ${e.payload.subject}` : `ask: ${e.payload.question}`));
+  events.map((e) => (e.type === 'wakeup:scheduled' ? `wake-up at ${String(e.payload.at).slice(0, 16)}: ${e.payload.reason}` : e.type === 'work:requested' ? `job: ${e.payload.subject}` : e.type === 'reach:approved' ? `reach (alone): ${e.payload.tool}` : e.payload.reach ? `reach, asked first: ${(e.payload.reach as { tool: string }).tool}` : `ask: ${e.payload.question}`));
 
 /**
  * Identity in a condition (F18): `{field: 'from', op: 'person', value: 'Mira
@@ -1080,57 +1194,4 @@ export function resolvePeople(spec: unknown, aliasNames: Record<string, string>)
     ...(r.when ? { when: { ...r.when, ...(r.when.where ? { where: fix(r.when.where) } : {}), ...(Array.isArray(r.when.anyOf) ? { anyOf: (r.when.anyOf as unknown[]).map(fix) } : {}) } } : {}),
     ...(r.then ? { then: { ...r.then, ...(r.then.where ? { where: fix(r.then.where) } : {}) } } : {}),
   };
-}
-
-/**
- * Whether the owner is asking to be told when something happens — a standing
- * rule, not a question about now (F29). English and Dutch. "Remind me at four"
- * is a wake-up, not a rule, and does not count.
- */
-const RULE_INTENT = [
-  /\b(tell|let|notify|alert|warn|ping|nudge|remind|message|text) me( know)?,? (when|whenever|if|as soon as|every time|each time|once)\b/i,
-  /\b(whenever|every time|each time|as soon as)\b.+\b(tell|let|notify|alert|warn|ping|nudge|remind) me\b/i,
-  /\blaat (me |mij |het me |het mij )?(even )?weten (als|wanneer|zodra)\b/i,
-  /\b(waarschuw|seintje|meld)\b.*\b(als|wanneer|zodra)\b/i,
-  /\bzodra\b.+\b(laat|meld|waarschuw|zeg)\b/i,
-  /\b(elke|iedere) keer (als|dat|wanneer)\b/i,
-];
-export const isRuleIntent = (text: string) => RULE_INTENT.some((re) => re.test(text));
-
-/**
- * A rule as a blueprint to share (F30): every condition value lifted into a
- * named input, the id dropped. What is left is the rule's shape — fields, ops,
- * trigger, hours, the sentence — and the importer fills the inputs from their
- * own life, backtests it on their own log, and adopts it. The title and the
- * sentence stay, so the export tool runs the PII scan over them before
- * anything leaves.
- */
-export function toBlueprint(rule: WatchRule): { blueprint: Record<string, unknown>; inputs: { name: string; field: string; op: WatchOp; example: 'string' | 'number' | 'boolean' | 'list' }[] } {
-  const inputs: { name: string; field: string; op: WatchOp; example: 'string' | 'number' | 'boolean' | 'list' }[] = [];
-  const lift = (list?: WatchCondition[]) =>
-    list?.map((c) => {
-      const base = (c.field.split('.').pop() ?? 'value').replace('[]', '');
-      let name = base;
-      for (let i = 2; inputs.some((x) => x.name === name); i++) name = `${base}${i}`;
-      inputs.push({ name, field: c.field, op: c.op, example: Array.isArray(c.value) ? 'list' : (typeof c.value as 'string' | 'number' | 'boolean') });
-      return { ...c, value: `{input:${name}}` };
-    });
-  const { id: _id, ...rest } = rule;
-  const blueprint: Record<string, unknown> = { ...rest, when: { ...rule.when, ...(rule.when.where ? { where: lift(rule.when.where) } : {}), ...(rule.when.anyOf ? { anyOf: rule.when.anyOf.map((g) => lift(g)) } : {}) } };
-  if (rule.then) blueprint.then = { ...rule.then, ...(rule.then.where ? { where: lift(rule.then.where) } : {}) };
-  return { blueprint, inputs };
-}
-
-/** A blueprint with its inputs filled: a spec to test on this owner's log. An input left unfilled stays a placeholder, which fails validation where it matters. */
-export function fromBlueprint(blueprint: unknown, inputs: Record<string, string | number | boolean | (string | number)[]>): unknown {
-  const fill = (v: unknown): unknown => {
-    if (typeof v === 'string') {
-      const m = /^\{input:([A-Za-z0-9_]+)\}$/.exec(v);
-      return m && m[1]! in inputs ? inputs[m[1]!] : v;
-    }
-    if (Array.isArray(v)) return v.map(fill);
-    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fill(x)]));
-    return v;
-  };
-  return fill(blueprint);
 }

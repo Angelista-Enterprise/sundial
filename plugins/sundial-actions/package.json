@@ -10,9 +10,11 @@
     }
   },
   "dependencies": {
-    "@deepseek-ai/dsh-mcp-client": "0.1.5-rc.1",
-    "@deepseek-ai/dsh-permission-presets": "0.1.5-rc.1",
-    "@deepseek-ai/dsh-tools": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-compaction-basic": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-mcp-client": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-permission-presets": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
     "@sundial/helpers": "workspace:*"
   }
 }

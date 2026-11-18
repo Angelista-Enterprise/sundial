@@ -61,7 +61,7 @@ export function peopleSection(data) {
    * a flat meeting count cannot express.
    *
    * Someone the owner only ever sees alone gets that said out loud rather than
-   * an empty heading: Marco Kuiper has three meetings and no company, and "you
+   * an empty heading: Marco Quill has three meetings and no company, and "you
    * see them one to one" is a better fact than a blank.
    */
   const company = (person) => {

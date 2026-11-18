@@ -58,6 +58,10 @@ function scenario(withMail: boolean) {
     ev('calendar:upcoming', '2026-09-29T07:50:00.000Z', { events: [TUE_1to1, THU_1to1] }),
     tick('2026-09-29T07:55:00.000Z'),
     ev('audio:transcript', '2026-09-29T08:10:00.000Z', { spokenText: "Okay, I'll send you the draft.", channel: 'mic' }),
+    // The owner was on it: a conferencing app held the microphone (2026-10-07: the calendar alone is not attendance).
+    ev('media:state', '2026-09-29T08:05:00.000Z', { audioInput: true, audioInputProcess: 'zoom.us', camera: false }),
+    tick('2026-09-29T08:06:00.000Z'),
+    ev('media:state', '2026-09-29T08:29:00.000Z', { audioInput: false, audioInputProcess: null, camera: false }),
     tick('2026-09-29T08:31:00.000Z'),
     ...(withMail ? [ev('mail:sent', '2026-09-29T13:00:00.000Z', { subject: 'The draft', recipients: [{ to: 'Mira Bakker' }] })] : []),
     ev('calendar:upcoming', '2026-09-30T07:00:00.000Z', { events: [THU_1to1] }),
@@ -106,16 +110,21 @@ describe('UC1 acceptance: kept by the mail, or fading an hour before the next me
  */
 describe('W6 P2: a meeting with speech produces its promise pass, and an answered question its transcript', () => {
   const LISTENED = { ...TUE_1to1, attendees: ['pat', 'Mira Bakker', 'Noah'] };
-  function heard(mic: number) {
+  function heard(mic: number, onCall = true) {
     const state = createInitialState('p2');
     state.config.ownerAliases = ['pat'];
     state.config.autoHearMeetings = true;
     const events: SanitizedEvent[] = [
+      // The calendar no longer wakes hearing (2026-11-13); the owner's Listen keeps it awake, call or not.
+      ev('hearing:set', '2026-09-29T07:45:00.000Z', { listen: true }),
       ev('calendar:upcoming', '2026-09-29T07:50:00.000Z', { events: [LISTENED] }),
       ev('calendar:active', '2026-09-29T08:01:00.000Z', { event: LISTENED }),
       ev('clock:tick', '2026-09-29T08:02:00.000Z', {}),
       ...Array.from({ length: 40 }, (_, i) => ev('audio:transcript', `2026-09-29T08:${String(3 + (i % 25)).padStart(2, '0')}:10.000Z`, { spokenText: 'Mira Bakker: the BOX-484 build is green, I will send the notes', channel: 'system' })),
       ...Array.from({ length: mic }, (_, i) => ev('audio:transcript', `2026-09-29T08:${String(3 + (i % 25)).padStart(2, '0')}:40.000Z`, { spokenText: "Okay, I'll send you the draft.", channel: 'mic' })),
+      ...(onCall
+        ? [ev('media:state', '2026-09-29T08:05:00.000Z', { audioInput: true, audioInputProcess: 'zoom.us', camera: false }), ev('clock:tick', '2026-09-29T08:06:00.000Z', {}), ev('media:state', '2026-09-29T08:29:00.000Z', { audioInput: false, audioInputProcess: null, camera: false })]
+        : []),
       ev('clock:tick', '2026-09-29T08:31:00.000Z', {}),
       ev('clock:tick', '2026-09-29T08:33:00.000Z', {}),
     ];
@@ -127,10 +136,16 @@ describe('W6 P2: a meeting with speech produces its promise pass, and an answere
     return { ...out, passes };
   }
 
-  it('the owner said little (5 mic lines in 30 minutes, the far side 40): one pass, the promise opens, no question', () => {
+  it('the owner said little (5 mic lines in 30 minutes, the far side 40) on a call: one pass, the promise opens, and they are asked', () => {
     const { state, passes } = heard(5);
     expect(passes).toHaveLength(1);
     expect(state.commitments.promises.map((c) => c.source)).toEqual(['meeting']);
+    expect(state.loops.open.filter((l) => l.kind === 'owner-ask')).toHaveLength(1);
+  });
+
+  it('the same five lines with no call app: a room the owner was not in — no pass, no question', () => {
+    const { state, passes } = heard(5, false);
+    expect(passes).toEqual([]);
     expect(state.loops.open.filter((l) => l.kind === 'owner-ask')).toEqual([]);
   });
 

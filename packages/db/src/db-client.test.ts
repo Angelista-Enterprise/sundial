@@ -22,11 +22,11 @@ describe('getDb (L4, docs/audit/remediation-todo.md standalone bug list)', () =>
 
   it('warns and still returns the ORIGINAL instance when a later call passes a different explicit url (the multi-url case)', () => {
     const first = getDb('file::memory:');
-    const second = getDb('file:/tmp/some-other-gnomon.db');
+    const second = getDb('file:/tmp/some-other-sundial.db');
 
     expect(second).toBe(first);
     expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(warnSpy.mock.calls[0][0]).toContain('file:/tmp/some-other-gnomon.db');
+    expect(warnSpy.mock.calls[0][0]).toContain('file:/tmp/some-other-sundial.db');
     expect(warnSpy.mock.calls[0][0]).toContain('file::memory:');
   });
 
@@ -45,14 +45,14 @@ describe('getDb (L4, docs/audit/remediation-todo.md standalone bug list)', () =>
   it('resetDb() clears the cached url too, so a subsequent different url does not spuriously warn', () => {
     getDb('file::memory:');
     resetDb();
-    getDb('file:/tmp/some-other-gnomon.db');
+    getDb('file:/tmp/some-other-sundial.db');
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
   it('closeDb() also clears the cached url', () => {
     getDb('file::memory:');
     closeDb();
-    getDb('file:/tmp/some-other-gnomon.db');
+    getDb('file:/tmp/some-other-sundial.db');
     expect(warnSpy).not.toHaveBeenCalled();
   });
 });

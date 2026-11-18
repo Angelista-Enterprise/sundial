@@ -1,11 +1,13 @@
 export * from './clock-tick.js';
 export * from './moment-close.js';
+export * from './app-learn.js';
+export * from './shell-jobs.js';
+export * from './task-boundary.js';
 export * from './window-track.js';
 export * from './project-track.js';
 export * from './agent-session-track.js';
 export * from './manifest.js';
 /// `forecastDayEnd` — read-time, not a rule. Today's dial reads it through `GET /state`.
-export * from './day-shape-forecast.js';
 export * from './hour-fragmented-forecast.js';
 export * from './project-touch-forecast.js';
 export * from './entity-extract.js';
@@ -29,6 +31,8 @@ export * from './goal-checkin.js';
 export * from './browser-track.js';
 export * from './screen-text-filter.js';
 export * from './screen-track.js';
+export * from './screen-facts.js';
+export * from './screen-read.js';
 
 export { settingsTrack } from './settings-track.js';
 export { configTrack } from './config-track.js';

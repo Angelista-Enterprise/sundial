@@ -58,16 +58,20 @@ describe('promiseTrack opens promises with their terms (UC1 U1-F2 F14 F15 F18)',
     expect(state.commitments.promises).toHaveLength(MAX_PROMISES);
   });
 
-  it('replays a J4.4 promise heard in one moment, and closes promises by the owner or the judge', () => {
+  it('replays a J4.4 promise heard in one moment, and closes it by the owner', () => {
     let state = promiseTrack(base(), ev('commitment:heard', '2026-09-22T08:00:00.000Z', { momentId: 'm1', text: 'dan stuur ik het morgen door', p: 0.9, projectId: 'p1', projectName: 'puzzles' })).state;
     expect(state.commitments.promises[0]).toMatchObject({ id: 'commitment:speech:m1', source: 'speech', heardIn: { momentId: 'm1', p: 0.9 }, promise: { dueKind: 'explicit', due: '2026-09-23T15:00:00.000Z' } });
-    const judged = promiseTrack(state, ev('commitment:resolved', '2026-09-23T08:00:00.000Z', { id: 'commitment:speech:m1', momentId: 'm2', p: 0.8 }));
-    expect(judged.state.commitments.recentClosed[0]).toMatchObject({ closedBecause: 'kept', promise: { evidence: [{ kind: 'judge', strong: true }] } });
     state = promiseTrack(state, ev('commitment:closed', '2026-09-23T08:00:00.000Z', { id: 'commitment:speech:m1', by: 'owner' })).state;
     expect(state.commitments.promises).toEqual([]);
     expect(state.commitments.recentClosed[0]).toMatchObject({ closedBecause: 'owner' });
   });
 });
+
+/** The owner on a call in the meeting (a conferencing app on the mic at one tick): the evidence `attendanceOf` needs. */
+const onCall = (state: KernelState, ts = '2026-09-29T08:15:00.000Z'): KernelState => {
+  const s = meetingFollowup({ ...state, av: { ...state.av, call: { app: 'zoom.us', kind: 'work-call', since: ts, cameraEver: false } } }, ev('clock:tick', ts, {})).state;
+  return { ...s, av: state.av };
+};
 
 describe('meetingFollowup asks for one promise pass per meeting (U1-F2)', () => {
   const tick = (ts: string) => ev('clock:tick', ts, {});
@@ -77,7 +81,7 @@ describe('meetingFollowup asks for one promise pass per meeting (U1-F2)', () => 
   };
   it('once it ended, when something was heard in it, and once only', () => {
     let state = meetingFollowup(upcoming(base()), tick('2026-09-29T07:50:00.000Z')).state;
-    state = meetingFollowup(state, ev('audio:transcript', '2026-09-29T08:10:00.000Z', { spokenText: "I'll send you the draft", channel: 'mic' })).state;
+    state = onCall(meetingFollowup(state, ev('audio:transcript', '2026-09-29T08:10:00.000Z', { spokenText: "I'll send you the draft", channel: 'mic' })).state);
     expect(meetingFollowup(state, tick('2026-09-29T08:20:00.000Z')).effects.filter((e) => e.type === 'RunMeetingPromises'), 'not while it runs').toEqual([]);
     const ended = meetingFollowup(state, tick('2026-09-29T08:31:00.000Z'));
     expect(ended.effects.filter((e) => e.type === 'RunMeetingPromises')).toEqual([{ type: 'RunMeetingPromises', meetingKey: MEETING.meetingKey, title: MEETING.title, start: MEETING.start, end: MEETING.end, attendees: ['Mira Bakker'], ts: '2026-09-29T08:31:00.000Z' }]);
@@ -93,10 +97,10 @@ describe('meetingFollowup asks for one promise pass per meeting (U1-F2)', () => 
     state = meetingFollowup(state, tick('2026-09-29T08:01:00.000Z')).state;
     for (let i = 0; i < 40; i += 1) state = meetingFollowup(state, ev('audio:transcript', `2026-09-29T08:${String(2 + (i % 27)).padStart(2, '0')}:00.000Z`, { spokenText: 'Mira Bakker: the BOX-484 build is green', channel: 'system' })).state;
     for (let i = 0; i < 14; i += 1) state = meetingFollowup(state, ev('audio:transcript', `2026-09-29T08:${String(2 + i).padStart(2, '0')}:30.000Z`, { spokenText: "I'll send you the draft", channel: 'mic' })).state;
-    const ended = meetingFollowup(state, tick('2026-09-29T08:31:00.000Z'));
+    const ended = meetingFollowup(onCall(state), tick('2026-09-29T08:31:00.000Z'));
     expect(ended.effects.filter((e) => e.type === 'RunMeetingPromises')).toHaveLength(1);
-    // The question still reads it as a room the owner was not in (14 mic lines in 30 minutes).
-    expect(ended.effects.filter((e) => e.type === 'EmitEvent')).toEqual([]);
+    // The question waits for the pass it just asked for (UC1-X3).
+    expect(ended.effects.filter((e) => e.type === 'EmitEvent' && e.event.type === 'ask:owner-opened')).toEqual([]);
   });
 
   it('reads overlapping entries (a meeting and its room booking) once, for the one with the most attendees', () => {
@@ -108,7 +112,7 @@ describe('meetingFollowup asks for one promise pass per meeting (U1-F2)', () => 
       return s;
     };
     let state = meetingFollowup(both(base()), tick('2026-09-29T07:50:00.000Z')).state;
-    state = meetingFollowup(state, ev('audio:transcript', '2026-09-29T08:10:00.000Z', { spokenText: "I'll send you the draft", channel: 'mic' })).state;
+    state = onCall(meetingFollowup(state, ev('audio:transcript', '2026-09-29T08:10:00.000Z', { spokenText: "I'll send you the draft", channel: 'mic' })).state);
     const passes = meetingFollowup(state, tick('2026-09-29T08:31:00.000Z')).effects.filter((e) => e.type === 'RunMeetingPromises');
     expect(passes.map((e) => (e as { title: string }).title)).toEqual([MEETING.title]);
   });
@@ -276,7 +280,7 @@ describe('ask once at the end of a meeting (UC1-X3)', () => {
     let state = base();
     state.schedule.upcoming = [{ title: MEETING.title, start: MEETING.start, end: MEETING.end, attendees: ['pat', 'Mira Bakker'], isAllDay: false }];
     state = both(state, tick('2026-09-29T07:50:00.000Z')).state;
-    state = both(state, ev('audio:transcript', '2026-09-29T08:10:00.000Z', { spokenText: 'we talked', channel: 'mic' })).state;
+    state = onCall(both(state, ev('audio:transcript', '2026-09-29T08:10:00.000Z', { spokenText: 'we talked', channel: 'mic' })).state);
     state = both(state, tick('2026-09-29T08:31:00.000Z')).state; // the pass is asked for
     if (withPass) state = both(state, heardDraft(promises)).state;
     return state;
@@ -304,6 +308,7 @@ describe('ask once at the end of a meeting (UC1-X3)', () => {
     const told = both(opened, ev('ask:owner-answered', '2026-09-29T08:40:00.000Z', { askId: ask!.askId, answer: "I told Mira I'd send the deck tomorrow" })).state;
     expect(told.commitments.promises[0]).toMatchObject({ source: 'owner', promise: { counterparty: 'Mira Bakker', deliverable: 'send the deck', dueKind: 'explicit', due: '2026-09-30T15:00:00.000Z', confirmed: true, heardAt: { title: 'Draft review' } } });
     expect(both(opened, ev('ask:owner-answered', '2026-09-29T08:40:00.000Z', { askId: ask!.askId, answer: 'No' })).state.commitments.promises).toEqual([]);
+    for (const answer of ["Wasn't there", 'Yes — nothing promised']) expect(both(opened, ev('ask:owner-answered', '2026-09-29T08:40:00.000Z', { askId: ask!.askId, answer })).state.commitments.promises, answer).toEqual([]);
   });
 });
 

@@ -8,6 +8,7 @@ import { DEFAULT_GATE_POLICY, policyForBias, type Channel } from '../gate.js';
 import { backtestTypes, backtestWatch, resolvePeople, validateWatchRule, type WatchRule } from '../watch.js';
 import { candidateOf, whatIf, type ReplayItem } from '../what-if.js';
 import { pageWithinBudget, RESULT_BUDGET_CHARS } from './evidence-tools.js';
+import { rigRow } from '../read/rig-session.js';
 import type { GnomonTool } from './registry.js';
 
 /*
@@ -76,8 +77,10 @@ export const RECALL_TOOLS: GnomonTool[] = [
       // One read per needle (the SQL holds one substring), merged by id; with
       // nothing to look for, the action's own rows in the window.
       const reads = needles.length > 0 ? await Promise.all(needles.map((n) => getSignalsInRange(range.start, range.end, 1000, types, 0, n))) : [await getSignalsInRange(range.start, range.end, 1000, types)];
+      const state = await env.state();
       const byId = new Map<string, StoredSignal>();
-      for (const list of reads) for (const r of list) byId.set(r.id, r);
+      // S4: never a rig chat's row.
+      for (const list of reads) for (const r of list) if (!rigRow(state, r.data)) byId.set(r.id, r);
       const rows = [...byId.values()].sort((a, b) => a.capturedAt.localeCompare(b.capturedAt)).map(toRow);
       const moments = needles.length > 0 ? (await getMomentsBetween(range.start, range.end, needles, 500)).map(toMoment) : [];
       const sent = await countSignalsInRange(range.start, range.end, ['mail:sent']);
@@ -116,7 +119,9 @@ export const RECALL_TOOLS: GnomonTool[] = [
       const whole = localDayRange(day, tz);
       const start = atClock(day, from as string | undefined, whole.start, tz);
       const end = atClock(day, to as string | undefined, whole.end, tz);
-      const [signals, moments, aliasNames, people] = await Promise.all([readAll(start, end, TIMELINE_TYPES), getMomentsBetween(start, end, [], 2000), loadAliasNames(), person ? peopleNames() : Promise.resolve([])]);
+      const [read, moments, aliasNames, people, state] = await Promise.all([readAll(start, end, TIMELINE_TYPES), getMomentsBetween(start, end, [], 2000), loadAliasNames(), person ? peopleNames() : Promise.resolve([]), env.state()]);
+      // S4: never a rig chat's row.
+      const signals = read.filter((s) => !rigRow(state, s.data));
       const filter = {
         ...(project ? { project: String(project) } : {}),
         ...(person ? { people: namesFor(String(person), aliasNames, people) } : {}),
@@ -201,7 +206,8 @@ export const RECALL_TOOLS: GnomonTool[] = [
         }
         const checked = adopted ? { rule: adopted as WatchRule } : validateWatchRule(resolvePeople(spec, state?.memory.aliasNames ?? {}));
         if ('error' in checked) return { error: checked.error };
-        const events = (await readAll(from, now, backtestTypes(checked.rule), undefined, 400_000)).map((s) => ({ id: s.id, type: `${s.signalType}:${s.eventType}`, ts: s.capturedAt, payload: s.data }));
+        // S4: a rule is held against the owner's own rows, never a rig chat's.
+        const events = (await readAll(from, now, backtestTypes(checked.rule), undefined, 400_000)).filter((s) => !rigRow(state, s.data)).map((s) => ({ id: s.id, type: `${s.signalType}:${s.eventType}`, ts: s.capturedAt, payload: s.data }));
         const { fires } = backtestWatch(checked.rule, events, { daytime: (ts) => localHour(ts, tz) >= 6 && localHour(ts, tz) < 18, timeZone: tz });
         added = fires.map((f, i) => ({ id: `rule:${i}`, ts: f.at, candidate: f.candidate }));
         ruleNote = { rule: { id: checked.rule.id, adopted: adopted !== undefined, fires: fires.length } };

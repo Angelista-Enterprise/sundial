@@ -26,4 +26,11 @@ describe('deliveryActs (W2)', () => {
     expect(deliveryActs('tonic', 'mac', false, 'session-7f')).toEqual(['inject']);
     expect(deliveryActs('tonic', 'mac', true, null)).toEqual(['inject']);
   });
+
+  it('a knock: with knock-wait the turn waits for the go, with knock-speak it runs; a tonic notice never knocks', () => {
+    expect(deliveryActs('phasic', 'mac', false, null, { pushAtMac: false }, 'knock-wait')).toEqual(['inject', 'knock', 'banner']);
+    expect(deliveryActs('phasic', 'mac', false, null, { pushAtMac: false }, 'knock-speak')).toEqual(['inject', 'turn', 'knock', 'banner']);
+    expect(deliveryActs('phasic', 'mac', true, null, undefined, 'knock-wait')).toEqual(['inject', 'knock', 'push', 'banner']);
+    expect(deliveryActs('tonic', 'mac', false, null, undefined, 'knock-wait')).toEqual(['inject']);
+  });
 });

@@ -66,4 +66,20 @@ describe('ScreenVisionSensor (J3.3)', () => {
     expect([fetched, opened]).toEqual([0, 0]);
     fs.rmSync(dir, { recursive: true, force: true });
   });
+
+  it('unloads the model after each frame and caps its context', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gnomon-vision-'));
+    const frame = path.join(dir, 'screen-frame.jpg');
+    fs.writeFileSync(frame, 'jpegbytes');
+    let sent: { keep_alive?: number; options?: { num_ctx?: number } } = {};
+    const fetchImpl = (async (_url: string, init: { body: string }) => {
+      sent = JSON.parse(init.body);
+      return new Response(JSON.stringify({ response: '{"facts":[]}' }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const sensor = new ScreenVisionSensor({ enabled: true, model: 'm', intervalMs: 1000, framePath: frame, fetchImpl });
+    sensor.poll(Date.now());
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sent.keep_alive).toBe(0);
+    expect(sent.options?.num_ctx).toBe(4096);
+  });
 });

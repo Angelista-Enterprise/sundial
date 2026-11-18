@@ -166,6 +166,8 @@ export function whySentence(row) {
       return `you have heard this key often enough that its response fell to ${w(row.habituation)}, taking it to ${w(row.weight)}`
     case 'budget-spent':
       return `it was worth ${w(row.weight)} and the day's ambient budget was already gone`
+    case 'offers-spent':
+      return `it was worth ${w(row.weight)} and the day's offers of help were already made`
     case 'too-costly-now':
       return `it was worth ${w(row.weight)}, but interrupting then cost ${w(row.interruptionCost)} — held for a cheaper moment`
     case 'owner-silent':

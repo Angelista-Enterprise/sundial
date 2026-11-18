@@ -166,8 +166,10 @@ describe('createLlmAuditRecorder', () => {
     await audit.settle();
 
     expect(queries.updateLlmAudit).toHaveBeenCalledWith('audit-1', {
-      respondedAt: new Date(1_000_250).toISOString(),
-      latencyMs: 250,
+      // The stepping clock: the request at 0, the first text at 250 (plan 15 I16), the end at 500.
+      respondedAt: new Date(1_000_500).toISOString(),
+      latencyMs: 500,
+      firstTokenMs: 250,
       success: true,
       responseContent: 'You wrote some code.',
       promptTokens: 50,
@@ -260,6 +262,34 @@ describe('createLlmAuditRecorder', () => {
     await recorderWith(queries, { routeBaseUrl })({ provider: 'groq', model: 'llama-3.3-70b', messages: [] });
     await recorderWith(queries, { routeBaseUrl })({ provider: 'local', model: 'qwen3.8:27b-mlx', messages: [] });
     expect(queries.recordLlmAudit.mock.calls.map((c) => c[0].model)).toEqual(['groq/llama-3.3-70b', 'qwen3.8:27b-mlx']);
+  });
+
+  it('Set 2 R4: a call that fell back is filed under the route and model that answered', async () => {
+    const queries = fakeQueries();
+    const routeBaseUrl = (id) => ({ backup: 'https://api.groq.com/openai/v1' })[id];
+    const audit = await recorderWith(queries, { routeBaseUrl })({ provider: 'main', model: 'fast', messages: [] });
+    audit.observe({ type: 'text-delta', text: 'hi' });
+    audit.observe({ type: 'finish', reason: { kind: 'stop' }, fellBack: { route: 'backup', model: 'slow' } });
+    await audit.settle();
+    expect(queries.updateLlmAudit.mock.calls[0][1]).toMatchObject({ success: true, route: 'backup', model: 'backup/slow' });
+    // A call that did not fall back leaves the row's route and model as they were opened.
+    const plain = await recorderWith(queries)({ provider: 'main', model: 'fast', messages: [] });
+    plain.observe({ type: 'finish', reason: { kind: 'stop' } });
+    await plain.settle();
+    expect(queries.updateLlmAudit.mock.calls[1][1]).not.toHaveProperty('route');
+    expect(queries.updateLlmAudit.mock.calls[1][1]).not.toHaveProperty('model');
+  });
+
+  it('Set 4 R1: the upstream host the route named on the finish goes on the row, and none when it named none', async () => {
+    const queries = fakeQueries();
+    const audit = await recorderWith(queries)({ provider: 'openrouter', model: 'minimax/m', messages: [] });
+    audit.observe({ type: 'finish', reason: { kind: 'stop' }, upstream: 'Kestrel Cloud' });
+    await audit.settle();
+    expect(queries.updateLlmAudit.mock.calls[0][1]).toMatchObject({ upstream: 'Kestrel Cloud' });
+    const plain = await recorderWith(queries)({ provider: 'openrouter', model: 'minimax/m', messages: [] });
+    plain.observe({ type: 'finish', reason: { kind: 'stop' } });
+    await plain.settle();
+    expect(queries.updateLlmAudit.mock.calls[1][1]).not.toHaveProperty('upstream');
   });
 
   it("falls back to 'unknown' rather than violating the NOT NULL model column", async () => {

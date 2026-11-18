@@ -100,7 +100,7 @@ export async function deleteLlmAuditOfSession(sessionId: string): Promise<number
 export async function deleteSignalsOlderThan(
   olderThan: string,
   signalTypes: readonly string[],
-  { apps = [], eventTypes, sessionId, limit = 5000 }: { apps?: readonly string[]; eventTypes?: readonly string[]; sessionId?: string; limit?: number } = {},
+  { apps = [], eventTypes, sessionId, keepQuestionSets, limit = 5000 }: { apps?: readonly string[]; eventTypes?: readonly string[]; sessionId?: string; keepQuestionSets?: readonly string[]; limit?: number } = {},
 ): Promise<number> {
   if (signalTypes.length === 0) return 0;
   const db = getDb();
@@ -113,6 +113,7 @@ export async function deleteSignalsOlderThan(
           inArray(signals.signalType, [...signalTypes]),
           eventTypes ? inArray(signals.eventType, [...eventTypes]) : undefined,
           sessionId !== undefined ? sql`json_extract(data, '$.sessionId') = ${sessionId}` : undefined,
+          keepQuestionSets?.length ? sql`coalesce(json_extract(data, '$.questionSetId'), '') NOT IN (${sql.join(keepQuestionSets.map((q) => sql`${q}`), sql`, `)})` : undefined,
         ),
       );
     return result.rowsAffected;

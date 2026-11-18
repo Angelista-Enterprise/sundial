@@ -1,7 +1,8 @@
 // Who Gnomon has met: every person entity, named through the owner's own aliases and the fold's known-as names, with the meetings each was in (from the calendar LOG, not the two-day `state.meetings.seen`), who they meet with, and what is not a person.
 import { bySeen, daysSince, displayName, foldPeople, isHash, mergeHint, notAPerson, WITH_SHOWN, withWhom } from '../shell/people.js'
 import { loadSundialConfig } from '@sundial/helpers/sundial-config.js'
-import { getAllEntities, getSignalsInRange } from '@sundial/db/index.js'
+import { getAllEntities, getAllSignalsInRange, getSignalsInRange } from '@sundial/db/index.js'
+import { attendanceOf } from '@sundial/kernel/attendance.js'
 
 /**
  * Every calendar event on the record, once, with its attendees.
@@ -13,14 +14,41 @@ import { getAllEntities, getSignalsInRange } from '@sundial/db/index.js'
  * with anybody, and counting it would make "most seen" mean "on the most
  * mailing lists".
  */
-async function calendarEvents(now, sinceDays = 400) {
+/** From here on a meeting counts only when `meeting:attended` says the owner was in it; before, the verdict is rebuilt below. */
+export const ATTENDANCE_SINCE = '2026-10-07T19:15:00.000Z'
+/** Sundial's own hearing and personal calls hold the microphone too; neither is a meeting (call-span-track.ts). */
+const NOT_THE_MEETING = /sundial|gnomon|coreaudiod|whatsapp|facetime|avconferenced|signal|telegram|discord|messages|skype/i
+
+/**
+ * The verdict for a meeting before `ATTENDANCE_SINCE`, from what the log kept: a work call app on the
+ * microphone, and the room's speech. `attendanceOf` decides, as it does live; without the per-minute
+ * samples a meeting nothing speaks for reads unknown, and only `joined` counts as met.
+ */
+async function pastAttendance(from) {
+  const rows = await getAllSignalsInRange(from, ATTENDANCE_SINCE, ['media', 'audio'])
+  const calls = rows.filter((r) => r.eventType === 'state' && r.data?.audioInput === true && typeof r.data?.audioInputProcess === 'string' && !NOT_THE_MEETING.test(r.data.audioInputProcess)).map((r) => r.capturedAt)
+  const heard = rows.filter((r) => r.eventType === 'transcript' && r.data?.channel !== 'system').map((r) => r.capturedAt)
+  const voices = rows.filter((r) => r.eventType === 'transcript').map((r) => r.capturedAt)
+  return (event) => {
+    const start = String(event.startDate)
+    const end = String(event.endDate ?? event.startDate)
+    const inside = (at) => at >= start && at <= end
+    return attendanceOf({ title: '', start, end, attendees: [], askedAt: null, called: calls.some(inside), heard: heard.filter(inside).length, listened: voices.some(inside) })
+  }
+}
+
+export async function calendarEvents(now, sinceDays = 400) {
   const to = new Date(now + 86_400_000).toISOString()
   const from = new Date(now - sinceDays * 86_400_000).toISOString()
-  const rows = await getSignalsInRange(from, to, 20_000, ['calendar'])
+  const rows = await getSignalsInRange(from, to, 20_000, ['calendar', 'meeting'])
+  const attended = new Set(rows.filter((r) => r?.eventType === 'attended').map((r) => r?.data?.event?.eventId))
+  const verdict = await pastAttendance(from)
   const events = new Map()
   for (const row of rows) {
     const event = row?.data?.event
-    if (!event?.eventId || event.isAllDay) continue
+    if (!event?.eventId || event.isAllDay || row?.signalType !== 'calendar' || event.selfStatus === 'declined') continue
+    const joined = String(event.startDate) >= ATTENDANCE_SINCE ? attended.has(`${event.title}|${event.startDate}`) : verdict(event) === 'joined'
+    if (!joined) continue
     const attendees = Array.isArray(event.attendees) ? event.attendees : []
     if (attendees.length === 0) continue
     events.set(`${event.eventId}|${event.startDate}`, { at: String(event.startDate ?? row.capturedAt), title: String(event.title ?? 'a meeting'), attendees })

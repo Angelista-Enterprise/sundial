@@ -32,6 +32,8 @@ export interface DeliveredNotice {
   sessionId: string | null;
   askId: string | null;
   exploration?: boolean;
+  /** Plan 15 step 1: it came with a knock in this mode; `turn` = a chat turn waits for the owner's go. */
+  knock?: { mode: 'knock-wait' | 'knock-speak'; turn: boolean };
 }
 
 /** A delivered notice, watched for what the owner did next (W5 step 5). */
@@ -53,6 +55,8 @@ export interface WatchedNotice {
   app: string | null;
   leftAt: string | null;
   seen?: boolean;
+  /** The owner was away for the 5 minutes after it and has not replied: not seen and not ignored, unknown. */
+  unknown?: boolean;
   acted?: boolean;
   returned?: boolean;
   answered?: boolean;
@@ -85,6 +89,12 @@ export interface AutonomyState {
   granted: Record<string, string>;
   /** Capability → the owner's own ceiling (`autonomy:set`); always wins. */
   lowered: Record<string, AutonomyLevel>;
+  /**
+   * Round 3: the ladder. Per tool and app, the owner's yeses in a row to a plain act there (a no puts it back to 0).
+   * At `config.actions.earnAfter` of them a plain act there stops asking (gate.js `underAutonomy`); a final never does.
+   * Only the owner's own answers count (`by: 'owner'`, never the rig's). Newest last, bounded. Optional: older snapshots predate it.
+   */
+  ladder?: { tool: string; app: string; yes: number; at: string }[];
 }
 
 /** KernelState's Calibrated fields; `KernelState` extends this. */

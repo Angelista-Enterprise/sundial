@@ -123,3 +123,33 @@ describe('ShellSensor with no hook file (history fallback)', () => {
     }
   });
 });
+
+describe('ShellSensor reads both sources', () => {
+  it('a shell that never loaded the hook still reaches the record through history, and a hooked command is not read twice', () => {
+    const historyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gnomon-home-'));
+    const history = path.join(historyDir, '.zsh_history');
+    fs.writeFileSync(history, '');
+    fs.writeFileSync(hookPath, '');
+    const realHome = process.env.HOME;
+    process.env.HOME = historyDir;
+    try {
+      const sensor = new ShellSensor();
+      sensor.poll(TERMINAL);
+      const now = Math.floor(Date.now() / 1000);
+      // Typed in a hooked shell: both files get it; one event.
+      writeHookLine('git status');
+      fs.appendFileSync(history, `: ${now}:0;git status\n`);
+      expect(sensor.poll(TERMINAL).map((e) => [e.payload.command, e.payload.actor])).toEqual([['git status', 'owner']]);
+      // Typed in a shell without the hook: history alone, while a terminal is focused.
+      fs.appendFileSync(history, `: ${now + 1}:0;make\n`);
+      expect(sensor.poll(TERMINAL).map((e) => e.payload.command)).toEqual(['make']);
+      // And not while a browser is: a history line has no cwd of its own.
+      fs.appendFileSync(history, `: ${now + 2}:0;ls\n`);
+      expect(sensor.poll(BROWSER)).toEqual([]);
+    } finally {
+      if (realHome === undefined) delete process.env.HOME;
+      else process.env.HOME = realHome;
+      fs.rmSync(historyDir, { recursive: true, force: true });
+    }
+  });
+});

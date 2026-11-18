@@ -21,7 +21,6 @@ describe('the sensor manifest', () => {
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
       .sort()
-    // One package may hold two rows: `mail` reads Mail and Messages behind two switches.
     const claimed = [...new Set(SENSORS.map((sensor) => sensor.package).filter(Boolean))].sort()
     expect(claimed, 'every sensor package owes the Trust card a row').toEqual(folders)
   })
@@ -75,14 +74,12 @@ describe('the roster, joined to the log', () => {
   })
 
   it('tells a stream never heard from a stream gone quiet', () => {
-    // Four of the phone's five streams have never carried anything on the live
-    // record, which is the card's own finding about that path — and a
-    // different fact from a sensor that stopped.
-    const [phone] = sensorRoster([{ stream: 'phone:place', quietMin: 1224 }]).filter((sensor) => sensor.name === 'phone')
-    expect(phone.silentEvents).toEqual(['phone:sleep', 'phone:workout', 'phone:motion', 'phone:steps'])
-    expect(phone.quietMin).toBe(1224)
-    const [presence] = sensorRoster([]).filter((sensor) => sensor.name === 'presence')
-    expect(presence.quietMin, 'never heard at all is null, not a big number').toBe(null)
+    // A stream never heard is a different fact from a sensor that stopped.
+    const [calendar] = sensorRoster([{ stream: 'calendar:active', quietMin: 1224 }]).filter((sensor) => sensor.name === 'calendar')
+    expect(calendar.silentEvents).toEqual(['calendar:upcoming', 'calendar:context-event', 'reminders:snapshot'])
+    expect(calendar.quietMin).toBe(1224)
+    const [vault] = sensorRoster([]).filter((sensor) => sensor.name === 'vault')
+    expect(vault.quietMin, 'never heard at all is null, not a big number').toBe(null)
   })
 
   it('reports an opt-in sensor against the owner\'s own config', () => {

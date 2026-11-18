@@ -104,6 +104,8 @@ export const DOING = {
   StopSubagent: 'stopped a job',
   EmitEvent: 'told itself something',
   Notify: 'said something to you',
+  Speak: 'spoke to you',
+  Mark: 'marked your screen',
 }
 
 /** The phrase for a journal row's `effect_detail`, falling back to its own first token. */

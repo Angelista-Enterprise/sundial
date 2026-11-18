@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createInitialState } from '@sundial/kernel/initial-state.js';
 import type { Effect, KernelState, SanitizedEvent } from '@sundial/kernel/types.js';
-import { recentMailSubjects } from './mail-track.js';
 import { mailMatters } from './mail-matters.js';
 import { mailBearing, promiseTrack } from './promise-track.js';
 
@@ -55,14 +54,5 @@ describe('mail that matters (lane B #17)', () => {
     expect(noticesOf(mailMatters(soon, mail('Lunch on Friday')).effects)[0]).toMatchObject({ observation: 'Mail from Mira Bakker: “Lunch on Friday”. You owe them the draft, due 2026-09-30.' });
     const later = withPromise('owner', 'next week');
     expect(noticesOf(mailMatters(later, mail('Lunch on Friday')).effects)).toEqual([]);
-  });
-
-  it('ranks mail from someone a promise is with first', () => {
-    const state = withPromise('other');
-    state.mail.recent = [
-      { from: 'Mira Bakker', subject: 'Numbers draft', at: '2026-09-29T11:00:00.000Z' },
-      { from: 'Newsletter', subject: 'This week', at: '2026-09-29T11:30:00.000Z' },
-    ];
-    expect(recentMailSubjects(state, AFTER)).toEqual(['Numbers draft', 'This week']);
   });
 });

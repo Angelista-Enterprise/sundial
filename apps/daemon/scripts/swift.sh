@@ -11,6 +11,8 @@
 set -e
 # The bundle and everything staged next to it are private to this user.
 umask 077
+# The oldest macOS Sundial runs on (Sonoma): ScreenCaptureKit's screenshot call is 14.0. Without it a build targets this Mac's own version.
+SWIFT_TARGET="$(uname -m)-apple-macos14.0"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
@@ -42,7 +44,7 @@ window_helper_needs_build() {
 
 if window_helper_needs_build; then
   echo "[build-swift] Compiling macos-window-helper/*.swift..."
-  swiftc -O -swift-version 5 -o "$OUT_BIN" "$SWIFT_DIR"/*.swift \
+  swiftc -O -swift-version 5 -target "$SWIFT_TARGET" -o "$OUT_BIN" "$SWIFT_DIR"/*.swift \
     -framework AppKit \
     -framework ApplicationServices
   echo "[build-swift] Built: $OUT_BIN"
@@ -91,7 +93,7 @@ if [ ! -f "$CAL_OUT" ] || [ "$CAL_SRC" -nt "$CAL_OUT" ]; then
 </dict>
 </plist>
 CALPLIST
-  swiftc -O -swift-version 5 -o "$CAL_OUT" "$CAL_SRC" -framework EventKit -framework Contacts -framework Foundation \
+  swiftc -O -swift-version 5 -target "$SWIFT_TARGET" -o "$CAL_OUT" "$CAL_SRC" -framework EventKit -framework Contacts -framework Foundation \
     -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$CAL_PLIST"
   rm -f "$CAL_PLIST"
   echo "[build-swift] Built: $CAL_OUT"
@@ -122,7 +124,7 @@ if [ ! -f "$BROWSER_OUT" ] || [ "$BROWSER_SRC" -nt "$BROWSER_OUT" ]; then
 </dict>
 </plist>
 BROWSERPLIST
-  swiftc -O -swift-version 5 -o "$BROWSER_OUT" "$BROWSER_SRC" -framework AppKit -framework Foundation \
+  swiftc -O -swift-version 5 -target "$SWIFT_TARGET" -o "$BROWSER_OUT" "$BROWSER_SRC" -framework AppKit -framework Foundation \
     -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$BROWSER_PLIST"
   rm -f "$BROWSER_PLIST"
   echo "[build-swift] Built: $BROWSER_OUT"
@@ -136,7 +138,7 @@ INPUT_OUT="$OUT_DIR/sundial-input-helper"
 
 if [ ! -f "$INPUT_OUT" ] || [ "$INPUT_SRC" -nt "$INPUT_OUT" ]; then
   echo "[build-swift] Compiling macos-input-helper.swift..."
-  swiftc -O -swift-version 5 -o "$INPUT_OUT" "$INPUT_SRC" -framework ApplicationServices -framework Foundation
+  swiftc -O -swift-version 5 -target "$SWIFT_TARGET" -o "$INPUT_OUT" "$INPUT_SRC" -framework ApplicationServices -framework Foundation
   echo "[build-swift] Built: $INPUT_OUT"
 else
   echo "[build-swift] Up to date: $INPUT_OUT"
@@ -148,7 +150,7 @@ NOTIF_OUT="$OUT_DIR/sundial-notification-helper"
 
 if [ ! -f "$NOTIF_OUT" ] || [ "$NOTIF_SRC" -nt "$NOTIF_OUT" ]; then
   echo "[build-swift] Compiling macos-notification-helper.swift..."
-  swiftc -O -swift-version 5 -o "$NOTIF_OUT" "$NOTIF_SRC" -framework ApplicationServices -framework AppKit -framework Foundation
+  swiftc -O -swift-version 5 -target "$SWIFT_TARGET" -o "$NOTIF_OUT" "$NOTIF_SRC" -framework ApplicationServices -framework AppKit -framework Foundation
   echo "[build-swift] Built: $NOTIF_OUT"
 else
   echo "[build-swift] Up to date: $NOTIF_OUT"
@@ -160,7 +162,7 @@ OCR_OUT="$OUT_DIR/sundial-screen-ocr-helper"
 
 if [ ! -f "$OCR_OUT" ] || [ "$OCR_SRC" -nt "$OCR_OUT" ]; then
   echo "[build-swift] Compiling macos-screen-ocr-helper.swift..."
-  swiftc -O -swift-version 5 -o "$OCR_OUT" "$OCR_SRC" -framework ScreenCaptureKit -framework Vision -framework CoreGraphics -framework AppKit -framework Foundation
+  swiftc -O -swift-version 5 -target "$SWIFT_TARGET" -o "$OCR_OUT" "$OCR_SRC" -framework ScreenCaptureKit -framework Vision -framework CoreGraphics -framework AppKit -framework Foundation
   echo "[build-swift] Built: $OCR_OUT"
 else
   echo "[build-swift] Up to date: $OCR_OUT"
@@ -172,7 +174,7 @@ AUDIO_OUT="$OUT_DIR/sundial-audio-helper"
 
 if [ ! -f "$AUDIO_OUT" ] || [ "$AUDIO_SRC" -nt "$AUDIO_OUT" ]; then
   echo "[build-swift] Compiling macos-audio-helper.swift..."
-  swiftc -O -swift-version 5 -o "$AUDIO_OUT" "$AUDIO_SRC" -framework AVFoundation -framework Foundation
+  swiftc -O -swift-version 5 -target "$SWIFT_TARGET" -o "$AUDIO_OUT" "$AUDIO_SRC" -framework AVFoundation -framework Foundation
   echo "[build-swift] Built: $AUDIO_OUT"
 else
   echo "[build-swift] Up to date: $AUDIO_OUT"
@@ -200,7 +202,7 @@ launcher_needs_build() {
 
 if launcher_needs_build; then
   echo "[build-swift] Compiling macos-daemon-launcher..."
-  swiftc -O -swift-version 5 -o "$LAUNCHER_OUT" "$LAUNCHER_DIR"/*.swift "$FOCUS_SRC" \
+  swiftc -O -swift-version 5 -target "$SWIFT_TARGET" -o "$LAUNCHER_OUT" "$LAUNCHER_DIR"/*.swift "$FOCUS_SRC" \
     -framework Foundation \
     -framework AppKit \
     -framework AVFoundation \
@@ -213,10 +215,12 @@ fi
 
 # --- The app itself (apps/macos): the bundle's executable, the menu bar, the supervisor ---
 APP_SRC="$PROJECT_ROOT/apps/macos/Sundial.swift"
+APP_CHANNEL_SRC="$PROJECT_ROOT/apps/macos/AppChannel.swift"
+APP_LOOK_SRC="$PROJECT_ROOT/apps/macos/ScreenLook.swift"
 APP_OUT="$OUT_DIR/Sundial"
-if [ ! -f "$APP_OUT" ] || [ "$APP_SRC" -nt "$APP_OUT" ]; then
+if [ ! -f "$APP_OUT" ] || [ "$APP_SRC" -nt "$APP_OUT" ] || [ "$APP_CHANNEL_SRC" -nt "$APP_OUT" ] || [ "$APP_LOOK_SRC" -nt "$APP_OUT" ]; then
   echo "[build-swift] Compiling the Sundial app..."
-  swiftc -O -swift-version 5 -o "$APP_OUT" "$APP_SRC" -framework AppKit -framework WebKit -framework ServiceManagement
+  swiftc -O -swift-version 5 -target "$SWIFT_TARGET" -o "$APP_OUT" "$APP_SRC" "$APP_CHANNEL_SRC" "$APP_LOOK_SRC" -framework AppKit -framework WebKit -framework ServiceManagement -framework AVFoundation -framework ScreenCaptureKit -framework Vision
   echo "[build-swift] Built: $APP_OUT"
 else
   echo "[build-swift] Up to date: $APP_OUT"

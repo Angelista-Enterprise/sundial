@@ -13,6 +13,7 @@ interface BrowserStatusPayload {
   app?: string;
   authorized?: boolean;
   error?: string | null;
+  supported?: boolean;
 }
 
 /**
@@ -27,6 +28,8 @@ interface BrowserStatusPayload {
 export const browserTrack: Rule = (state, event) => {
   if (event.type === 'browser:status') {
     const payload = event.payload as BrowserStatusPayload;
+    // A browser nothing can read: the last page of another browser is not where the owner is now.
+    if (payload.supported === false) return { state: { ...state, browser: { ...state.browser, current: null, unsupported: payload.app ?? 'browser' } }, effects: [] };
     const authorized = payload.authorized !== false;
     if (state.browser.authorized === authorized && state.browser.lastError === (payload.error ?? null)) return { state, effects: [] };
     return { state: { ...state, browser: { ...state.browser, authorized, lastError: payload.error ?? null } }, effects: [] };
@@ -46,6 +49,7 @@ export const browserTrack: Rule = (state, event) => {
         ...state.browser,
         current: { app, host, path, title: typeof payload.title === 'string' ? payload.title : null, since: same ? prior.since : event.ts, updatedAt: event.ts },
         authorized: true,
+        unsupported: null,
       },
     },
     effects: [],

@@ -13,6 +13,8 @@ import { listenReply } from './listen-reply.js';
 import { momentFanout } from './moment-fanout.js';
 import { rankEvidence } from './rank-evidence.js';
 import { routeAsk } from './route-ask.js';
+import { screenFrame } from './screen-frame.js';
+import { screenRead } from './screen-read.js';
 import type { QuestionSet } from './index.js';
 
 /**
@@ -21,4 +23,4 @@ import type { QuestionSet } from './index.js';
  * set is added here in the same commit that creates it.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const QUESTION_SETS: QuestionSet<any[]>[] = [momentFanout, judgeLine, rankEvidence, listenReply, gateFeatures, routeAsk, ...FORECAST_SETS, auditFact, alignAlias, ingestAnomaly, journalRank, classifyAction, verifyAction, perceive, judgeDraft, gradeStep];
+export const QUESTION_SETS: QuestionSet<any[]>[] = [momentFanout, judgeLine, rankEvidence, listenReply, gateFeatures, routeAsk, ...FORECAST_SETS, auditFact, alignAlias, ingestAnomaly, journalRank, classifyAction, verifyAction, perceive, judgeDraft, gradeStep, screenRead, screenFrame];

@@ -25,8 +25,8 @@ export function noticeContext({ kind, observation, evidence, weight, noticeKey, 
   return createUserMessage({
     content: [{ type: 'text', text: lines.join('\n') }],
     source: {
-      kind: 'plugin',
-      plugin: PLUGIN,
+      // dsh 0.2 (format V4) takes a producer-owned kind; `plugin` is refused. Older logs migrate to `plugin:sundial-proactive`.
+      kind: PLUGIN,
       form: 'notice',
       summary: boundContextSummary(`Gnomon noticed: ${observation}`),
     },
@@ -35,7 +35,7 @@ export function noticeContext({ kind, observation, evidence, weight, noticeKey, 
 
 /** W1: a turn's brief, as the context it is (the present as its one-line account). */
 export function briefMessage({ text, present }) {
-  return createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'plugin', plugin: PLUGIN, form: 'notice', summary: boundContextSummary(present) } })
+  return createUserMessage({ content: [{ type: 'text', text }], source: { kind: PLUGIN, form: 'notice', summary: boundContextSummary(present) } })
 }
 
 /**
@@ -47,7 +47,7 @@ export function briefMessage({ text, present }) {
 export const FOLLOWUP_PREFIX = 'Follow-up: '
 export function followupLine({ observation }) {
   const text = `${FOLLOWUP_PREFIX}${observation}`
-  return createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'plugin', plugin: PLUGIN, form: 'notice', summary: boundContextSummary(text) } })
+  return createUserMessage({ content: [{ type: 'text', text }], source: { kind: PLUGIN, form: 'notice', summary: boundContextSummary(text) } })
 }
 
 /**
@@ -91,7 +91,7 @@ export function wakeupPrompt({ noticeKey, kind, askId }) {
           ].join('\n'),
         },
       ],
-      source: { kind: 'plugin', plugin: PLUGIN },
+      source: { kind: PLUGIN },
     })
   }
 
@@ -122,6 +122,6 @@ export function wakeupPrompt({ noticeKey, kind, askId }) {
         ].join('\n'),
       },
     ],
-    source: { kind: 'plugin', plugin: PLUGIN },
+    source: { kind: PLUGIN },
   })
 }

@@ -116,7 +116,7 @@ export function createSearxngSearch({ baseUrl = DEFAULT_SEARXNG_URL, timeoutMs =
       } catch (cause) {
         if (signal?.aborted) throw new Error('the search was cancelled');
         throw new Error(
-          `no SearXNG instance is answering at ${baseUrl}. Start one with: docker start gnomon-searxng`,
+          `web search is off: no SearXNG instance is answering at ${baseUrl}. Say you could not search, and conclude nothing from it. Do not install or start it yourself: the owner starts it (docker start gnomon-searxng).`,
           { cause },
         );
       }

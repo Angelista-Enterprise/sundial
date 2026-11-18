@@ -19,7 +19,7 @@ export function lensesPanel(d) {
   // same on the shelf as it does on the board.
   const recipe = (spec) =>
     [
-      String(spec.source?.tool ?? '').replace(/^gnomon_/, ''),
+      spec.source?.view ? `figure · ${spec.source.view}` : String(spec.source?.tool ?? '').replace(/^gnomon_/, ''),
       spec.where?.length ? `${spec.where.length} filter${spec.where.length === 1 ? '' : 's'}` : null,
       spec.group ? `by ${spec.group}` : null,
       spec.sort ? `sorted ${spec.sort}` : null,
@@ -35,7 +35,7 @@ export function lensesPanel(d) {
       text: 'Put it up',
       onclick: (event) => {
         event.currentTarget.disabled = true
-        fetch('/gnomon/api/board', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'place', id: row.id, kind: 'lens', text: row.spec }) }).catch(() => {})
+        fetch('/gnomon/api/board', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'place', id: row.id, kind: row.id.startsWith('nodus:') ? 'nodus' : 'lens', text: row.spec }) }).catch(() => {})
       },
     })
 

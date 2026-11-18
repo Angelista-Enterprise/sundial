@@ -79,6 +79,8 @@ describe('sundial install', () => {
     }
     expect(fs.statSync(dir).mode & 0o777).toBe(0o700)
     expect(fs.statSync(path.join(dir, '.env')).mode & 0o777).toBe(0o600)
+    // dsh's credential layer reads $DSH_HOME/.env: it is Sundial's own .env, linked, so a provider key is stored once.
+    expect(fs.readlinkSync(path.join(dir, 'dsh', '.env'))).toBe(path.join(dir, '.env'))
     const start = fs.readFileSync(path.join(dir, 'start.sh'), 'utf8')
     expect(start).toContain('umask 077')
     expect(start).toContain('DSH_TELEMETRY_DISABLED=1')
@@ -96,6 +98,50 @@ describe('sundial install', () => {
     expect(u.code, u.out).toBe(0)
     expect(fs.existsSync(dir)).toBe(false)
     expect(fs.readFileSync(path.join(sibling, 'data.txt'), 'utf8')).toBe('precious')
+  })
+
+  it('hearing yes leaves audio.autoMeetings off; only its own yes turns it on', () => {
+    const dir = path.join(root, 'heard')
+    const bin = path.join(root, 'bin')
+    fs.mkdirSync(path.join(dir, 'models'), { recursive: true })
+    fs.mkdirSync(bin)
+    for (const f of ['ggml-large-v3-turbo-q5_0.bin', 'ggml-silero-v5.1.2.bin']) fs.writeFileSync(path.join(dir, 'models', f), '')
+    fs.writeFileSync(path.join(bin, 'whisper-server'), '#!/bin/sh\n', { mode: 0o755 })
+    fs.writeFileSync(path.join(dir, 'config.json'), '{}\n')
+    const env = { SUNDIAL_HOME: dir, PATH: `${bin}:${process.env.PATH}` }
+    const audio = () => JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8')).audio
+    expect(sundial(['hearing', '--hearing'], env).code).toBe(0)
+    expect(audio()).toEqual({ enabled: true, autoMeetings: false })
+    expect(sundial(['hearing', '--hearing', '--auto-meetings'], env).code).toBe(0)
+    expect(audio()).toEqual({ enabled: true, autoMeetings: true })
+    expect(sundial(['hearing', '--hearing'], env).code).toBe(0)
+    expect(audio().autoMeetings).toBe(true)
+  })
+
+  it('keeps the search model answer in config.json: --no-embeddings is off, and a later run without a terminal keeps it', () => {
+    if (process.platform !== 'darwin') return
+    const dir = path.join(root, 'sundial')
+    const config = () => JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8'))
+    const r = sundial(['install', '--skip-build', '--no-launchagent', '--no-sidecars', '--no-embeddings'], { SUNDIAL_HOME: dir })
+    expect(r.code, r.out).toBe(0)
+    expect(r.out).toMatch(/Semantic search is off/)
+    expect(config().memory).toEqual({ embeddings: false })
+    expect(sundial(['install', '--skip-build', '--no-launchagent', '--no-sidecars'], { SUNDIAL_HOME: dir }).code).toBe(0)
+    expect(config().memory).toEqual({ embeddings: false })
+    expect(sundial(['install', '--skip-build', '--no-launchagent', '--no-sidecars', '--embeddings'], { SUNDIAL_HOME: dir }).code).toBe(0)
+    expect(config().memory).toEqual({ embeddings: true })
+  })
+
+  it('the packaged app\'s first run leaves the search model question open, and a later start keeps the answer', () => {
+    const dir = path.join(root, 'packaged')
+    const config = () => JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8'))
+    const env = { SUNDIAL_HOME: dir, HOME: root }
+    const r = sundial(['prepare'], env)
+    expect(r.code, r.out).toBe(0)
+    expect(config()).toEqual({ memory: { embeddings: 'ask' } })
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ memory: { embeddings: false }, ocr: { enabled: true } }))
+    expect(sundial(['prepare'], env).code).toBe(0)
+    expect(config()).toEqual({ memory: { embeddings: false }, ocr: { enabled: true } })
   })
 })
 
@@ -169,6 +215,28 @@ describe('sundial claude-hooks (report-only, U3-F8 / F50)', () => {
     expect(t.settings()).toBe(t.original)
   })
 
+  it('a real install asks before each change to Claude Code on a terminal; Enter is yes', () => {
+    if (process.platform !== 'darwin' || !fs.existsSync('/usr/bin/expect')) return
+    const t = setup()
+    const dir = path.join(root, 'sundial-asked')
+    // expect gives the installer a terminal: no to the hooks, Enter to the context hook, no to the mod (absent from the public export).
+    const script = `set timeout 60
+spawn ${process.execPath} ${CLI} install --skip-build --no-launchagent --no-sidecars --no-app --no-embeddings --no-hearing --no-shell-hook
+expect "report-only hooks"; expect -exact {[Y/n]}; send "n\\r"
+expect "context hook to"; expect -exact {[Y/n]}; send "\\r"
+expect {
+  "gnomon-band mod into" { expect -exact {[Y/n]}; send "n\\r"; exp_continue }
+  eof
+}`
+    const r = spawnSync('/usr/bin/expect', ['-c', script], { encoding: 'utf8', env: { ...process.env, ...t.env, SUNDIAL_HOME: dir, SUNDIAL_LABEL: 'dev.sundial.agent', SUNDIAL_APP_PATH: path.join(root, 'Sundial.app') } })
+    expect(r.status, r.stdout).toBe(0)
+    const hooks = JSON.parse(t.settings()).hooks
+    expect(Object.keys(hooks)).toEqual(['Notification', 'SessionStart'])
+    expect(hooks.SessionStart[0].hooks[0].command).toContain('claude-context.mjs')
+    expect(t.settings()).not.toContain('claude-hook.mjs')
+    expect(fs.existsSync(path.join(t.claude, 'skills', 'gnomon-band'))).toBe(false)
+  }, 60_000)
+
   it('refuses a settings file that is not JSON, and changes nothing', () => {
     const t = setup()
     fs.writeFileSync(path.join(t.claude, 'settings.json'), '{ not json')
@@ -239,6 +307,19 @@ describe('sundial status and doctor on an existing install', () => {
     expect(r.out).toMatch(/app\.env's Node .* rewrites app\.env/s)
     fs.writeFileSync(path.join(home, 'app.env'), `SUNDIAL_NODE=${process.execPath}\n`)
     expect(sundial(['doctor'], { SUNDIAL_HOME: home }).out).toMatch(/ok\s+app\.env's Node/)
+    // The code needs macOS 14 (ScreenLook.swift's ScreenCaptureKit calls); doctor says so by name.
+    if (process.platform === 'darwin') expect(sundial(['doctor'], { SUNDIAL_HOME: home }).out).toMatch(/ok\s+macOS 14 or newer \(found \d+/)
+  })
+
+  it('doctor refuses an audio.whisperUrl off this Mac', () => {
+    const home = path.join(root, 'whisper')
+    fs.mkdirSync(home, { recursive: true })
+    fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ audio: { whisperUrl: 'https://whisper.example.com/inference' } }))
+    const r = sundial(['doctor'], { SUNDIAL_HOME: home })
+    expect(r.code).toBe(1)
+    expect(r.out).toMatch(/!!\s+audio\.whisperUrl on this Mac .*must be on this Mac/s)
+    fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ audio: { whisperUrl: 'http://127.0.0.1:8771/inference' } }))
+    expect(sundial(['doctor'], { SUNDIAL_HOME: home }).out).toMatch(/ok\s+audio\.whisperUrl on this Mac/)
   })
 
   it('status warns about a stray bundle in the data folder of an app install', () => {

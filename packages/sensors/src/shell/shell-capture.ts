@@ -9,6 +9,10 @@ export interface ShellCommandCapture {
   cwd: string | null;
   exitCode: number | null;
   durationMs: number | null;
+  /** Who typed it: the hook says; a history line is the owner's by definition (an agent's shell keeps no history). */
+  actor: 'owner' | 'agent';
+  /** Set 4 R1: the chat whose gnomon_run_shell ran it (hook entry `s`); absent for every other producer. */
+  session?: string;
 }
 
 interface HistoryFile {
@@ -23,7 +27,12 @@ interface HookEntry {
   e: number;
   t: string;
   m?: number;
+  a?: string;
+  s?: string;
 }
+
+/** A history line this close after the same command from the hook is the same command, seen twice. */
+const SAME_COMMAND_MS = 10_000;
 
 /**
  * Ported from WCS's `ShellSensor` (plugins/shell/sensor.ts). Dropped: the
@@ -35,57 +44,46 @@ interface HookEntry {
 export class ShellCapture {
   private readonly homeDir: string;
   private readonly hookFilePath: string;
-  private useHookFile = false;
   private hookFileOffset = 0;
   private historyFile: HistoryFile | null = null;
   private inferredCwd: string | null = null;
+  /** The hook's last commands, so the same command read from history is not a second one. */
+  private recentHook: { command: string; atMs: number }[] = [];
 
   constructor(homeDir = process.env.HOME ?? os.homedir(), hookFilePath = getShellHookFilePath()) {
     this.homeDir = homeDir;
     this.hookFilePath = hookFilePath;
   }
 
+  /**
+   * Both sources, always. Until 2026-10-14 the hook file, once it existed, was
+   * the only source for the rest of the process: a shell that did not load the
+   * hook (the owner's ~/.zshrc never did; six days of lines came from shells
+   * where it was sourced by hand) wrote history that nobody read, and the
+   * stream was dead from 10-05 while the history file grew by 14-83 commands
+   * a day. A file already on disk at boot is a backlog: seek past it.
+   */
   init(): void {
-    if (fs.existsSync(this.hookFilePath)) {
-      // A file already on disk at boot carries a backlog from before this
-      // process — seek past it, exactly as the history path does.
-      this.adoptHookFile(this.hookFileSize());
-    } else {
-      this.detectHistoryFile();
-    }
-  }
-
-  /** Which source is live. The caller gates the history path on terminal focus and the hook path on nothing. */
-  get usesHookFile(): boolean {
-    return this.useHookFile;
+    this.hookFileOffset = this.hookFileSize();
+    if (this.hookFileOffset > 0) this.chmodHookFile();
+    this.detectHistoryFile();
   }
 
   /**
-   * Switch to the hook file if it has appeared since the last check, and
-   * report which source is live.
-   *
-   * The hook file is created by the first command anyone runs, which is
-   * routinely AFTER the daemon booted. Without this a process that started on a
-   * machine with no hook file would parse history for its whole lifetime and
-   * ignore the better source sitting next to it.
-   *
-   * Separate from `readNewCommands` on purpose: the caller must be able to ask
-   * "which source is this?" BEFORE it decides whether the focus gate applies.
-   * Folding the check into the read made adoption unreachable — the history
-   * path returns early when unfocused, so the check never ran.
+   * Call on every poll tick. The hook file is read whatever is focused (each
+   * entry carries its own cwd and actor); the history file only while a
+   * terminal is, since a history line's only evidence of which shell typed it
+   * is the focused window. A history command the hook reported moments
+   * before is the same command and is dropped.
    */
-  refreshSource(): boolean {
-    if (!this.useHookFile && fs.existsSync(this.hookFilePath)) {
-      // It did not exist when we last looked, so everything in it is new —
-      // start at zero rather than seeking past the very first command.
-      this.adoptHookFile(0);
-    }
-    return this.useHookFile;
-  }
-
-  /** Call on every poll tick (the caller owns the focus gate for the history path). */
-  readNewCommands(): ShellCommandCapture[] {
-    return this.useHookFile ? this.readHookFile() : this.readHistoryFile();
+  readNewCommands(focused = true): ShellCommandCapture[] {
+    const hook = this.readHookFile();
+    const now = Date.now();
+    for (const h of hook) this.recentHook.push({ command: h.command, atMs: Date.parse(h.timestamp) || now });
+    this.recentHook = this.recentHook.filter((h) => now - h.atMs <= SAME_COMMAND_MS * 6).slice(-50);
+    if (!focused) return hook;
+    const history = this.readHistoryFile().filter((c) => !this.recentHook.some((h) => h.command === c.command && Math.abs((Date.parse(c.timestamp) || now) - h.atMs) <= SAME_COMMAND_MS));
+    return [...hook, ...history];
   }
 
   private hookFileSize(): number {
@@ -96,10 +94,7 @@ export class ShellCapture {
     }
   }
 
-  private adoptHookFile(offset: number): void {
-    this.useHookFile = true;
-    this.hookFileOffset = offset;
-    this.historyFile = null;
+  private chmodHookFile(): void {
     try {
       fs.chmodSync(this.hookFilePath, 0o600);
     } catch {
@@ -109,12 +104,12 @@ export class ShellCapture {
 
   /**
    * On regaining terminal focus, skip whatever accumulated in the history
-   * file while unfocused — only relevant to the history-file fallback path;
-   * the hook file is never re-seeked (each entry already carries its own
-   * cwd, so there's no "which window was this typed in" ambiguity to skip).
+   * file while unfocused; the hook file is never re-seeked (each entry already
+   * carries its own cwd, so there's no "which window was this typed in"
+   * ambiguity to skip).
    */
   reseekHistoryFileToNow(): void {
-    if (this.useHookFile || !this.historyFile) return;
+    if (!this.historyFile) return;
     try {
       this.historyFile.lastOffset = fs.statSync(this.historyFile.path).size;
     } catch {
@@ -159,6 +154,8 @@ export class ShellCapture {
               cwd: entry.d ?? null,
               exitCode: typeof entry.e === 'number' ? entry.e : null,
               durationMs: typeof entry.m === 'number' && entry.m >= 0 ? entry.m : null,
+              actor: entry.a === 'agent' ? 'agent' : 'owner',
+              ...(typeof entry.s === 'string' && entry.s !== '' ? { session: entry.s.slice(0, 120) } : {}),
             });
           } catch {
             // Malformed line — skip.
@@ -197,7 +194,7 @@ export class ShellCapture {
           // format genuinely has no timestamp for that line (plain zsh/bash
           // history) — not unconditionally, which is what stamped every
           // command in a whole batch read with the same artificial instant.
-          out.push({ timestamp: timestamp ?? new Date().toISOString(), command, cwd: this.inferredCwd, exitCode: null, durationMs: null });
+          out.push({ timestamp: timestamp ?? new Date().toISOString(), command, cwd: this.inferredCwd, exitCode: null, durationMs: null, actor: 'owner' });
         }
       } finally {
         fs.closeSync(fd);

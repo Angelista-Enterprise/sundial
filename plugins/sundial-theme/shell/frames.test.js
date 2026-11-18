@@ -87,6 +87,11 @@ describe('liveFrames', () => {
   it('closes a work row against the call id carried by the result block', () => {
     expect(liveFrames(returned('c2'))).toEqual([{ type: 'tool-done', callId: 'c2', failed: false, text: '' }]);
     expect(liveFrames(returned('c2', { error: { name: 'E', code: 'X' } }))).toEqual([{ type: 'tool-done', callId: 'c2', failed: true, text: '' }]);
+    // dsh 0.2 (format V4): the result is a tool-role message; the call id and the error flag sit on it.
+    const v4 = (callId, extra = {}, more = {}) => ({ type: 'tool/result', data: { message: { role: 'tool', toolCallId: callId, source: { kind: 'tool', callId }, content: [{ type: 'text', text: 'ok' }], ...extra }, ...more } });
+    expect(liveFrames(v4('c3'))).toEqual([{ type: 'tool-done', callId: 'c3', failed: false, text: 'ok' }]);
+    expect(liveFrames(v4('c4', { isError: true }))).toEqual([{ type: 'tool-done', callId: 'c4', failed: true, text: 'ok' }]);
+    expect(liveFrames(v4('c5', {}, { error: { name: 'E', code: 'X' } }))).toEqual([{ type: 'tool-done', callId: 'c5', failed: true, text: 'ok' }]);
   });
 
   it('carries the whole plan on todo/write, normalizing a status it does not know', () => {
@@ -259,8 +264,13 @@ describe('recentTurns (L8)', () => {
 // W2: a follow-up line, live and on replay.
 describe('a follow-up line', () => {
   const line = said('Follow-up: Pushed: puzzlebox-studio is up to date (263 commits were waiting).', { kind: 'plugin', plugin: 'sundial-proactive', form: 'notice', summary: 'Follow-up: Pushed: puzzlebox-studio is up to date (263 commits were waiting).' })
-  it('draws as Gnomon\'s own line, closed at once, live', () => {
+  it('draws as Gnomon\'s own line, closed at once, live, whichever way the source names the plugin', () => {
     expect(liveFrames(line)).toEqual([{ type: 'say', text: 'Pushed: puzzlebox-studio is up to date (263 commits were waiting).', followup: null }, { type: 'done', reason: 'complete' }])
+    // dsh 0.2: the plugin's own kind, and what its format migration makes of an older log.
+    for (const kind of ['sundial-proactive', 'plugin:sundial-proactive']) {
+      expect(liveFrames({ ...line, data: { ...line.data, source: { kind, form: 'notice', summary: line.data.source.summary } } })[0]).toMatchObject({ type: 'say', followup: null })
+    }
+    expect(liveFrames({ ...line, data: { ...line.data, source: { kind: 'compact-checkpoint', summary: line.data.source.summary } } })).toEqual([])
     // With the log's time, the line says when it was said.
     expect(liveFrames({ ...line, time: Date.parse('2026-03-04T13:02:00Z') })[0].followup).toBe('2026-03-04T13:02:00.000Z')
   })

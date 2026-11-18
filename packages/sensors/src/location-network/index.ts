@@ -29,8 +29,6 @@ export class LocationNetworkSensor {
         fingerprint: state.fingerprint,
         gatewayIp: state.gatewayIp,
         interfaceName: state.interfaceName,
-        ssid: state.ssid,
-        bssid: state.bssid,
         networkId: state.networkId,
         sname: state.sname,
         interfaceType: state.interfaceType,

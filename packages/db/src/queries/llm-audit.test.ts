@@ -13,6 +13,7 @@ import {
   getLlmLedgerRows,
   getLostAnswers,
   getMomentCost,
+  getRoutePace,
   estimateCostUsd,
   llmProvider,
 } from './llm-audit.js';
@@ -29,6 +30,8 @@ async function setupTestDb() {
     requested_at text NOT NULL,
     responded_at text,
     latency_ms integer,
+    first_token_ms integer,
+    upstream text,
     status_code integer,
     success integer DEFAULT false NOT NULL,
     response_content text,
@@ -40,7 +43,9 @@ async function setupTestDb() {
     billed_prompt_tokens integer,
     cache_read_tokens integer,
     attempt integer DEFAULT 1 NOT NULL,
-    parent_call_id text
+    parent_call_id text,
+    source text,
+    access text
   )`);
   // `getLostAnswers` resolves each row's `momentId` against the moments it can
   // actually find, so the table has to exist even when no test stores one.
@@ -91,6 +96,15 @@ describe('recordLlmAudit / updateLlmAudit', () => {
     expect(row.success).toBe(false);
     expect(row.error).toBe('endpoint unreachable');
     expect(row.responseContent).toBeNull();
+  });
+
+  it('keeps the upstream host the route named, and NULL when it named none', async () => {
+    for (const id of ['a1', 'a2']) await recordLlmAudit({ id, momentId: null, purpose: 'ask', model: 'minimax/m', prompt: 'hello', requestedAt: '2026-01-01T00:00:00.000Z' });
+    await updateLlmAudit('a1', { respondedAt: '2026-01-01T00:00:01.000Z', latencyMs: 900, success: true, upstream: 'Kestrel Cloud' });
+    await updateLlmAudit('a2', { respondedAt: '2026-01-01T00:00:01.000Z', latencyMs: 900, success: true });
+
+    const rows = await getDb().select({ id: llmAudit.id, upstream: llmAudit.upstream }).from(llmAudit).orderBy(llmAudit.id);
+    expect(rows).toEqual([{ id: 'a1', upstream: 'Kestrel Cloud' }, { id: 'a2', upstream: null }]);
   });
 });
 
@@ -150,6 +164,8 @@ describe('getLlmAuditOverview', () => {
       estimatedCostUsd: 0,
       remoteCalls: 0,
       localCalls: 0,
+      planCalls: 0,
+      planTokens: 0,
       remoteTokens: 0,
       localTokens: 0,
       billedOnFailureTokens: 0,
@@ -372,6 +388,34 @@ describe('a credential in a stored error string', () => {
     // The URL stays: which endpoint failed is the diagnostic, and there is no
     // secret in it.
     expect((await getLostAnswers())[0].message).toContain('https://api.tensorx.ai/v1');
+  });
+});
+
+describe('getRoutePace', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+  });
+
+  it("gives one route and model's answered chat calls since a time, newest `limit`, oldest first", async () => {
+    const call = async (id: string, at: string, over: { purpose?: string; source?: string; model?: string; success?: boolean } = {}) => {
+      await recordLlmAudit({ id, momentId: null, purpose: over.purpose ?? 'ask', model: over.model ?? 'minimax/m', prompt: 'p', requestedAt: at, source: over.source ?? 'openrouter' });
+      await updateLlmAudit(id, { respondedAt: at, latencyMs: 900, success: over.success ?? true, promptTokens: 25_000, cacheReadTokens: 24_000 });
+    };
+    await call('old', '2026-11-16T05:00:00.000Z');
+    await call('a', '2026-11-16T06:30:00.000Z');
+    await call('b', '2026-11-16T06:31:00.000Z');
+    await call('c', '2026-11-16T06:32:00.000Z');
+    await call('notes', '2026-11-16T06:30:30.000Z', { purpose: 'chat-notes' });
+    await call('other-route', '2026-11-16T06:30:40.000Z', { source: 'tensorx-cloud' });
+    await call('other-model', '2026-11-16T06:30:50.000Z', { model: 'z-ai/glm' });
+    await call('failed', '2026-11-16T06:31:30.000Z', { success: false });
+
+    const rows = await getRoutePace('openrouter', 'minimax/m', '2026-11-16T06:00:00.000Z', 2);
+    expect(rows).toEqual([
+      { requestedAt: '2026-11-16T06:31:00.000Z', latencyMs: 900, promptTokens: 25_000, cacheReadTokens: 24_000 },
+      { requestedAt: '2026-11-16T06:32:00.000Z', latencyMs: 900, promptTokens: 25_000, cacheReadTokens: 24_000 },
+    ]);
+    expect((await getRoutePace('openrouter', 'minimax/m', '2026-11-16T06:00:00.000Z')).map((r) => r.requestedAt)).toHaveLength(3);
   });
 });
 
@@ -720,5 +764,25 @@ describe('getLlmAuditOverview — provider split', () => {
 
     expect(summary).toMatchObject({ calls: 3, remoteCalls: 2, localCalls: 1, remoteTokens: 3000, localTokens: 4000 });
     expect(unpricedRemoteModels).toEqual([{ model: 'somevendor/unknown-model', totalTokens: 2000 }]);
+  });
+});
+
+describe('a source on the owner\'s plan (step 3 of the provider plan)', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+  });
+  it('is recorded with its source and access, counted as plan use, and never priced', async () => {
+    await recordLlmAudit({ id: 'p1', momentId: null, purpose: 'intent', model: 'claude/sonnet', prompt: 'p', requestedAt: '2026-10-05T10:00:00.000Z', source: 'claude', access: 'runtime' });
+    await updateLlmAudit('p1', { respondedAt: '2026-10-05T10:00:02.000Z', latencyMs: 2000, success: true, promptTokens: 1000, completionTokens: 500, totalTokens: 1500 });
+    await recordLlmAudit({ id: 'a1', momentId: null, purpose: 'intent', model: 'anthropic/claude-sonnet-4-5', prompt: 'p', requestedAt: '2026-10-05T10:01:00.000Z', source: 'anthropic-api', access: 'api' });
+    await updateLlmAudit('a1', { respondedAt: '2026-10-05T10:01:02.000Z', latencyMs: 2000, success: true, promptTokens: 1000, completionTokens: 500, totalTokens: 1500 });
+    const row = (await getDb().select({ source: llmAudit.source, access: llmAudit.access }).from(llmAudit).where(sql`id = 'p1'`))[0];
+    expect(row).toEqual({ source: 'claude', access: 'runtime' });
+    const { summary } = await getLlmAuditOverview();
+    expect(summary).toMatchObject({ calls: 2, planCalls: 1, planTokens: 1500, remoteCalls: 1, remoteTokens: 1500 });
+    // Only the API row is priced: 1000 in at $3 + 500 out at $15 per million.
+    expect(summary.estimatedCostUsd).toBeCloseTo(0.0105, 6);
+    expect(estimateCostUsd('claude/sonnet', 1000, 500, 0, 'runtime')).toBe(0);
+    expect(estimateCostUsd('claude/sonnet', 1000, 500)).toBeCloseTo(0.0105, 6);
   });
 });

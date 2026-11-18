@@ -81,6 +81,28 @@ describe('gnomon_today_summary', () => {
     expect(out).not.toContain('A long narrative sentence');
   });
 
+  // lab/chat data bench, 2026-10-07: "how long was I in X", "which notes did I edit", "which repos did my
+  // agents work in" and "which tickets did I open" had no answer in any tool the model reached for.
+  it('says minutes per app and what the day put on the record by name', async () => {
+    mocks.getMomentsForDate.mockResolvedValue([moment('m1', 0, 30, 'Code'), moment('m2', 40, 25, 'Arc'), moment('m3', 70, 10, 'Code')]);
+    mocks.getSignalsForDate.mockImplementation(async (_date: string, type: string) =>
+      type === 'vault' ? [{ eventType: 'changed', data: { notes: ['Daily/2026-09-09.md'] } }]
+      : type === 'agent' ? [{ eventType: 'session', data: { cwd: '~/Projects/acme/puzzlebox-studio/' } }, { eventType: 'session', data: { cwd: '~/Projects/acme/puzzlebox-studio' } }]
+      : type === 'document' ? [{ eventType: 'opened', data: { kind: 'jira-ticket', id: 'BOX-484' } }, { eventType: 'opened', data: { kind: 'google-doc', id: 'x' } }]
+      : type === 'browser' ? [{ eventType: 'tab', data: { host: 'example.com' } }, { eventType: 'tab', data: { host: 'example.com' } }, { eventType: 'tab', data: { host: 'docs.example.org' } }]
+      : []);
+
+    const out = (await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never, toolEnv())) as Record<string, unknown>;
+
+    expect(out.apps).toEqual([{ app: 'Code', minutes: 40 }, { app: 'Arc', minutes: 25 }]);
+    expect(out.onRecord).toEqual({ notesEdited: ['Daily/2026-09-09.md'], agentRepos: ['puzzlebox-studio'], ticketsOpened: ['BOX-484 (only looked at)'], sites: ['example.com (2 tab visits)', 'docs.example.org (1 tab visits)'], places: 'none recorded — no phone location this day' });
+  });
+
+  it('says a day with no phone location has none, rather than leaving it to be guessed', async () => {
+    mocks.getMomentsForDate.mockResolvedValue([moment('m1', 0, 30)]);
+    expect(((await tool('gnomon_today_summary').handler({ date: '2026-09-09' } as never, toolEnv())) as Record<string, unknown>).onRecord).toEqual({ places: 'none recorded — no phone location this day' });
+  });
+
   // 2026-09-14: asked for a meeting transcript, the live model read this
   // summary, saw no trace of speech in it, and answered that ambient hearing
   // had recorded nothing and that the feature was unbuilt — while that same

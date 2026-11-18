@@ -14,7 +14,7 @@ import path from 'node:path';
  */
 export interface VaultEvent {
   type: 'vault:changed';
-  payload: { notes: string[]; count: number };
+  payload: { timestamp: string; notes: string[]; count: number };
 }
 
 const IGNORED = /(^|\/)(\.obsidian|\.trash|\.git)(\/|$)/;
@@ -56,7 +56,7 @@ export class VaultSensor {
     const notes = [...this.pending].slice(0, MAX_NOTES_PER_EVENT);
     const count = this.pending.size;
     this.pending.clear();
-    this.onEvent({ type: 'vault:changed', payload: { notes, count } });
+    this.onEvent({ type: 'vault:changed', payload: { timestamp: new Date().toISOString(), notes, count } });
   }
 
   stop(): void {

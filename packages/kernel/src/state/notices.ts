@@ -70,6 +70,17 @@ export interface NoticeCandidate {
   concerns: string[];
   /** W2: the chat this is addressed to (a follow-up), or absent/null for the conversation. */
   sessionId?: string | null;
+  /** Round 4: one act the owner can take in one press. Carried to delivery; the press runs it through the action gate. */
+  offer?: NoticeOffer;
+}
+
+/** A tool call a notice offers, and the words on its one button ("Pull it up"). */
+export interface NoticeOffer {
+  tool: string;
+  args: Record<string, unknown>;
+  label: string;
+  /** Set 5 R3: the count the offer stands on (a chore's distinct days), for the proposals card's n. */
+  n?: number;
 }
 
 /** KernelState's Notices fields; `KernelState` extends this. */
@@ -120,6 +131,10 @@ export interface NoticesSlices {
     lastDelivered?: { at: string; items: DeliveredNotice[] };
     /** W5: suppressed candidates of a thin kind since its last exploration. */
     explore?: Record<string, number>;
+    /** Round 4: offers on delivered notices, by notice key, newest last, at most `MAX_OFFERS`. The press reads it here, never from the page. `line`: the notice's own observation, the slip's line above the button. */
+    offers?: Record<string, NoticeOffer & { kind: string; at: string; line?: string }>;
+    /** S6: offers of help (`offer-now`) said on `day`, on any channel, for the gate's `offerDailyCap`. Absent: none yet. */
+    offersSaid?: { day: string; n: number };
   };
   // lane D
   /** Where an interruption goes right now (#6 the right channel). Single writer: `noticeRoute`. */
@@ -140,6 +155,8 @@ export interface NoticesSlices {
     paused?: string[];
     /** Rules Gnomon proposed on the shelf, by shelf entry id; the owner's Keep adopts one. At most 10. */
     proposed?: Record<string, import('../watch.js').WatchRule>;
+    /** Set 5 R3: what each proposed rule stands on, by the same id: when it was shelved, and the chore that seeded its job and on how many days. */
+    proposedFrom?: Record<string, { at: string; seed: string | null; days: number }>;
   };
   /**
    * J3.7 — the ingest anomaly check. `seen` is the ring of titles already put

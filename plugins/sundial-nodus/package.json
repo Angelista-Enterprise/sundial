@@ -1,0 +1,20 @@
+{
+  "name": "@sundial/dsh-nodus",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Cordis plugin: gnomon_visualize, the tool through which Gnomon draws the record as a Nodus card on the board (packages/nodus), the route gate that draws when a figure is the better answer, and the library of walks Jev passed.",
+  "main": "index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
+    "@sundial/helpers": "workspace:*",
+    "@sundial/kernel": "workspace:*",
+    "@sundial/llm": "workspace:*",
+    "@sundial/memory": "workspace:*",
+    "@sundial/nodus": "workspace:*"
+  }
+}

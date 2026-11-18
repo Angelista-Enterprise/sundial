@@ -19,6 +19,11 @@ function healthReading(state, now) {
     push: { configured: Boolean(loadSundialConfig().notifications.ntfy), ...(h?.push ?? { lastOkAt: null, lastFailedAt: null, lastError: null }) },
     lastBackup: lastBackupDate(),
     budgetsOutToday: Object.entries(h?.budgetExhausted ?? {}).filter(([, day]) => day === today).map(([purpose]) => purpose),
+    // W6 D6: the `witnessPairs` fold keeps a pair only while its switch and its sensor are on.
+    pairs: ['browser', 'screen', 'audio'].map((id) => {
+      const p = state?.config?.experiments?.witnessPairs === true ? state.witness?.pairs?.[id] : undefined
+      return { id, state: !p ? 'off' : p.told ? 'blind' : 'ok', since: p?.brokenSince ?? null, observation: h?.troubles?.[`blind:${id}`]?.observation ?? null }
+    }),
   }
 }
 

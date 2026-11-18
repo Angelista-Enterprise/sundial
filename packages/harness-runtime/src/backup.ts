@@ -51,6 +51,8 @@ export async function backupDaily(opts: { date: string; dir?: string; db?: strin
     await run(opts.sqlite ?? 'sqlite3', ['-readonly', db, `VACUUM INTO '${tmp.replace(/'/g, "''")}'`]);
     fs.chmodSync(tmp, 0o600);
     fs.renameSync(tmp, file);
+    // Plan 15 I6: the WAL had grown to 53 MB and nothing ever brought it back to zero. Once a day, after the copy.
+    await run(opts.sqlite ?? 'sqlite3', [db, 'PRAGMA wal_checkpoint(TRUNCATE);']).catch(() => {});
   } catch (error) {
     // A copy cut short (a full disk) must not sit there taking the space until tomorrow.
     fs.rmSync(tmp, { force: true });

@@ -11,13 +11,16 @@ interface RawEvent {
   attendees?: unknown;
   isAllDay?: unknown;
   isRecurring?: unknown;
+  selfStatus?: unknown;
+  isOnline?: unknown;
 }
 
 function toUpcoming(raw: unknown): UpcomingEvent | null {
   if (!raw || typeof raw !== 'object') return null;
   const e = raw as RawEvent;
   const start = typeof e.startDate === 'string' ? e.startDate : '';
-  if (!start) return null;
+  // A meeting the owner declined is not on their schedule: no prep, no "meeting soon", no follow-up.
+  if (!start || e.selfStatus === 'declined') return null;
   return {
     title: typeof e.title === 'string' ? e.title : '',
     start,
@@ -26,6 +29,8 @@ function toUpcoming(raw: unknown): UpcomingEvent | null {
     isAllDay: e.isAllDay === true,
     // Lane B: a standup is told from its shape, and a series is part of the shape.
     ...(e.isRecurring === true ? { recurring: true } : {}),
+    ...(e.isOnline === true ? { online: true } : {}),
+    ...(e.selfStatus === 'tentative' || e.selfStatus === 'pending' ? { status: e.selfStatus } : {}),
   };
 }
 

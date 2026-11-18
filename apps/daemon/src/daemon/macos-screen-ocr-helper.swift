@@ -92,6 +92,8 @@ func execDisclaimed() {
     // capturing the screen after the launcher believes it stopped.
     signal(SIGTERM) { _ in kill(disclaimedChild, SIGTERM) }
     signal(SIGINT) { _ in kill(disclaimedChild, SIGINT) }
+    // A parent killed hard (SIGKILL) sends no signal to forward; the child then kept the mic open as an orphan (2026-11-13).
+    Thread.detachNewThread { while true { sleep(2); if getppid() == 1 { kill(disclaimedChild, SIGTERM); exit(0) } } }
     var status: Int32 = 0
     while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
     exit((status & 0x7F) == 0 ? (status >> 8) & 0xFF : 1)
@@ -320,23 +322,47 @@ func writeSnapshot(_ snapshot: ScreenOcrSnapshot) {
     }
 }
 
+// One capture at a time, and the recognition off Swift's task pool. Each tick used
+// to start its own Task with a blocking Vision call in it; the calls overlapped,
+// locked each other inside Vision, filled the pool, and the helper stayed alive
+// and wrote nothing (2026-11-03 to 2026-11-11). Read and written on the main thread only.
+let ocrQueue = DispatchQueue(label: "dev.sundial.screen-ocr.recognize")
+// Awake time, not the wall clock: a capture in flight when the Mac slept read as stuck on wake, and the helper
+// exited after most sleeps (58 exits, about 120 sleeps in two days, 2026-11-13).
+var captureStartedAt: TimeInterval? = nil
+let CAPTURE_STUCK_AFTER_S: TimeInterval = 30
+
 func captureAndWrite(cursorRegion: Bool) {
     guard #available(macOS 14.0, *) else { return }
+    if let started = captureStartedAt {
+        // A capture that never returns cannot be cancelled: leave, the launcher starts a fresh helper.
+        if ProcessInfo.processInfo.systemUptime - started > CAPTURE_STUCK_AFTER_S {
+            FileHandle.standardError.write("sundial-screen-ocr-helper: a capture did not return in \(Int(CAPTURE_STUCK_AFTER_S)) s, exiting\n".data(using: .utf8)!)
+            exit(1)
+        }
+        // ponytail: a tick during a capture is dropped, not kept for later; a full capture can lose its turn to a cursor one.
+        return
+    }
+    captureStartedAt = ProcessInfo.processInfo.systemUptime
     Task {
-        guard let shot = await captureFrontmost(cursorRegion: cursorRegion) else { return }
-        if !cursorRegion { writeFrame(shot.cgImage) }
-        let text = recognizeText(in: shot.cgImage).trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.isEmpty { return }
-        let snapshot = ScreenOcrSnapshot(
-            region: cursorRegion ? "cursor" : "focused",
-            processName: shot.appName,
-            bundleId: shot.bundleId,
-            text: text,
-            topics: deriveTopics(text: text, appName: shot.appName),
-            captureTimestamp: isoFormatter.string(from: Date()),
-            secureInput: IsSecureEventInputEnabled()
-        )
-        writeSnapshot(snapshot)
+        let shot = await captureFrontmost(cursorRegion: cursorRegion)
+        ocrQueue.async {
+            defer { DispatchQueue.main.async { captureStartedAt = nil } }
+            guard let shot else { return }
+            if !cursorRegion { writeFrame(shot.cgImage) }
+            let text = recognizeText(in: shot.cgImage).trimmingCharacters(in: .whitespacesAndNewlines)
+            if text.isEmpty { return }
+            let snapshot = ScreenOcrSnapshot(
+                region: cursorRegion ? "cursor" : "focused",
+                processName: shot.appName,
+                bundleId: shot.bundleId,
+                text: text,
+                topics: deriveTopics(text: text, appName: shot.appName),
+                captureTimestamp: isoFormatter.string(from: Date()),
+                secureInput: IsSecureEventInputEnabled()
+            )
+            writeSnapshot(snapshot)
+        }
     }
 }
 

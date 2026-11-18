@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { formatParam, param } from '../calibrated.js';
-import { getBoardTraffic, getSignalsInRange, getMomentById, getMomentCost, getMomentsForProject, getMultiDayCommitments, getOpenCommitments, getPromises, getRecentSignals, loadAliasNames } from '@sundial/db/index.js';
+import { getBoardTraffic, getSignalsForDate, getSignalsInRange, getMomentById, getMomentCost, getMomentsForProject, getMultiDayCommitments, getOpenCommitments, getPromises, getRecentSignals, loadAliasNames } from '@sundial/db/index.js';
 import { promiseReliability } from '../promise-reliability.js';
 import { localDate, localDayRange, localHour } from '@sundial/helpers/local-day.js';
 import { getLlmLedgerRows, type LlmLedgerGroupBy } from '@sundial/db/index.js';
@@ -9,11 +9,15 @@ import { buildDailyContext } from '../daily-context.js';
 import { DEFAULT_PAGE_ROWS, OWNER_EVIDENCE_TYPES, pageWithinBudget, RESULT_BUDGET_CHARS, slimSignalData } from './evidence-tools.js';
 import { sharedCheckouts } from '../agent-fleet.js';
 import { backtestTypes, describeRule, resolvePeople, validateWatchRule, WATCH_FLAG_TYPES, WATCH_GRAMMAR } from '../watch.js';
+import { adoptedRules, validateWatchFlow } from '../watch-flow.js';
 import { MINE_TYPES, mineRules } from '../watch-mine.js';
-import { summarizeBacktest } from '../watch-backtest.js';
+import { knownHostChores } from '../read/chores.js';
+import { SWEEP_FIELDS, summarizeBacktest, summarizeFlow, sweepBacktest, type SweepField } from '../watch-backtest.js';
+import { isRigSession } from '../read/rig-session.js';
 import { readSituation } from '../read/situation.js';
 import { routineForecast, routineLabel, topRoutines } from '../routines.js';
 import type { GnomonTool } from './registry.js';
+import type { TicketThread } from '../types.js';
 import { openAsk } from '@sundial/helpers/loops.js';
 
 /** The owner's day, not UTC's. Read per call rather than cached so an edited config.json takes effect without a restart. */
@@ -78,9 +82,42 @@ const SUMMARY_SESSION_PAGE = 60;
  * life events and commands are dropped — they are the bulk, and every one of
  * them is one `gnomon_moment_detail` call away.
  */
-async function summarizeDay(date: string, page: { offset?: number; limit?: number } = {}): Promise<Record<string, unknown>> {
-  const context = await buildDailyContext(date, { timeZone: ownerTimeZone(), maxTimeline: SUMMARY_TIMELINE_CAP });
-  const { timeline, ...day } = context;
+/**
+ * What else the day put on the record, by name: notes edited, repos the coding
+ * agents worked in, tickets opened. Each lived only in `gnomon_signals`, where
+ * the data bench (lab/chat) saw the model lose 10–20 calls looking; here they
+ * cost a few dozen characters. Empty lists are left out.
+ */
+/** "BOX-471 (PR #12 merged)": how far a ticket got, from the ticket threads, so "which did I open" is not read as "which got worked on". */
+function ticketLabel(id: string, thread: TicketThread | undefined): string {
+  if (!thread || thread.stage === 'seen') return `${id} (only looked at)`;
+  if (thread.pr) return `${id} (PR #${thread.pr.number ?? '?'} ${String(thread.pr.state ?? 'open').toLowerCase()})`;
+  return `${id} (${thread.stage === 'commit' ? `${thread.commits} commit${thread.commits === 1 ? '' : 's'}` : 'a branch'})`;
+}
+
+async function onRecord(date: string, timeZone: string, tickets: Record<string, TicketThread> = {}): Promise<Record<string, string[] | string>> {
+  const [vault, agents, docs, browser, phone] = await Promise.all(['vault', 'agent', 'document', 'browser', 'phone'].map((type) => getSignalsForDate(date, type, timeZone)));
+  const hosts = new Map<string, number>();
+  for (const s of browser) if (s.eventType === 'tab' && typeof s.data.host === 'string') hosts.set(s.data.host, (hosts.get(s.data.host) ?? 0) + 1);
+  const places = phone.filter((s) => s.eventType === 'place' && typeof s.data.label === 'string');
+  const uniq = (xs: unknown[], max = 12) => [...new Set(xs.filter((x): x is string => typeof x === 'string' && x !== ''))].slice(0, max);
+  const out: Record<string, string[] | string> = {
+    notesEdited: uniq(vault.filter((s) => s.eventType === 'changed').flatMap((s) => (Array.isArray(s.data.notes) ? s.data.notes : []))),
+    agentRepos: uniq(agents.filter((s) => s.eventType === 'session').map((s) => String(s.data.cwd ?? '').replace(/\/+$/, '').split('/').pop())),
+    ticketsOpened: uniq(docs.filter((s) => s.eventType === 'opened' && /ticket/.test(String(s.data.kind))).map((s) => s.data.id)).map((id) => ticketLabel(id, tickets[id])),
+    sites: [...hosts].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([host, n]) => `${host} (${n} tab visits)`),
+    places: uniq(places.map((s) => `${String(s.data.label)} from ${localHour(s.capturedAt, timeZone)}:00`)),
+  };
+  const kept = Object.fromEntries(Object.entries(out).filter(([, v]) => v.length > 0));
+  // Said, not left out: "where was I" with no location must not be answered from the apps instead.
+  return places.length > 0 ? kept : { ...kept, places: 'none recorded — no phone location this day' };
+}
+
+async function summarizeDay(date: string, page: { offset?: number; limit?: number } = {}, tickets: Record<string, TicketThread> = {}): Promise<Record<string, unknown>> {
+  const [context, record] = await Promise.all([buildDailyContext(date, { timeZone: ownerTimeZone(), maxTimeline: SUMMARY_TIMELINE_CAP }), onRecord(date, ownerTimeZone(), tickets)]);
+  const { timeline, date: _date, timeZone, coverage, projects, apps, ...rest } = context;
+  // The answers to "how long in X" and "which notes / repos / tickets" go first: a pruned result keeps its head.
+  const day = { date, timeZone, coverage, projects, apps, ...(Object.keys(record).length > 0 ? { onRecord: record } : {}), ...rest };
 
   const worthReading = timeline.filter((entry) => entry.durationMin * 60_000 >= SUMMARY_MIN_MS);
   // Longest first for the CAP, so a fragmented day drops its shortest sessions
@@ -130,7 +167,7 @@ async function summarizeDay(date: string, page: { offset?: number; limit?: numbe
      * A field that says what is MISSING invites that reading; one that says
      * what is PRESENT, and that the ranking is intact, does not.
      */
-    sessionsNote: `${kept.length} sessions shown of ${timeline.length} moments — every session over ${SUMMARY_MIN_MS / 60_000} minutes that fits, longest kept first, so the longest and the totals here are complete. ${timeline.length - worthReading.length} were shorter than that${omitted > 0 ? ` and ${omitted} more mid-length ones are on the next page — call gnomon_today_summary again for this same date with offset: ${sessionPage.nextOffset} to read them, rather than re-running the day` : ''}; gnomon_signals has the raw stream and gnomon_moment_detail has any single session in full.`,
+    sessionsNote: `${kept.length} sessions shown of ${timeline.length} moments — every session over ${SUMMARY_MIN_MS / 60_000} minutes that fits, longest kept first, so the longest and the totals here are complete. ${timeline.length - worthReading.length} were shorter than that${omitted > 0 ? (sessionPage.nextOffset !== undefined ? ` and ${omitted} more mid-length ones are on the next page — call gnomon_today_summary again for this same date with offset: ${sessionPage.nextOffset} to read them, rather than re-running the day` : ` and ${omitted} more mid-length ones did not fit: the size budget left after the day's totals held no more sessions`) : ''}; gnomon_signals has the raw stream and gnomon_moment_detail has any single session in full.`,
     /**
      * The count is useless unless the model knows it can spend it.
      *
@@ -229,13 +266,14 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
   {
     name: 'gnomon_tickets',
     description:
-      "Ticket threads: every ticket key (e.g. BOX-538) the owner's own machine has seen in the last 30 days, stitched across window titles, browser tabs, screen text, pages, shell, speech, calendar, branches, commits and pull requests — no issue tracker involved. Each thread says on how many days it was seen, where, and how far work got (`stage`: seen / branch / commit / pr, with the PR's state). `radar` lists tickets that keep coming back but were never started. Pass `id` for one ticket; for the rows themselves, call gnomon_signals with contains=<id>. Answer \"what is going on with BOX-538\", \"which tickets am I on\", \"what did I look at but never start\". A pull request with no ticket key in it is not here: for every PR's state on a project, as GitHub reported it, use gnomon_project_handoff.",
+      "Ticket threads: every ticket key (e.g. BOX-538) the owner's own machine has seen in the last 30 days, stitched across window titles, browser tabs, screen text, pages, shell, speech, calendar, branches, commits and pull requests — no issue tracker involved. Each thread says on how many days it was seen, where, and how far work got (`stage`: seen / branch / commit / pr, with the PR's state). `radar` lists tickets that keep coming back but were never started. Pass `id` for one ticket; for the rows themselves, call gnomon_signals with contains=<id>. Answer \"what is going on with BOX-538\", \"which tickets am I on\", \"what did I look at but never start\". A pull request with no ticket key in it is not here: for every PR's state on a project, as GitHub reported it, use gnomon_project_handoff. Which tickets were opened as their own page on one day is in gnomon_today_summary (`onRecord.ticketsOpened`).",
     schema: {
       id: z.string().optional().describe('One ticket key, e.g. BOX-538'),
       days: z.number().int().positive().max(30).optional().describe('Only tickets seen in the last N days (default 14)'),
+      ids: z.array(z.string()).max(8).optional().describe('Only these ticket keys (a chore offer names the ones the owner re-opens)'),
     },
     readOnly: true,
-    handler: async ({ id, days }, env) => {
+    handler: async ({ id, days, ids }, env) => {
       const state = await env.state();
       if (!state) return { note: 'No snapshot yet.' };
       const all = Object.values(state.tickets ?? {});
@@ -246,7 +284,8 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
       }
       const since = new Date(env.now.getTime() - ((days as number | undefined) ?? 14) * 86_400_000).toISOString();
       // A key only ever seen in a list (a board, a backlog) was in view, never looked at.
-      const threads = all.filter((t) => t.lastSeen >= since && t.days.length > 0).sort((a, b) => b.days.length - a.days.length || b.lastSeen.localeCompare(a.lastSeen));
+      const only = Array.isArray(ids) && ids.length > 0 ? new Set((ids as string[]).map((k) => k.trim().toUpperCase())) : null;
+      const threads = all.filter((t) => t.lastSeen >= since && t.days.length > 0 && (only === null || only.has(t.id))).sort((a, b) => b.days.length - a.days.length || b.lastSeen.localeCompare(a.lastSeen));
       // Seen on three days or more, from two kinds of source or more, and never
       // started: what the owner keeps looking at without a branch or a commit.
       const radar = threads.filter((t) => t.stage === 'seen' && t.days.length >= 3 && Object.keys(t.sources).filter((s) => s !== 'list').length >= 2).map((t) => t.id);
@@ -256,49 +295,61 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
   {
     name: 'gnomon_test_rule',
     description:
-      `Backtest a WATCH RULE — a small spec Gnomon can adopt to notice something on its own — against the owner's real log, or (no \`rule\`) list the adopted ones. ${WATCH_GRAMMAR} Returns how often it matched, how often it fired, and under \`gate\` how many of those fires the owner would actually have heard — interrupting (phasic), on the list (tonic) or held back (suppressed, with reasons) — under their current dial, so the owner sees exactly what adopting it means. Report \`gate\`, not \`fired\`, as what they will hear. \`holdout\` splits the days in two halves: a rule tuned on the older half must still fire in the recent one. \`byKey\` counts fires per thing (hashed); each example lists the signal ids behind it; \`nearest\` says how close a rule that never fired came. Always test before proposing, show the result, and adopt (gnomon_adopt_rule) only on the owner's yes. Tune a rule that fires more than a few times a day.`,
+      `Backtest a WATCH RULE — a small spec Gnomon can adopt to notice something on its own — against the owner's real log, or (no \`rule\`) list the adopted ones. ${WATCH_GRAMMAR} Returns how often it matched, how often it fired, and under \`gate\` how many of those fires the owner would actually have heard — interrupting (phasic), on the list (tonic) or held back (suppressed, with reasons) — under their current dial, so the owner sees exactly what adopting it means. Report \`gate\`, not \`fired\`, as what they will hear. \`holdout\` splits the days in two halves: a rule tuned on the older half must still fire in the recent one. \`byKey\` counts fires per thing (hashed); each example lists the signal ids behind it; \`nearest\` says how close a rule that never fired came. Always test before proposing, show the result, and adopt (gnomon_adopt_rule) only on the owner's yes. Tune a rule that fires more than a few times a day. A LIST of rules is a flow in step order (each may hear what an earlier one emits): it is replayed once, each emit fed back in as it would fire, and returns {steps: [{id, fired, heard, gate, examples} or {untestable} for a step that waits on the owner's answer], chain: {fired, heard}}. \`sweep\` (one rule): {field: then.withinMin | count.withinMin | count.atLeast | dwell.atLeastMin | absent.forMin, from, to, step} replays it at each value and returns sweep: [{value, fired, heard}] and best (closest to once a day, never above three).`,
     schema: {
-      rule: z.any().optional().describe('The spec, as an object (see description). Omit to list adopted rules.'),
+      rule: z.any().optional().describe('The spec, as an object (see description), or a list of them: a flow, in step order. Omit to list adopted rules.'),
       days: z.number().int().positive().max(60).optional().describe('How many past days to replay (default 14, at most 60 — a rule that holds for days needs weeks of history)'),
+      sweep: z.object({ field: z.enum(SWEEP_FIELDS), from: z.number(), to: z.number(), step: z.number().positive() }).optional().describe('One rule only: replay it at each value of this setting'),
     },
     readOnly: true,
-    handler: async ({ rule, days }, env) => {
+    handler: async ({ rule, days, sweep }, env) => {
       const state = await env.state();
       const zone = state?.config.timezone ?? ownerTimeZone();
       if (rule === undefined || rule === null) {
-        const w = state?.watch ?? { rules: [], runtime: {} };
-        const last = (id: string) => w.stats?.[id]?.recent.at(-1) ?? w.runtime[id]?.lastFiredAt ?? null;
-        return { adopted: w.rules.map((r) => ({ ...r, words: describeRule(r), paused: w.paused?.includes(r.id) ?? false, version: w.stats?.[r.id]?.version ?? 1, fires: w.stats?.[r.id]?.fires ?? 0, verdicts: w.stats?.[r.id]?.verdicts ?? null, lastFiredAt: last(r.id) })) };
+        return { adopted: adoptedRules(state?.watch) };
       }
       let spec: unknown = rule;
       if (typeof spec === 'string') {
         try {
           spec = JSON.parse(spec);
         } catch {
-          return { valid: false, error: 'rule must be a JSON object' };
+          return { valid: false, error: 'rule must be a JSON object, or a list of them' };
         }
       }
-      const checked = validateWatchRule(resolvePeople(spec, state?.memory.aliasNames ?? {}));
+      const aliases = state?.memory.aliasNames ?? {};
+      const flow = Array.isArray(spec) ? validateWatchFlow(spec.map((r) => resolvePeople(r, aliases))) : null;
+      if (flow && 'error' in flow) return { valid: false, error: flow.error };
+      const checked = flow ? { rule: flow.rules[0]! } : validateWatchRule(resolvePeople(spec, aliases));
       if ('error' in checked) return { valid: false, error: checked.error };
+      if (sweep && flow) return { valid: false, error: 'sweep takes one rule, not a flow' };
+      const rules = flow?.rules ?? [checked.rule];
       const span = (days as number | undefined) ?? 14;
       const now = env.now.toISOString();
       const from = new Date(env.now.getTime() - span * 86_400_000).toISOString();
+      // What the flow emits itself is made in the replay; a copy already in the log (a live version) would count twice.
+      const own = new Set(rules.flatMap((r) => (r.emit ? [r.emit] : [])));
+      const types = [...new Set(rules.flatMap(backtestTypes))].filter((t) => !own.has(t));
       const events: { id: string; type: string; ts: string; payload: unknown }[] = [];
       const PAGE = 5000;
       for (let offset = 0; offset < 400_000; offset += PAGE) {
-        const rows = await getSignalsInRange(from, now, PAGE, backtestTypes(checked.rule), offset);
+        const rows = await getSignalsInRange(from, now, PAGE, types, offset);
         for (const r of rows) events.push({ id: r.id, type: `${r.signalType}:${r.eventType}`, ts: r.capturedAt, payload: r.data });
         if (rows.length < PAGE) break;
       }
       const hour = (ts: string) => localHour(ts, zone);
       const settings = state?.settings;
-      return summarizeBacktest(checked.rule, events, { days: span, zone, dial: settings?.noticeBias ?? 0, silent: settings?.autonomy === 'off', now, daytime: (ts) => hour(ts) >= 6 && hour(ts) < 18 });
+      const opts = { days: span, zone, dial: settings?.noticeBias ?? 0, silent: settings?.autonomy === 'off', now, daytime: (ts: string) => hour(ts) >= 6 && hour(ts) < 18 };
+      if (flow) return summarizeFlow(flow.rules, events, opts);
+      const summary = summarizeBacktest(checked.rule, events, opts);
+      if (!sweep) return summary;
+      const swept = sweepBacktest(resolvePeople(spec, aliases) as Record<string, unknown>, sweep as { field: SweepField; from: number; to: number; step: number }, events, opts);
+      return 'error' in swept ? { valid: false, error: swept.error } : { ...summary, ...swept };
     },
   },
   {
     name: 'gnomon_mine_rules',
     description:
-      "Find watch rules worth proposing, from the owner's own record and without a model: high values held or repeated, long silences, a routine that stops short, an app or site they asked about on three days, types behind notices they rated useful. Each candidate was replayed over the older and the recent half of 30 days and kept only with 1–10 fires in each half and a steady rate, and dropped when half its fires coincide with a notice Gnomon already raises. Returns up to 5 specs with their numbers. Their titles and sentences are placeholders: write them in the owner's words, then test the result with gnomon_test_rule before proposing it.",
+      "Find watch rules worth proposing, from the owner's own record and without a model: high values held or repeated, long silences, a routine that stops short, an app or site they asked about on three days, types behind notices they rated useful, a site they open most workday mornings. Each candidate was replayed over the older and the recent half of 30 days and kept only with 1–10 fires in each half and a steady rate (a workday-morning one: fired on 70% of the workdays in each half), and dropped when half its fires coincide with a notice Gnomon already raises. Returns up to 5 specs with their numbers. Their titles and sentences are placeholders: write them in the owner's words, then test the result with gnomon_test_rule before proposing it.",
     schema: {},
     readOnly: true,
     handler: async (_args, env) => {
@@ -333,10 +384,12 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
         days,
         zone,
         routines: Object.values(state?.routines?.learned ?? {}).filter((r) => r.support >= 3),
-        // The owner's words: the retired route prediction's `query` before W5 step 8, `chat:owner` since.
-        asks: asks.map((a) => ({ ts: a.ts, query: String((a.payload as { query?: unknown; text?: unknown }).query ?? (a.payload as { text?: unknown }).text ?? '') })),
+        // The owner's words: the retired route prediction's `query` before W5 step 8, `chat:owner` since; never the rig's sessions (Round 4).
+        asks: asks.filter((a) => !isRigSession(state, (a.payload as { sessionId?: unknown }).sessionId)).map((a) => ({ ts: a.ts, query: String((a.payload as { query?: unknown; text?: unknown }).query ?? (a.payload as { text?: unknown }).text ?? '') })),
         useful: [...useful.values()],
         builtins: notices.filter((n) => !String((n.payload as { kind?: unknown }).kind ?? '').startsWith('watch:')).map((n) => n.ts),
+        // Round 5: the morning sites the chore learner knows, for the workday template.
+        ...(state ? { chores: knownHostChores(state, localDate(now, zone)), workdays: state.config.workdays } : {}),
       });
       return {
         days,
@@ -348,7 +401,7 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
   {
     name: 'gnomon_today_summary',
     description:
-      "Get a day's shape: per-project minutes, meetings, breaks, focus split, app-to-app flows, and a timeline of the sessions over three minutes with each one's id. Use this for \"what did I do on <date>\" and for totalling a day. Sessions under three minutes are left out — pass a timeline id to gnomon_moment_detail for one session's full record, or use gnomon_signals for the literal event stream. `sessionCount` is how many sessions the day holds in all; when `nextSessionOffset` is present, call this tool again for the SAME date with that offset to read the rest instead of re-running the day. Note the intent text is a model's earlier narration of the moment, not primary evidence — prefer gnomon_code_activity or gnomon_signals when the question is about specific files, commands, or commits.",
+      "Get a day's shape: per-project and per-app minutes (`apps`), meetings, breaks, focus split, app-to-app flows, a timeline of the sessions over three minutes with each one's id, and `onRecord` — the notes edited, the repos coding agents worked in, the tickets opened, the most-visited sites, and `places` (where the phone put the owner; when it says none recorded, say exactly that to \"where was I\" rather than describing the apps). Use this for \"what did I do on <date>\" and for totalling a day. Sessions under three minutes are left out — pass a timeline id to gnomon_moment_detail for one session's full record, or use gnomon_signals for the literal event stream. `sessionCount` is how many sessions the day holds in all; when `nextSessionOffset` is present, call this tool again for the SAME date with that offset to read the rest instead of re-running the day. Note the intent text is a model's earlier narration of the moment, not primary evidence — prefer gnomon_code_activity or gnomon_signals when the question is about specific files, commands, or commits.",
     schema: {
       date: z.string().optional().describe('YYYY-MM-DD in the owner timezone, defaults to today'),
       offset: z
@@ -361,7 +414,7 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
     },
     readOnly: true,
     handler: async ({ date, offset, limit }, env) =>
-      summarizeDay((date as string | undefined) ?? today(env.now), { offset: offset as number | undefined, limit: limit as number | undefined }),
+      summarizeDay((date as string | undefined) ?? today(env.now), { offset: offset as number | undefined, limit: limit as number | undefined }, (await Promise.resolve().then(() => env.state()).catch(() => null))?.tickets ?? {}), // no snapshot: no stages, still a summary
   },
   {
     name: 'gnomon_moment_detail',
@@ -460,7 +513,7 @@ export const CONTEXT_TOOLS: GnomonTool[] = [
   {
     name: 'gnomon_open_commitments',
     description:
-      'Get the open threads of work and the owner\'s open PROMISES. A promise row has `promise`: who it is owed to (or, with direction `awaiting`, who owes the owner), the thing, when it is due and why then (said, the next meeting with that person, or a three-working-day default), whether the owner confirmed it, and the evidence seen. `reliability` is how the owner keeps promises, overall and per person, with n on every count — never state a rate it does not give. Threads of work are pieces of work spanning hours to weeks, each identified by the git branch it was done on, with when it started, when it was last touched, and how many distinct days it spanned. Use this for "what am I in the middle of", "what did I leave unfinished", and "what was I doing on X last week". `activeDays` is the count of separate days the thread was returned to, which is what distinguishes a real multi-session piece of work from an afternoon. A thread is closed automatically after 14 days without a touch and no longer appears here; nothing observable tells Gnomon a branch was merged, so an absent thread means it went quiet, NOT that it was finished. `total` is how many threads are open in all — itself an answer worth reporting — and when `nextOffset` is present, call again with it for the next page.',
+      'Get the open threads of work and the owner\'s open PROMISES. A promise row has `promise`: who it is owed to (or, with direction `awaiting`, who owes the owner), the thing, when it is due and why then (said, the next meeting with that person, or a three-working-day default), whether the owner confirmed it, and the evidence seen. `reliability` is how the owner keeps promises, overall and per person, with n on every count — never state a rate it does not give. Threads of work are pieces of work spanning hours to weeks, each identified by the git branch it was done on, with when it started, when it was last touched, and how many distinct days it spanned. Use this for "what am I in the middle of", "what did I leave unfinished", and "what was I doing on X last week". `activeDays` is the count of separate days the thread was returned to, which is what distinguishes a real multi-session piece of work from an afternoon. A thread closes when its branch\'s pull request is merged, or after 14 days without a touch, and then no longer appears here; a branch merged without a pull request Gnomon saw stays open until it goes quiet. `total` is how many threads are open in all — itself an answer worth reporting — and when `nextOffset` is present, call again with it for the next page.',
     schema: {
       limit: z.number().int().positive().max(100).optional().describe(`How many threads on this page. Default ${DEFAULT_PAGE_ROWS}.`),
       offset: z.number().int().min(0).optional().describe('Where to start. Use the `nextOffset` from a previous call.'),

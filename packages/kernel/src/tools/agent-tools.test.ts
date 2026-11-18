@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentFleetEntry } from '../types.js';
-import { buildAgentSessions, sessionTurns, type TurnRow } from './agent-tools.js';
+import { buildAgentSessions, buildPullRequests, sessionTurns, type TurnRow } from './agent-tools.js';
 
 const NOW = '2026-10-05T12:00:00.000Z';
 const turn = (sid: string, at: string, role: TurnRow['role'], text: string, extra: Partial<TurnRow> = {}): TurnRow => ({ at, sid, session: sid.slice(0, 8), agent: 'claude', cwd: '~/puzzlebox-studio', branch: 'BOX-484-fix', role, text, tool: null, ...extra });
@@ -57,5 +57,28 @@ describe('buildAgentSessions', () => {
 
   it('one session in full, oldest first', () => {
     expect(sessionTurns(input.turns, 'bbbbbbbb').map((t) => t.role)).toEqual(['prompt', 'rejected', 'prompt', 'reply']);
+  });
+});
+
+describe('buildPullRequests', () => {
+  const row = (at: string, data: Record<string, unknown>) => ({ at, data: { url: `https://github.com/acme/puzzlebox-studio/pull/${data.number}`, ...data } });
+  const now = '2026-03-09T12:00:00.000Z';
+
+  it('keeps each PR once in its latest state, open first, and the size the search added', () => {
+    const rows = [
+      row('2026-03-09T09:00:00Z', { number: 484, title: 'BOX-484', branch: 'fix/BOX-484', state: 'OPEN', reviewState: 'pending', checkState: 'none', cwd: '/r/puzzlebox-studio' }),
+      row('2026-03-09T09:05:00Z', { number: 484, repo: 'acme/puzzlebox-studio', base: 'develop', state: 'OPEN', reviewState: 'approved', checkState: 'success', additions: 8, deletions: 15, changedFiles: 2, createdAt: '2026-03-08T16:00:00Z' }),
+      row('2026-03-07T09:00:00Z', { number: 470, title: 'BOX-470', state: 'MERGED' }),
+      row('2026-02-20T09:00:00Z', { number: 400, title: 'old', state: 'MERGED' }),
+    ];
+    const open = buildPullRequests(rows, now);
+    expect(open).toEqual([expect.objectContaining({ repo: 'acme/puzzlebox-studio', number: 484, title: 'BOX-484', branch: 'fix/BOX-484', base: 'develop', review: 'approved', checks: 'success', additions: 8, deletions: 15, files: 2, openedAt: '2026-03-08T16:00:00Z', lastSeen: '2026-03-09T09:05:00Z' })]);
+    expect(buildPullRequests(rows, now, true).map((p) => [p.number, p.state])).toEqual([[484, 'OPEN'], [470, 'MERGED']]);
+  });
+
+  it('an OPEN not heard of for a day is unconfirmed, not open', () => {
+    const rows = [row('2026-03-07T09:00:00Z', { number: 300, title: 'left behind', state: 'OPEN' })];
+    expect(buildPullRequests(rows, now)).toEqual([]);
+    expect(buildPullRequests(rows, now, true).map((p) => p.state)).toEqual(['UNCONFIRMED']);
   });
 });

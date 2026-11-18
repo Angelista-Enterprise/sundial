@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createPush, phoneVerdicts } from './push.js'
+import { createPush, phoneVerdicts, shelfPush } from './push.js'
 
 describe('createPush', () => {
   it('is a no-op without a URL', async () => {
@@ -45,5 +45,16 @@ describe('phoneVerdicts', () => {
   it('offers Not now first, and only Not now on an agent wait', () => {
     expect(phoneVerdicts('promise-fading')).toEqual(['not-now', 'useful', 'wrong'])
     expect(phoneVerdicts('agent-waiting')).toEqual(['not-now'])
+  })
+})
+
+describe('shelfPush (plan 15 4.4)', () => {
+  const at = (channel, voiceKnock) => ({ route: { channel }, config: { experiments: { voiceKnock } } })
+  it('away: the phone; at the Mac: the return sound instead; in a call or focus: nothing', () => {
+    expect(shelfPush(at('phone', true))).toBe(true)
+    expect(shelfPush(at('mac', true))).toBe(false)
+    expect(shelfPush(at('hold', true))).toBe(false)
+    expect(shelfPush(at('mac', false))).toBe(true)
+    expect(shelfPush(undefined)).toBe(true)
   })
 })

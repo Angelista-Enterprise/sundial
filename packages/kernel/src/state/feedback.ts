@@ -44,8 +44,11 @@ export interface FeedbackEntry {
    * not attend), `not-now` the question was fine and the moment was not.
    * Without it the asks surface could only report `answered` against
    * `expired`, which is 47 of 48 and flatters the asker.
+   *
+   * `routine` (2026-11-15) is a learned routine, identified by its key in
+   * `state.routines.learned`; a `wrong` forgets it (`routineLearn`).
    */
-  artifactKind: 'knowledge_entry' | 'moment' | 'entity_fact' | 'ask_thread' | 'notice' | 'owner_ask';
+  artifactKind: 'knowledge_entry' | 'moment' | 'entity_fact' | 'ask_thread' | 'notice' | 'owner_ask' | 'routine';
   artifactId: string;
   verdict: FeedbackVerdict;
   solicited: boolean;

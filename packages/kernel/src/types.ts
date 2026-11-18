@@ -15,6 +15,7 @@ import type { BoardSlices } from './state/board.js';
 import type { PeopleSlices } from './state/people.js';
 import type { MemorySlices } from './state/memory.js';
 import type { ConfigSlices } from './state/config.js';
+import type { DeskSlices } from './state/desk.js';
 import type { AttributedEffect, Effect } from './effects.js';
 export type * from './state/notices.js';
 export type * from './state/conversation.js';
@@ -30,6 +31,7 @@ export type * from './state/board.js';
 export type * from './state/people.js';
 export type * from './state/memory.js';
 export type * from './state/config.js';
+export type * from './state/desk.js';
 export type * from './effects.js';
 
 export type { Event, SanitizedEvent };
@@ -115,7 +117,12 @@ export type LocatorSource = 'editor-doc' | 'shell-cwd' | 'agent-session' | 'titl
  * because an extraction is one model's reading of a sentence, not the owner's
  * own typed claim. See `architecture/rules/memory-and-knowledge-rules`.
  */
-export type FactProvenance = 'inference' | 'assertion' | 'assistant' | 'conversation';
+/**
+ * `act`: Gnomon is the source, a fact about what its own acts showed (a route
+ * that worked in an app, `routePromote`), never a belief about the owner. It
+ * promotes like an inference, on two matching observations.
+ */
+export type FactProvenance = 'inference' | 'assertion' | 'assistant' | 'conversation' | 'act';
 
 /**
  * The kinds an entity can be (`ENTITY_KINDS` in helpers' vocab). `owner` is the person
@@ -179,6 +186,7 @@ export interface KernelState
     FeedbackSlices,
     ActionsSlices,
     BriefsSlices,
+    DeskSlices,
     ConfigSlices {}
 
 

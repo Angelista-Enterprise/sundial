@@ -2,7 +2,7 @@
 // — the owner-assertion write path — and the 'ask' budget guard around every
 // agent model call.
 //
-// The registry is ASK_TOOL_REGISTRY — the same read tools MCP is advertised.
+// The registry is TOOL_REGISTRY — the same read tools MCP is advertised.
 // Figures return canonical JSON; see to-dsh-tool.js for the projection seam.
 //
 // Not all of them are SHOWN. The measured-hot tools are registered directly;
@@ -20,8 +20,9 @@
 // Named exports only — a default export drops `inject`.
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { ASSERTABLE_ENTITY_KINDS } from '@sundial/helpers/vocab.js';
+import { taskOf } from '@sundial/helpers/task-of.js';
 import { executeGnomonTool, toolEnv } from '@sundial/kernel/tools/index.js';
-import { ASK_TOOL_REGISTRY } from '@sundial/kernel/tools/index.js';
+import { TOOL_REGISTRY } from '@sundial/kernel/tools/index.js';
 import { resolveDailyCaps } from '@sundial/kernel/budgets.js';
 import { loadSundialConfig } from '@sundial/helpers/sundial-config.js';
 import { DEFAULT_PROVIDER, LEGACY_PROVIDER } from '@sundial/helpers/llm-providers.js';
@@ -34,6 +35,7 @@ import { createRerank } from './rerank.js';
 import { createRouteLog } from './route-log.js';
 import { DISCOVER_TOOL_NAME, DISPATCH_TOOL_NAME, hideColdTools, layerTools } from './layers.js';
 import { createAskBudgetGuard } from './budget.js';
+import { maskOldLooksGuard } from './mask-looks.js';
 import { createLlmAuditRecorder } from './audit.js';
 import { createShellWitness } from './shell-witness.js';
 import { CARD_KINDS, normKind } from '@sundial/rules/board-track.js';
@@ -44,23 +46,6 @@ import { CARDS, checkFilters, describeCard } from '../sundial-theme/shell/cards.
 import { showSurfaceTool, SURFACE_TOOL_NAME } from './show-surface.js';
 import { watchTools } from './watch-tools.js';
 import { coerceArgs } from './coerce-args.js';
-
-export { toDshTool, FIGURE_TOOL_NAME } from './to-dsh-tool.js';
-export { toValueSchemaSpec, toParameterSchemaSpec } from './schema.js';
-export { renderResultText, MAX_RESULT_BYTES } from './render.js';
-export { createAskBudgetGuard, ASK_PURPOSE, BUDGET_EXHAUSTED_CODE } from './budget.js';
-export { createShellWitness, extractShellCommand, extractExitCode, SHELL_TOOL_NAMES } from './shell-witness.js';
-export {
-  createLlmAuditRecorder,
-  serializePrompt,
-  auditPurpose,
-  mapUsageToColumns,
-  boundBody,
-  DEFAULT_AUDIT_PURPOSE,
-  MAX_BODY_CHARS,
-} from './audit.js';
-export { GNOMON_PERSONA, HARNESS_NOTE } from './persona.js';
-export { showSurfaceTool, rejectSurfacePayload, rejectCanvasHtml, SURFACE_TOOL_NAME, SURFACE_KINDS } from './show-surface.js';
 
 export const name = 'sundial-tools';
 // `systemPrompt` is dsh's own service (@deepseek-ai/dsh-system-prompt). It is
@@ -95,7 +80,7 @@ export function apply(ctx) {
   // thresholds live on the kernel service — the MCP server keeps the raw list.
   const rerank = createRerank({ judgeNow: (options) => ctx.gnomonKernel.judgeNow(options), getState: () => ctx.gnomonKernel.getState() });
   const withRerank = (tool) => (tool.name === 'gnomon_semantic_search' ? { ...tool, handler: async (args) => rerank(args.query, await tool.handler(args)) } : tool);
-  for (const tool of ASK_TOOL_REGISTRY) ctx.tools.register(toDshTool(withRerank(tool), deps));
+  for (const tool of TOOL_REGISTRY) ctx.tools.register(toDshTool(withRerank(tool), deps));
 
   const { discover, dispatch } = layerTools({ tools: ctx.tools, defineTool });
   ctx.tools.register(discover);
@@ -189,7 +174,7 @@ export function apply(ctx) {
           },
         ],
       },
-      async execute(args) {
+      async execute(args, exec) {
         let entityKind = String(args.entityKind).trim();
         if (!ASSERT_ENTITY_KINDS.includes(entityKind)) {
           throw new Error(`entityKind must be one of ${ASSERT_ENTITY_KINDS.join(', ')} — got "${entityKind}"`)
@@ -248,6 +233,8 @@ export function apply(ctx) {
           entityId,
           sourceEventId: null,
           projectId: null,
+          // The chat it was said in, so a fact can be traced to its thread (the rig's are fenced in sundial-actions gate.js).
+          ...(typeof exec?.agent?.session?.id === 'string' ? { sessionId: exec.agent.session.id } : {}),
         });
 
         return { recorded: true, entityId, triple: `${canonicalName} ${predicate} ${object}`, provenance }
@@ -334,9 +321,10 @@ export function apply(ctx) {
   // drags append — so Gnomon and the owner move the same cards on the same
   // record, and the client is a projection of `state.board`.
   const BOARD_ACTIONS = ['place', 'move', 'remove', 'focus', 'notice', 'walk', 'step', 'clear', 'arrange', 'save', 'load', 'note', 'section', 'span'];
-  // Both from the one card catalog the client draws from. `surface` and
-  // `figure` are made by drawing, not by placing, so they are not offered here.
-  const BOARD_KINDS = CARDS.filter((c) => c.id !== 'surface:' && c.id !== 'figure:' && c.id !== 'browser:').map((c) => c.id.replace(/:$/, ''));
+  // Both from the one card catalog the client draws from. `surface`,
+  // `figure` and `nodus` are made by drawing (a nodus card by gnomon_visualize),
+  // not by placing, so they are not offered here.
+  const BOARD_KINDS = CARDS.filter((c) => !['surface:', 'figure:', 'nodus:', 'browser:'].includes(c.id)).map((c) => c.id.replace(/:$/, ''));
   /** kind + key → the pane id the client resolves. */
   const boardId = (kind, key) => {
     switch (kind) {
@@ -430,7 +418,7 @@ export function apply(ctx) {
   // filtered, grouped, sorted, shaped — placed as a card that keeps re-reading.
   // How it EXPLAINS with a shape instead of a paragraph, and leaves the shape
   // behind. `preview` runs it and returns the rows; `place` puts it on the board.
-  const isReadTool = (name) => ASK_TOOL_REGISTRY.some((t) => t.name === name && t.readOnly === true);
+  const isReadTool = (name) => TOOL_REGISTRY.some((t) => t.name === name && t.readOnly === true);
   /**
    * The owner's autonomy setting, as a refusal. `act` is the only level at
    * which Gnomon may change what is on the screen; below it the tools say so
@@ -455,7 +443,7 @@ export function apply(ctx) {
       parameters: {
         action: { type: 'string', required: true, enum: ['preview', 'place'], description: 'preview = run and return rows; place = put on the board.' },
         title: { type: 'string', required: true, description: 'The card head, e.g. "Commits per project, this week".' },
-        tool: { type: 'string', required: true, description: 'A read tool: ' + ASK_TOOL_REGISTRY.filter((t) => t.readOnly).map((t) => t.name).join(', ') },
+        tool: { type: 'string', required: true, description: 'A read tool: ' + TOOL_REGISTRY.filter((t) => t.readOnly).map((t) => t.name).join(', ') },
         args: { type: 'json', description: 'The tool\'s arguments, as JSON.' },
         pick: { type: 'string', description: 'Path to the rows inside the answer, e.g. "moments" or "days"; omit for the first array found.' },
         where: { type: 'json', description: 'JSON array of { field, op, value }.' },
@@ -728,7 +716,16 @@ export function apply(ctx) {
 
   // W1: every owner message and reply, in every session but a subagent's, as
   // `chat:owner` / `chat:said` (J1.4b's route prediction is retired, W5 step 8).
-  ctx.on('session/event', createRouteLog({ appendSignal: (type, payload, ts) => ctx.gnomonKernel.appendSignal(type, payload, ts) }));
+  // A turn the owner stopped ends with the line that says where (route-log.js stopLine): this chat's task steps, shown on the slip too.
+  ctx.on('session/event', createRouteLog({
+    appendSignal: (type, payload, ts) => ctx.gnomonKernel.appendSignal(type, payload, ts),
+    taskOf: (sessionId) => {
+      const task = taskOf(ctx.gnomonKernel.getState(), sessionId);
+      return task ? { did: task.did ?? [], failed: task.failed ?? [] } : null;
+    },
+    screenRows: (since) => ctx.gnomonDb.queries.getSignalsInRange(since, new Date(Date.now() + 1000).toISOString(), 5000, ['screen:asked', 'screen:acted', 'screen:step']),
+    show: ({ sessionId, line }) => ctx.emit?.('gnomon/llm-line', { sessionId, key: `stop:${Date.now()}`, line, failed: false }),
+  }));
 
   // W3: the cap the kernel enforces, from the config in the log (a change applies without a restart).
   const dailyCap = (purpose) => resolveDailyCaps(ctx.gnomonKernel.getState()?.config?.budgets)[purpose];
@@ -740,6 +737,8 @@ export function apply(ctx) {
   // unload. The same listener meters the spend AND writes the call's
   // `llm_audit` row, which is what makes the Ledger's "every call Gnomon
   // makes" true of the chat and not just of the machinery behind it.
+  // Old screen dumps become one line each (mask-looks.js), off unless the owner switched it on.
+  ctx.on('llm/stream', maskOldLooksGuard({ getState: () => ctx.gnomonKernel.getState() }))
   ctx.on(
     'llm/stream',
     createAskBudgetGuard({
@@ -758,6 +757,6 @@ export function apply(ctx) {
   );
 
   console.log(
-    `[sundial-tools] registered ${ASK_TOOL_REGISTRY.length} read tools (the cold ones behind the ${DISCOVER_TOOL_NAME}/${DISPATCH_TOOL_NAME} menu) + gnomon_assert + ${SURFACE_TOOL_NAME} + the board brief section; repeat-call handles armed; ask budget guard armed (cap ${dailyCap('ask')}/day), chat calls written to the ledger`,
+    `[sundial-tools] registered ${TOOL_REGISTRY.length} read tools (the cold ones behind the ${DISCOVER_TOOL_NAME}/${DISPATCH_TOOL_NAME} menu) + gnomon_assert + ${SURFACE_TOOL_NAME} + the board brief section; repeat-call handles armed; ask budget guard armed (cap ${dailyCap('ask')}/day), chat calls written to the ledger`,
   );
 }

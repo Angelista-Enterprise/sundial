@@ -3,21 +3,41 @@ import { estimateBilledPromptTokens } from '@sundial/helpers/llm-billed-tokens.j
 import { openLlmAudit } from './audit.js';
 import { DEFAULT_PROVIDER, ledgerModel, providerLabel } from '@sundial/helpers/llm-providers.js';
 import { reportLlmOutcome, statusOf } from './outcome.js';
-import { getLlmConfig } from './config.js';
+import { isRouteHeld, resolveRole, type LlmConfig } from './config.js';
 import { callChatCompletion } from './transport.js';
-import type { AuditedLlmCallOptions, AuditedLlmCallResult } from './types.js';
+import { auditIdOf, type AuditedLlmCallOptions, type AuditedLlmCallResult } from './types.js';
+
+/** A failure the next source may not share: the provider's limit (402, 429, a rate-limit class). */
+function isLimit(error: unknown): boolean {
+  const status = statusOf(error);
+  return status === 402 || status === 429 || classifyLlmError(error) === 'rate-limit';
+}
 
 /**
- * Record-then-patch, the single write path to `llm_audit` (docs/design/03-
- * effects-and-llm-policy.md) — ported from WCS's `runAuditedLlmCall`, with
- * the WCS-specific fields (`sessionId`, `schemaHint`, live-WS event emission,
- * Langfuse) dropped: no window-session concept, no Apple-FM schema
- * selection, no live UI to push to, no Langfuse UI to trace into. `momentId` is the one correlation id Gnomon actually has.
+ * One audited model call for a purpose, over the router's candidates
+ * (`resolveRole`): the first that is not held answers; a limit moves to the
+ * next, each attempt its own `llm_audit` row chained by `parentCallId`, so the
+ * Ledger shows which source answered and what the first one did. Any other
+ * failure stops at that source, as before.
  */
 export async function runAuditedLlmCall(options: AuditedLlmCallOptions): Promise<AuditedLlmCallResult> {
-  // Asked per purpose (config.ts, `llm.use`) and recorded on the audit row, so
-  // the ledger prices the call at the rate of the model that actually served it.
-  const config = getLlmConfig(options.purpose);
+  const all = resolveRole(options.purpose);
+  const open = all.filter((c) => !isRouteHeld(c.route));
+  const candidates = open.length > 0 ? open : all.slice(0, 1);
+  let parentCallId = options.parentCallId ?? null;
+  let attempt = options.attempt ?? 1;
+  for (let i = 0; ; i++) {
+    try {
+      return await attemptCall(options, candidates[i], { attempt, parentCallId, callId: i === 0 ? options.callId : undefined });
+    } catch (error) {
+      if (i + 1 >= candidates.length || !isLimit(error)) throw error;
+      parentCallId = auditIdOf(error) ?? parentCallId;
+      attempt += 1;
+    }
+  }
+}
+
+async function attemptCall(options: AuditedLlmCallOptions, config: LlmConfig | undefined, chain: { attempt: number; parentCallId: string | null; callId?: string }): Promise<AuditedLlmCallResult> {
   const model = config?.model ?? null;
   const route = config?.route ?? DEFAULT_PROVIDER;
   // A tool-requesting assistant turn has empty `content`; without the call
@@ -29,19 +49,18 @@ export async function runAuditedLlmCall(options: AuditedLlmCallOptions): Promise
       return `[${m.role}]${calls} ${m.content}`;
     })
     .join('\n\n');
-
   const audit = await openLlmAudit({
-    ...(options.callId ? { id: options.callId } : {}),
+    ...(chain.callId ? { id: chain.callId } : {}),
     momentId: options.momentId,
     purpose: options.purpose,
     // Namespaced when the endpoint is hosted and the id is bare, so the Ledger prices it (see `ledgerModel`).
     model: model === null ? 'unconfigured' : ledgerModel(model, route, config?.baseUrl),
     prompt,
-    attempt: options.attempt ?? 1,
-    parentCallId: options.parentCallId ?? null,
+    attempt: chain.attempt,
+    parentCallId: chain.parentCallId,
     route,
+    access: config?.access,
   });
-
   const start = Date.now();
   try {
     const result = await callChatCompletion(options.messages, {
@@ -52,8 +71,8 @@ export async function runAuditedLlmCall(options: AuditedLlmCallOptions): Promise
       tools: options.tools,
       toolChoice: options.toolChoice,
       timeoutMs: options.timeoutMs,
+      ...(config ? { config } : {}),
     });
-
     // A turn that asked for tools is a success with no prose: judging success
     // on `content` alone would mark every tool-requesting turn as failed.
     const toolCallSummary = result.toolCalls.map((call) => `${call.name}(${call.arguments})`).join(' ');

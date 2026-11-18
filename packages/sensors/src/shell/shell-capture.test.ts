@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { appendShellHookEntry } from '@sundial/helpers/shell-hook.js';
 import { ShellCapture } from './shell-capture.js';
 
 let scratchDir: string;
@@ -117,4 +118,16 @@ describe('ShellCapture (L2, docs/audit/remediation-todo.md standalone bug list)'
     const entries = capture.readNewCommands();
     expect(entries[1].cwd).toBe('/tmp/project');
   });
+
+  it('Set 4 R1: a hook entry from gnomon_run_shell carries its chat into the capture; one without leaves it out', () => {
+    const hook = path.join(scratchDir, 'shell-events.jsonl');
+    const capture = new ShellCapture(scratchDir, hook);
+    capture.init();
+    appendShellHookEntry({ command: 'cat notes.txt', cwd: '/tmp/gnomon-run', exitCode: 1, timestamp: '2026-11-16T09:00:00.000Z', session: 'chat-1' }, hook);
+    appendShellHookEntry({ command: 'ls', exitCode: 0, timestamp: '2026-11-16T09:00:01.000Z' }, hook);
+    const [ran, other] = capture.readNewCommands(false);
+    expect(ran).toMatchObject({ command: 'cat notes.txt', exitCode: 1, session: 'chat-1' });
+    expect(other).not.toHaveProperty('session');
+  });
 });
+

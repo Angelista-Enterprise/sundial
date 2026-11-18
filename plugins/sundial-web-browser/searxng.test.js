@@ -95,7 +95,7 @@ describe('createSearxngSearch', () => {
 
   it('says how to start the instance when nothing answers', async () => {
     const provider = createSearxngSearch({ doFetch: vi.fn().mockRejectedValue(new Error('ECONNREFUSED')) });
-    await expect(provider.search('x')).rejects.toThrow(/docker start gnomon-searxng/);
+    await expect(provider.search('x')).rejects.toThrow(/web search is off: .*conclude nothing.*docker start gnomon-searxng/);
   });
 
   it('turns a 403 into the settings fix, not an auth wild goose chase', async () => {

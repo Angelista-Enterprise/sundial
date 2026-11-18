@@ -43,3 +43,20 @@ describe('diffNotificationSnapshot', () => {
     expect(event?.payload.counts).toEqual([{ app: 'Slack', count: 2, source: 'dock-badge' }]);
   });
 });
+
+describe('rises per app, and OS badges are not notifications', () => {
+  it('names each app whose badge rose; one app clearing while another rises is still a rise', () => {
+    const state = createNotificationDiffState();
+    diffNotificationSnapshot(snapshot({ Slack: 3, WhatsApp: 1 }), state);
+    const event = diffNotificationSnapshot(snapshot({ Slack: 0, WhatsApp: 3 }), state);
+    expect(event?.payload.rises).toEqual([{ app: 'WhatsApp', delta: 2 }]);
+    expect(event?.payload.rising).toBe(true);
+    expect(event?.payload.delta).toBe(-1);
+  });
+  it('a System Settings badge changes nothing', () => {
+    const state = createNotificationDiffState();
+    diffNotificationSnapshot(snapshot({ Slack: 1 }), state);
+    expect(diffNotificationSnapshot(snapshot({ Slack: 1, 'System Settings': 1 }), state)).toBeNull();
+    expect(diffNotificationSnapshot(snapshot({ 'System Settings': 1 }), state)?.payload.counts).toEqual([]);
+  });
+});

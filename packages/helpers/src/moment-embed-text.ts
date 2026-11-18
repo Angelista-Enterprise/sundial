@@ -7,7 +7,10 @@
  * characters, so the densest field leads. Gnomon's narrative says what the
  * stretch was about in a sentence; then the app and window titles; what was
  * said aloud (the one field nothing else carries); pages; and a little of the
- * screen, last, because it is long and repetitive. Everything here is already
+ * screen, last, because it is long and repetitive. Gnomon's own acts (the apps
+ * it acted in and the goals it was given) come before the screen, so a search
+ * for what Gnomon did finds the moment; a moment with none embeds the same text
+ * as before, which is why the tag did not move. Everything here is already
  * sanitized at ingest; this only chooses and orders.
  */
 export const MOMENT_TEXT_TAG = 't2';
@@ -17,7 +20,9 @@ export function momentEmbedText(processName: string | null | undefined, data: Re
   const str = (v: unknown) => (typeof v === 'string' ? v : '');
   const list = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
   const intent = (data.intent as { text?: unknown } | undefined)?.text;
-  return [str(data.narrative) || str(intent), processName ?? '', ...list(data.windowTitles), str(data.spokenExcerpt), ...list(data.pages), str(data.screenExcerpt).slice(0, SCREEN_CHARS)]
+  const acts = (data.acts ?? {}) as { apps?: unknown; goals?: unknown };
+  const did = list(acts.apps).length + list(acts.goals).length > 0 ? `Gnomon acted in ${list(acts.apps).join(', ') || 'an app'}${list(acts.goals).length ? `: ${list(acts.goals).join('; ')}` : ''}` : '';
+  return [str(data.narrative) || str(intent), processName ?? '', ...list(data.windowTitles), str(data.spokenExcerpt), ...list(data.pages), did, str(data.screenExcerpt).slice(0, SCREEN_CHARS)]
     .map((s) => s.trim())
     .filter(Boolean)
     .join(' ');

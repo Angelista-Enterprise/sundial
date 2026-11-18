@@ -51,6 +51,78 @@ export function noticePrecisionPanel(p) {
   ])
 }
 
+/** Plan 15 step 1: the knock's answers per notice kind. Absent until the first knock. */
+export function knockPanel(k) {
+  if (!k || k.knocks === 0) return []
+  return el('section', { class: 'panel' }, [
+    el('h2', { class: 'panel-title', text: 'Knocks · thirty days' }),
+    el('p', { class: 'panel-lead', text: `You said go to ${k.go} of ${k.knocks} ${k.knocks === 1 ? 'knock' : 'knocks'}.` }),
+    table(
+      [
+        { label: 'Kind', cell: (r) => r.kind },
+        { label: 'Knocks', num: true, cell: (r) => String(r.knocks) },
+        { label: 'Go', num: true, cell: (r) => String(r.go) },
+        { label: 'Declined', num: true, cell: (r) => String(r.declined) },
+        { label: 'No answer', num: true, cell: (r) => String(r.unanswered) },
+      ],
+      k.rows,
+    ),
+    el('p', { class: 'panel-note', text: 'A knock that speaks at once has no answer. It is in the first column only.' }),
+  ])
+}
+
+/** Plan 15 step 2: what the owner did first after each summon, and how often each guess held. No rate before 20 summons. */
+export function summonPanel(s) {
+  if (!s || s.summons === 0) return []
+  const rate = (r) => (r.n < 20 ? `${r.hits} of ${r.n}` : `${Math.round((100 * r.hits) / r.n)}% (n = ${r.n})`)
+  return el('section', { class: 'panel' }, [
+    el('h2', { class: 'panel-title', text: 'Summons · thirty days' }),
+    el('p', { class: 'panel-lead', text: `You called Gnomon up ${s.summons} ${s.summons === 1 ? 'time' : 'times'}, and attached the place ${s.placeAdded} ${s.placeAdded === 1 ? 'time' : 'times'}.` }),
+    table([{ label: 'First move', cell: (r) => r.move }, { label: 'Summons', num: true, cell: (r) => String(r.n) }], s.moves),
+    s.guesses.length === 0 ? [] : table([{ label: 'Guess', cell: (r) => r.sign }, { label: 'Held', num: true, cell: rate }], s.guesses),
+    el('p', { class: 'panel-note', text: 'A guess held when your first move was to type, look or talk. Below 20 summons it shows counts, not a rate.' }),
+  ])
+}
+
+/** Plan 15 4.3: each stuck sign, how often it came, the notices it was part of, and your verdicts. Counts, not rates: no threshold moves before n = 20. */
+export function stuckPanel(s) {
+  if (!s || s.rows.length === 0) return []
+  return el('section', { class: 'panel' }, [
+    el('h2', { class: 'panel-title', text: 'Stuck signs · thirty days' }),
+    table(
+      [
+        { label: 'Sign', cell: (r) => r.sign },
+        { label: 'Seen', num: true, cell: (r) => String(r.seen) },
+        { label: 'In a notice', num: true, cell: (r) => String(r.notices) },
+        { label: 'Useful', num: true, cell: (r) => String(r.useful) },
+        { label: 'Wrong', num: true, cell: (r) => String(r.wrong) },
+      ],
+      s.rows,
+    ),
+    el('p', { class: 'panel-note', text: 'Two different signs inside ten minutes make one notice. The thresholds stay as they are until a sign has 20 verdicts.' }),
+  ])
+}
+
+/** Plan 15 step 3: how fast the voice feels. The targets: the nod under 300 ms, the first word inside 1.2 s. */
+export function voicePanel(v) {
+  if (!v || v.turns === 0) return []
+  const ms = (x) => (x === null ? 'none yet' : `${x} ms`)
+  return el('section', { class: 'panel' }, [
+    el('h2', { class: 'panel-title', text: 'Voice · thirty days' }),
+    el('p', { class: 'panel-lead', text: `${v.turns} spoken ${v.turns === 1 ? 'reply' : 'replies'}; you stopped ${v.interrupted}.` }),
+    table(
+      [
+        { label: 'After you let go', cell: (r) => r.label },
+        { label: 'p50', num: true, cell: (r) => ms(r.p50) },
+        { label: 'p90', num: true, cell: (r) => ms(r.p90) },
+        { label: 'n', num: true, cell: (r) => String(r.n) },
+      ],
+      [{ label: 'the nod', ...v.nod }, { label: 'the first word', ...v.firstWord }],
+    ),
+    el('p', { class: 'panel-note', text: `The nod should come under 300 ms, the first word inside 1.2 s.${v.stepLines?.n ? ` A screen step's line began before the step was done ${v.stepLines.early} of ${v.stepLines.n} times; the aim is 80 percent.` : ''}${v.refusals?.n ? ` A refused step was said with the next one ${v.refusals.said} of ${v.refusals.n} times; the aim is 80 percent.` : ''}` }),
+  ])
+}
+
 export function trustPanel(d) {
   const pipe = d.pipeline ?? {}
   const emb = d.embeddings ?? {}
@@ -185,6 +257,7 @@ export function trustPanel(d) {
           : 'Every sensor that is off by default is still off.',
       }),
       ...['heartbeat', 'state', 'event'].map(group),
+      (d.outbound ?? []).length ? el('ul', { class: 'sensor-list' }, d.outbound.map((o) => el('li', { class: 'sensor' }, [el('span', { class: 'sensor-name', text: o.name }), el('span', { class: 'sensor-does', text: o.does }), el('span', { class: 'sensor-heard', text: 'when asked' })]))) : null,
     ]),
 
     // ── Redaction ──────────────────────────────────────────────────────────
@@ -232,6 +305,10 @@ export function trustPanel(d) {
     // N1: the verdicts above, turned into the question they answer — was it
     // worth hearing — per kind, because one family can sink the whole figure.
     noticePrecisionPanel(d.noticePrecision),
+    knockPanel(d.knocks),
+    summonPanel(d.summons),
+    stuckPanel(d.stuck),
+    voicePanel(d.voice),
     // J5.4 / J5.2: the judge, graded by the owner. One row per question that
     // has been asked; the deciles show where its probabilities landed and how
     // often the owner then said useful — the two lining up IS calibration.

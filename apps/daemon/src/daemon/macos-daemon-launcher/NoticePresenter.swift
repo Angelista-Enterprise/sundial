@@ -19,13 +19,14 @@ import UserNotifications
 /// (`notice-verdict-<uuid>.json`) restore the usual direction.
 ///
 /// Run-loop caveat, same one SleepWakeCapture.swift documents: the process is
-/// kept alive by `dispatchMain()`, not a pumped CFRunLoop. GCD timers are proven
-/// to fire here, which is why the request file is POLLED on a DispatchSourceTimer
-/// rather than watched with a file-system event source. UNUserNotificationCenter
+/// kept alive by `dispatchMain()`, not a pumped CFRunLoop. So the request file is
+/// watched with a GCD source on its folder (node writes it by rename, which the
+/// folder sees), not with FSEvents on a run loop. UNUserNotificationCenter
 /// delegate callbacks are delivered on the main queue, which `dispatchMain()`
 /// does drain.
 
-private var noticeTimer: DispatchSourceTimer?
+private var noticeWatch: DispatchSourceFileSystemObject?
+private let noticeQueue = DispatchQueue(label: "dev.sundial.notice", qos: .utility)
 private var noticeDelegate: NoticeDelegate?
 
 private let noticeCategoryId = "GNOMON_NOTICE"
@@ -79,18 +80,25 @@ func startNoticePresenting(runtimeDir: String, enabled: Bool) {
     }
 
     let requestPath = "\(runtimeDir)/notice-request.json"
-    let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
-    timer.schedule(deadline: .now() + 1, repeating: 1)
-    timer.setEventHandler {
+    let fd = open(runtimeDir, O_EVTONLY)
+    guard fd >= 0 else {
+        fputs("[sundial-daemon] cannot watch \(runtimeDir); banners will not appear\n", stderr)
+        return
+    }
+    let watch = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: .write, queue: noticeQueue)
+    watch.setEventHandler {
         consumeNoticeRequest(at: requestPath)
     }
-    timer.resume()
-    noticeTimer = timer
+    watch.setCancelHandler { close(fd) }
+    watch.resume()
+    noticeWatch = watch
+    // A request written before this start.
+    noticeQueue.async { consumeNoticeRequest(at: requestPath) }
 }
 
 func stopNoticePresenting() {
-    noticeTimer?.cancel()
-    noticeTimer = nil
+    noticeWatch?.cancel()
+    noticeWatch = nil
     noticeDelegate = nil
 }
 

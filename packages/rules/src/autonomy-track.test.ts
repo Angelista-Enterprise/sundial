@@ -52,7 +52,7 @@ describe('state.autonomy (W5 step 10)', () => {
 });
 
 describe('the gate under autonomy (W5 step 10)', () => {
-  const urgent = (kind: string): NoticeCandidate => ({ shape: 'transition', kind, key: `${kind}:1`, surprise: 3, precision: 1, valueHalfLifeMs: 30 * 60_000, observation: 'Your Claude session in puzzlebox-studio is waiting.', evidence: [], concerns: [] });
+  const urgent = (kind: string): NoticeCandidate => ({ shape: 'transition', kind, key: `${kind}:1`, surprise: 3, precision: 1, valueHalfLifeMs: 30 * 60_000, observation: 'Your coding session in puzzlebox-studio is waiting.', evidence: [], concerns: [] });
   const gate = (s: KernelState, c: NoticeCandidate) => noticeGate({ ...s, config: { ...s.config, timezone: 'UTC' } }, ev('notice:candidate', c as unknown as Record<string, unknown>)).effects;
   const channel = (effects: ReturnType<typeof gate>) => (effects.find((e) => e.type === 'RecordGateDecision') as { channel: string; reason: string } | undefined);
 

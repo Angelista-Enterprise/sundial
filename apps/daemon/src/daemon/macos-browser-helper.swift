@@ -18,6 +18,7 @@
 // strips them again, but a secret in a URL should not exist on disk at all.
 // Private windows are skipped: the owner opened one to be unobserved.
 import AppKit
+import ApplicationServices
 import Foundation
 
 /// Sundial's data folder: $SUNDIAL_HOME when set (test installs, CI), else ~/.sundial.
@@ -67,6 +68,8 @@ func reexecDisclaimed() {
         }
     }
 
+    // A parent killed hard (SIGKILL) sends no signal to forward; the child then kept the mic open as an orphan (2026-11-13).
+    Thread.detachNewThread { while true { sleep(2); if getppid() == 1 { kill(childPid, SIGTERM); exit(0) } } }
     var status: Int32 = 0
     waitpid(pid, &status, 0)
     exit((status & 0x7F) == 0 ? (status >> 8) & 0xFF : 1)
@@ -182,6 +185,8 @@ struct Snapshot: Codable {
     /// and only when the browser allows JavaScript from Apple Events; `textError` says why not.
     var text: String? = nil
     var textError: String? = nil
+    /// S4: a Firefox-family window's own title, which Node checks against the session's front tab too (Fable M2).
+    var windowTitle: String? = nil
 }
 
 /// J3.4 — the page's own words, read through the same Apple Events door as the
@@ -218,6 +223,79 @@ func readPageText(bundleId: String, family: Family) -> (text: String?, error: St
     let collapsed = unwrapped.replacingOccurrences(of: "[\\s]+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
     if collapsed.isEmpty { return (nil, nil) }
     return (String(collapsed.prefix(6000)), nil)
+}
+
+// MARK: - Firefox family (S4)
+
+/// Firefox-family browsers have no Apple Events tab API: the node sensor reads their tab from the session file. Their page's words come
+/// from Accessibility, the web area's text, with `--page-text-ax` only (config browser.pageTextAx). Node keeps them only when the title
+/// is the session's front tab's, and a private window is never in the session file. The two the session reader knows.
+let FIREFOX: Set<String> = ["app.zen-browser.zen", "org.mozilla.firefox"]
+let wantPageTextAx = CommandLine.arguments.contains("--page-text-ax")
+
+/// Fable M2: a window whose page is never read: a title that cannot be read or says nothing (fail closed), or one that says private
+/// in any of the browsers' languages (Private Browsing, privénavigatie, privado, InPrivate, incognito).
+func pageRefused(_ windowTitle: String?) -> Bool {
+    let title = (windowTitle ?? "").trimmingCharacters(in: .whitespaces)
+    return title.isEmpty || title.range(of: #"privat|privé|privad|приват|inprivate|incognito"#, options: [.regularExpression, .caseInsensitive]) != nil
+}
+
+/// L1: a page read again while it gave nothing or little (the tree still building), at most `tries` reads in all.
+func pageAgain(text: String?, reads: Int, tries: Int = 3) -> Bool {
+    reads < tries && (text?.count ?? 0) < 200
+}
+
+/// The page's words as the Apple Events path keeps them: white space collapsed, joined by a space, at most `max` characters.
+func pageJoin(_ parts: [String], max: Int) -> String {
+    var out = ""
+    for part in parts {
+        let words = part.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        if words.isEmpty { continue }
+        out += (out.isEmpty ? "" : " ") + words
+        if out.count >= max { break }
+    }
+    return String(out.prefix(max))
+}
+
+private func axGet(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+    var value: CFTypeRef?
+    return AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success ? value : nil
+}
+
+private func axKids(_ element: AXUIElement) -> [AXUIElement] {
+    ((axGet(element, kAXChildrenAttribute) as? [AnyObject]) ?? []).compactMap { CFGetTypeID($0) == AXUIElementGetTypeID() ? ($0 as! AXUIElement) : nil }
+}
+
+/// The focused window's first web area: its title and the words of its static texts, in reading order, bounded by characters, nodes
+/// and time. nil: no window, a private one, no web area. A secure field is no static text and is never read.
+func axPageText(_ pid: pid_t, max: Int = 6000) -> (title: String, text: String, url: String)? {
+    let root = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(root, 0.25)
+    guard let w = axGet(root, kAXFocusedWindowAttribute), CFGetTypeID(w) == AXUIElementGetTypeID() else { return nil }
+    let window = w as! AXUIElement
+    if pageRefused(axGet(window, kAXTitleAttribute) as? String) { return nil }
+    let deadline = Date().addingTimeInterval(1.0)
+    var queue = [window], area: AXUIElement?, visited = 0
+    while !queue.isEmpty, area == nil, visited < 2000, Date() < deadline {
+        let node = queue.removeFirst()
+        visited += 1
+        if axGet(node, kAXRoleAttribute) as? String == "AXWebArea" { area = node } else { queue += axKids(node) }
+    }
+    guard let area else { return nil }
+    var stack = [area], parts: [String] = [], chars = 0
+    visited = 0
+    while let node = stack.popLast(), chars < max, visited < 5000, Date() < deadline {
+        visited += 1
+        if axGet(node, kAXRoleAttribute) as? String == "AXStaticText", let text = axGet(node, kAXValueAttribute) as? String {
+            parts.append(text)
+            chars += text.count + 1
+        }
+        stack += axKids(node).reversed()
+    }
+    let url = (axGet(area, "AXURL") as? URL)?.absoluteString ?? axGet(area, "AXURL") as? String ?? ""
+    // Gecko names its document in AXDescription, Chromium in AXTitle.
+    let name = [kAXTitleAttribute, kAXDescriptionAttribute].lazy.compactMap { axGet(area, $0) as? String }.first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? ""
+    return (pageJoin([name], max: 300), pageJoin(parts, max: max), url)
 }
 
 let isoFormatter: ISO8601DateFormatter = {
@@ -262,6 +340,11 @@ func main() {
     let interval: TimeInterval = 2.0
     var lastKey = ""
     var lastHeartbeat = Date.distantPast
+    /// S4: the last Firefox-family page read, kept across heartbeats so the file keeps it while the page stays; `reads` (L1) and the
+    /// page's AXURL, so a page that gave little is read again and a new page under the same title starts over.
+    var firefox: (key: String, url: String, reads: Int, title: String?, text: String?, error: String?) = ("", "", 0, nil, nil, nil)
+    /// Fable H1: Gecko builds its tree only after AXEnhancedUserInterface; set once per browser run.
+    var woken: Set<pid_t> = []
 
     while true {
         // The node sensor is the parent (of the un-disclaimed copy, which
@@ -295,6 +378,33 @@ func main() {
                 key = "\(bundleId)|error"
                 snapshot = Snapshot(timestamp: isoFormatter.string(from: now), app: browser.name, bundleId: bundleId, url: nil, title: nil, authorized: true, error: "\(error)", disclaimed: ProcessInfo.processInfo.environment[DISCLAIM_MARKER] != nil)
             }
+        } else if wantPageTextAx, let front = NSWorkspace.shared.frontmostApplication, let bundleId = front.bundleIdentifier, FIREFOX.contains(bundleId) {
+            // `app` stays nil: the sensor takes the tab from the session file, and these words only when the titles agree.
+            let pid = front.processIdentifier
+            let root = AXUIElementCreateApplication(pid)
+            let title = axGet(root, kAXFocusedWindowAttribute).flatMap { CFGetTypeID($0) == AXUIElementGetTypeID() ? axGet($0 as! AXUIElement, kAXTitleAttribute) as? String : nil }
+            key = "\(bundleId)|ax|\(title ?? "")"
+            if key != firefox.key { firefox = (key, "", 0, nil, nil, nil) }
+            if pageRefused(title) {
+                firefox = (key, "", 3, nil, nil, nil)
+            } else if !AXIsProcessTrusted() {
+                // Fable M5: no prompt from this loop; setup asks once. The file says why there are no words.
+                firefox = (key, "", 3, nil, nil, "accessibility not granted")
+            } else if pageAgain(text: firefox.text, reads: firefox.reads) {
+                if woken.insert(pid).inserted, axGet(root, "AXEnhancedUserInterface") as? Bool != true {
+                    AXUIElementSetAttributeValue(root, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+                }
+                let page = axPageText(pid)
+                let reads = page != nil && page!.url != firefox.url && !firefox.url.isEmpty ? 1 : firefox.reads + 1
+                firefox = (key, page?.url ?? firefox.url, reads, page?.title, page.map(\.text).flatMap { $0.isEmpty ? nil : $0 }, nil)
+            }
+            var withText = Snapshot(timestamp: isoFormatter.string(from: now), app: nil, bundleId: bundleId, url: nil, title: firefox.title, authorized: true, error: nil, disclaimed: ProcessInfo.processInfo.environment[DISCLAIM_MARKER] != nil)
+            withText.text = firefox.text
+            withText.textError = firefox.error
+            withText.windowTitle = firefox.text == nil ? nil : title
+            // A page read again writes when its words grew.
+            key += "|\(firefox.text?.count ?? 0)"
+            snapshot = withText
         } else {
             snapshot = Snapshot(timestamp: isoFormatter.string(from: now), app: nil, bundleId: nil, url: nil, title: nil, authorized: true, error: nil, disclaimed: ProcessInfo.processInfo.environment[DISCLAIM_MARKER] != nil)
         }
@@ -315,4 +425,24 @@ func main() {
     }
 }
 
+#if BROWSER_SELFCHECK
+// swiftc -D BROWSER_SELFCHECK apps/daemon/src/daemon/macos-browser-helper.swift -o "$TMPDIR/browser-check" && "$TMPDIR/browser-check" [pid]
+// With a pid (a window of your own): the page read's sizes, never its words.
+var failed = 0
+func check(_ ok: Bool, _ what: String) { if !ok { failed += 1; print("FAIL " + what) } }
+check(pageJoin(["  Invoice \n BOX-484 ", "", "for  Puzzlebox Studio"], max: 6000) == "Invoice BOX-484 for Puzzlebox Studio", "white space collapsed, empty parts skipped")
+check(pageJoin([String(repeating: "a", count: 4000), String(repeating: "b", count: 4000)], max: 6000).count == 6000 && pageJoin(["abc"], max: 0) == "", "bounded")
+check(pageRefused("Lunch Thursday - Mozilla Firefox Private Browsing") && pageRefused("Lunch - Zen Browser private browsing") && pageRefused("Lunch - Mozilla Firefox-privénavigatie") && !pageRefused("Lunch Thursday - Zen Browser"), "a private window by its title")
+check(pageRefused("Mira - Firefox (navegación privada)") && pageRefused("Mira - Navegação privada") && pageRefused("Mira - Приватный просмотр") && pageRefused("Mira - InPrivate") && pageRefused("Mira - Incognito") && pageRefused("Mira - Privater Modus"), "the private words of other languages")
+check(pageRefused(nil) && pageRefused("") && pageRefused("   ") && !pageRefused("Invoice BOX-484"), "a title that cannot be read, or says nothing, is refused")
+check(FIREFOX == ["app.zen-browser.zen", "org.mozilla.firefox"], "the Firefox family the session reader knows")
+check(pageAgain(text: nil, reads: 0) && pageAgain(text: "short", reads: 2) && !pageAgain(text: nil, reads: 3) && !pageAgain(text: String(repeating: "w", count: 200), reads: 1), "a page that gave little is read again, three reads in all")
+if CommandLine.arguments.count > 1, let pid = pid_t(CommandLine.arguments[1]) {
+    let page = axPageText(pid)
+    print("page read: \(page == nil ? "none" : "title \(page!.title.count) chars, text \(page!.text.count) chars, url \(page!.url.count) chars")")
+}
+print(failed == 0 ? "browser self-check: ok" : "browser self-check: \(failed) failed")
+exit(failed == 0 ? 0 : 1)
+#else
 main()
+#endif
