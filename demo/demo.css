@@ -23,6 +23,9 @@
 .demo-note a:hover { color: var(--ink); }
 .demo-note-x { flex: none; border: 0; background: none; padding: 0 0 0 4px; color: var(--ink-subtle); font: inherit; font-size: 12px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
 .demo-note-x:hover { color: var(--ink); }
+.demo-screen-open { flex: none; border: 1px solid var(--border-strong); background: var(--ink); color: var(--page); padding: 5px 9px; font: inherit; font-size: 12px; cursor: pointer; }
+.demo-screen-open:hover { background: var(--ochre-text); border-color: var(--ochre-text); }
+.demo-screen-open:focus-visible, .demo-note-x:focus-visible { outline: 2px solid var(--ochre); outline-offset: 2px; }
 
 .demo-asks { flex: 0 0 100%; display: flex; flex-wrap: wrap; gap: 6px; margin: -2px 0 -2px; }
 .demo-asks button {
@@ -42,6 +45,7 @@
 @media (max-width: 640px) {
   .demo-note { left: 16px; right: 16px; transform: none; max-width: none; flex-wrap: wrap; }
   .demo-note span { flex: 1 1 100%; order: 3; }
+  .demo-screen-open { order: 4; }
 }
 .demo-note[data-gone] { opacity: 0; translate: 0 -8px; pointer-events: none; }
 
@@ -53,6 +57,28 @@
 .demo-comment[data-on]::after { color: var(--page); }
 body[data-commenting] article.pane { cursor: crosshair; }
 body[data-commenting] .demo-note { display: none; }
+.screen-preview { width: min(520px, calc(100vw - 32px)); max-height: min(90vh, 760px); overflow: auto; padding: clamp(20px, 5vw, 34px); border: 1px solid var(--border-strong); background: var(--page); color: var(--ink); box-shadow: 0 18px 42px rgba(0, 0, 0, 0.3); font: inherit; }
+.screen-preview::backdrop { background: rgba(20, 18, 16, 0.54); }
+.screen-preview-close { display: flex; justify-content: flex-end; margin: -8px -8px 12px; }
+.screen-preview-close button { border: 0; background: none; color: var(--ink-subtle); padding: 6px; font: inherit; font-size: 12px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.screen-preview-close button:focus-visible, .screen-preview-actions button:focus-visible { outline: 2px solid var(--ochre-text); outline-offset: 2px; }
+.screen-preview h2 { max-width: 14ch; margin: 0 0 10px; font-size: clamp(25px, 5vw, 34px); line-height: 1.08; letter-spacing: -0.025em; font-weight: 500; }
+.screen-preview-intro { max-width: 46ch; margin: 0 0 20px; color: var(--ink-muted); font-size: 15px; line-height: 1.45; }
+.screen-preview-card { padding: 16px; border: 1px solid var(--border-strong); background: var(--card); }
+.screen-preview-eyebrow { margin: 0 0 8px; color: var(--ink-subtle); font-size: 12px; }
+.screen-preview-card h3 { margin: 0 0 14px; font-size: 18px; font-weight: 500; }
+.screen-preview-card dl { display: grid; gap: 12px; margin: 0; }
+.screen-preview-card dl > div { display: grid; grid-template-columns: 74px 1fr; gap: 12px; }
+.screen-preview-card dt { color: var(--ink-subtle); font-size: 13px; }
+.screen-preview-card dd { margin: 0; font-size: 14px; line-height: 1.45; }
+.screen-preview-ring { display: inline-block; padding: 3px 10px; outline: 1px solid var(--ochre-text); outline-offset: 2px; }
+.screen-preview-proof { margin: 15px 0 0; padding-top: 12px; border-top: 1px solid var(--divider); color: var(--ink-muted); font-size: 13px; line-height: 1.4; }
+.screen-preview-actions { display: flex; gap: 8px; margin-top: 16px; }
+.screen-preview-actions button { min-height: 38px; padding: 0 13px; border: 1px solid var(--border-strong); background: var(--page); color: var(--ink); font: inherit; cursor: pointer; }
+.screen-preview-actions .screen-preview-allow { border-color: var(--ink); background: var(--ink); color: var(--page); }
+.screen-preview-actions button:hover { border-color: var(--ochre-text); }
+.screen-preview-result { margin: 12px 0 0; color: var(--ink-subtle); font-size: 13px; line-height: 1.4; }
+.screen-preview-more { display: inline-block; margin-top: 13px; color: var(--ink); text-decoration-color: var(--ochre); text-underline-offset: 3px; }
 .demo-pin { position: absolute; z-index: 20; width: 20px; height: 20px; margin: -10px 0 0 -10px; display: grid; place-items: center; border: 1px solid var(--ink); background: var(--page); color: var(--ink); font: inherit; font-size: 11px; font-weight: 600; cursor: pointer; transition: background 120ms var(--ease), color 120ms var(--ease), transform 120ms var(--ease); }
 .demo-pin:hover { background: var(--ink); color: var(--page); transform: scale(1.1); }
 .demo-pin-draft { background: var(--ochre); border-color: var(--ochre); }

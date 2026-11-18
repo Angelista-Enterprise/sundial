@@ -11,18 +11,39 @@ function render(md, into) {
   into.toggleAttribute('data-rendered', true);
   // The renderer opens every link in a new tab, which is right for a model's answer and wrong for
   // the docs: a link into this site stays here.
-  for (const a of into.querySelectorAll('a[href]')) if (a.origin === location.origin) { a.removeAttribute('target'); a.removeAttribute('rel'); }
+  for (const a of into.querySelectorAll('a[href]')) if (a.origin === location.origin) {
+    a.removeAttribute('target'); a.removeAttribute('rel');
+    const match = a.pathname.match(/\/docs\/(?:.*\/)?([^/]+)\.md$/);
+    if (match) a.pathname = `${BASE}docs/${match[1]}/`;
+  }
   const slug = (s) => s.toLowerCase().replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '-');
   for (const h of into.querySelectorAll('h2, h3')) h.id ||= slug(h.textContent);
 }
 
-// Docs: the Markdown is in the page; render it, then the TOC from its headings.
-for (const block of document.querySelectorAll('[data-md]')) {
-  render(block.textContent, block);
+// Docs: render embedded or fetched Markdown, then build the TOC from its headings.
+const docBlocks = [...document.querySelectorAll('[data-md]')];
+for (const block of docBlocks) render(block.textContent, block);
+for (const block of document.querySelectorAll('[data-md-src]')) {
+  try {
+    const source = new URL(block.dataset.mdSrc, location.href);
+    const response = await fetch(source);
+    if (!response.ok) throw new Error(`Docs ${response.status}`);
+    const markdown = (await response.text()).replace(/(\]\()([^()\s]+\.md(?:#[^()\s]*)?)(\))/g, (all, open, target, close) => {
+      if (/^(?:[a-z]+:|\/|#)/i.test(target)) return all;
+      const href = new URL(target, source);
+      return `${open}${href.pathname}${href.hash}${close}`;
+    });
+    render(markdown, block);
+  } catch {
+    block.textContent = 'This page could not be loaded. Try again, or open the source documentation on GitHub.';
+  }
+  docBlocks.push(block);
+}
+for (const block of docBlocks) {
   const toc = block.closest('.docs')?.querySelector('.toc');
   if (toc) for (const h of block.querySelectorAll('h2, h3')) { const a = document.createElement('a'); a.href = `#${h.id}`; a.textContent = h.textContent; a.dataset.depth = h.tagName[1]; toc.append(a); }
-  if (location.hash) document.getElementById(location.hash.slice(1))?.scrollIntoView();
 }
+if (location.hash) document.getElementById(location.hash.slice(1))?.scrollIntoView();
 
 async function github(url, ttl = 600_000) {
   try { const hit = JSON.parse(localStorage.getItem(`gh:${url}`)); if (hit && Date.now() - hit.at < ttl) return hit.data; } catch {}

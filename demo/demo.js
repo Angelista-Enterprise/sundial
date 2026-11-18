@@ -289,11 +289,30 @@
   addEventListener('DOMContentLoaded', () => {
     const note = document.createElement('div')
     note.className = 'demo-note'
-    note.innerHTML = '<b>Sundial demo</b><span>Alex Morgan’s made-up week, frozen on Thursday 1 October, 09:05. Nothing is saved; the chat runs on your own computer. The demo counts the moves you make here, never your words.</span><a href="../">About Sundial</a><a href="../feedback/">Feedback</a><button type="button" class="demo-note-x">Hide</button>'
-    const hide = () => { note.toggleAttribute('data-gone', true); setTimeout(() => note.remove(), 400) }
+    note.innerHTML = '<b>One made-up week</b><span>Explore the 0.2.3 record and chat. 0.3 adds native screen actions; this browser demo does not control Mac apps. Try a preview of the approval step.</span><button type="button" class="demo-screen-open">Preview approval</button><a href="../">About Sundial</a><a href="../docs/screen-acting/">Screen actions</a><button type="button" class="demo-note-x">Hide</button>'
+    const dismissOnOutside = (e) => { if (!note.contains(e.target)) hide() }
+    const hide = () => { removeEventListener('pointerdown', dismissOnOutside, true); note.toggleAttribute('data-gone', true); setTimeout(() => note.remove(), 400) }
     note.querySelector('.demo-note-x').onclick = hide
+    note.querySelector('.demo-screen-open').onclick = () => {
+      count('demo/screen-preview/open')
+      const preview = document.createElement('dialog')
+      preview.className = 'screen-preview'
+      preview.setAttribute('aria-labelledby', 'screen-preview-title')
+      preview.innerHTML = '<form method="dialog" class="screen-preview-close"><button type="submit" aria-label="Close preview">Close</button></form><h2 id="screen-preview-title">The final click waits for you.</h2><p class="screen-preview-intro">Gnomon can read controls and guide the steps. A send always pauses for your approval.</p><div class="screen-preview-card"><p class="screen-preview-eyebrow">Gnomon wants to · Browser test app</p><h3>Send the update</h3><dl><div><dt>To</dt><dd>Mira Bakker</dd></div><div><dt>Message</dt><dd>The notes are ready. I’ll send the review copy this afternoon.</dd></div><div><dt>Final step</dt><dd><span class="screen-preview-ring">Send</span></dd></div></dl><p class="screen-preview-proof">The app, recipient and exact action are visible before anything happens.</p></div><div class="screen-preview-actions"><button type="button" class="screen-preview-allow">Allow once</button><button type="button" class="screen-preview-no">No</button></div><p class="screen-preview-result" role="status" aria-live="polite">This is only a preview. No message will be sent.</p><a class="screen-preview-more" href="../docs/screen-acting/">Read how screen actions work</a>'
+      const finish = (choice) => {
+        count(`demo/screen-preview/${choice}`)
+        preview.querySelector('.screen-preview-result').textContent = choice === 'allow-once' ? 'Preview approved. No app was controlled and no message was sent.' : 'Preview declined. No app was controlled and no message was sent.'
+        preview.querySelector('.screen-preview-actions').remove()
+      }
+      preview.querySelector('.screen-preview-allow').onclick = () => finish('allow-once')
+      preview.querySelector('.screen-preview-no').onclick = () => finish('no')
+      preview.addEventListener('click', (e) => { if (e.target === preview) preview.close() })
+      preview.addEventListener('close', () => preview.remove())
+      document.body.append(preview)
+      preview.showModal()
+    }
     // It says its piece once: the first touch anywhere else puts it away.
-    addEventListener('pointerdown', (e) => { if (!note.contains(e.target)) hide() }, { once: true, capture: true })
+    addEventListener('pointerdown', dismissOnOutside, true)
     document.body.append(note)
     const bar = document.getElementById('bar'), input = document.getElementById('input')
     if (!bar || !input) return

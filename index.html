@@ -4,10 +4,10 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="color-scheme" content="light dark" />
-<title>Sundial — a local memory of your work</title>
-<meta name="description" content="Sundial records what you work on into one SQLite file on your Mac. Gnomon, the assistant inside, answers from it. Here is everything it keeps, and the little that can leave." />
-<meta property="og:title" content="Sundial — a local memory of your work" />
-<meta property="og:description" content="Sundial records what you work on into one SQLite file on your Mac. Gnomon, the assistant inside, answers from it. Here is everything it keeps, and the little that can leave." />
+<title>Sundial: your work, remembered. Your actions, approved.</title>
+<meta name="description" content="Sundial keeps a local record of your work. Gnomon can help in your Mac apps, with your approval before anything final happens." />
+<meta property="og:title" content="Sundial: your work, remembered. Your actions, approved." />
+<meta property="og:description" content="Sundial keeps a local record of your work. Gnomon can help in your Mac apps, with your approval before anything final happens." />
 <meta property="og:type" content="website" />
 <meta property="og:image" content="https://angelista-enterprise.github.io/sundial/card.png" />
 <meta name="twitter:card" content="summary_large_image" />
@@ -25,9 +25,28 @@
 <main class="main main-wide">
 
 <section class="hero">
-  <h1>A local memory of your work, <span class="nowrap-wide">for you and your coding agent.</span></h1>
-  <p class="deck">Here is everything it keeps on your Mac, and the little that can leave.</p>
-  <p class="hero-acts"><a class="act act-ink" href="demo/">Try the demo</a><a class="act" href="#start">Install in a minute</a></p>
+  <h1>Your work, remembered.<br><span class="nowrap-wide">Your actions, approved.</span></h1>
+  <p class="deck">Sundial keeps a private record on your Mac. Gnomon can read and work in your apps, then waits for you before a final step.</p>
+  <p class="hero-acts"><a class="act act-ink" href="demo/">Try the demo</a><a class="act" href="#start">Install Sundial</a></p>
+</section>
+
+<section class="act-story" aria-labelledby="act-story-title">
+  <div class="act-story-copy">
+    <h2 id="act-story-title">Gnomon can do the steps. You decide when they’re done.</h2>
+    <p>It reads the controls in an app, points to the next one, and guides the task. Before a send, delete or other final action, the approval names the app, recipient and exact action.</p>
+    <a class="text-link" href="docs/screen-acting/">See how screen actions work</a>
+  </div>
+  <div class="act-preview" aria-label="Illustration of a one-time send approval">
+    <div class="act-window-bar"><span></span><span></span><span></span><p>Project notes · Browser test app</p></div>
+    <div class="act-window-content">
+      <p class="act-window-label">Gnomon wants to</p>
+      <h3>Send this update</h3>
+      <dl><div><dt>App</dt><dd>Browser test app</dd></div><div><dt>To</dt><dd>Mira Bakker</dd></div><div><dt>Action</dt><dd><span class="act-send-ring">Send</span></dd></div></dl>
+      <p class="act-message">“The notes are ready. I’ll send the review copy this afternoon.”</p>
+      <div class="act-choices"><span>Allow once</span><span>No</span></div>
+      <p class="act-preview-caption">A preview of the approval. The browser demo does not send messages or control Mac apps.</p>
+    </div>
+  </div>
 </section>
 
 <section class="ledger" aria-labelledby="ledger-h">
@@ -42,10 +61,10 @@
     <p class="col-foot">Not recorded at all: which keys you press, notification contents, clipboard contents, URL query strings, mail bodies, Messages text, sound. Every event is cleaned once before it is written — secrets, e-mail addresses, phone and card numbers, your user name in paths — and everything downstream reads the cleaned value.</p>
   </div>
   <div class="col col-leaves">
-    <h3>Can leave</h3><p class="col-note">Nothing, until you configure it. Then only:</p>
-    <ul class="rows rows-leave"><li class="row row-primary"><span class="row-name">Sanitized text from the record, plus what you type in the chat and images you attach</span><span class="row-what"><span class="row-to">to The model endpoint <em>you</em> chose. Point it at <code>127.0.0.1</code> and no text leaves your Mac</span><span class="row-when">When Gnomon answers or writes</span><span class="row-reads" aria-live="polite" data-rest="Point at or tap a row on the left to see what the model gets from it.">Point at or tap a row on the left to see what the model gets from it.</span></span></li></ul>
+    <h3>Can leave</h3><p class="col-note">No data is sent until you configure a model. After that:</p>
+    <ul class="rows rows-leave"><li class="row row-primary"><span class="row-name">Cleaned record text, a window you ask Gnomon to read, your chat and attached images</span><span class="row-what"><span class="row-to">to The model endpoint <em>you</em> chose. Point it at <code>127.0.0.1</code> and no text leaves your Mac</span><span class="row-when">When Gnomon answers, reads a window or writes</span><span class="row-reads" aria-live="polite" data-rest="Point at or tap a row on the left to see what can reach the model.">Point at or tap a row on the left to see what can reach the model.</span></span></li></ul>
     <details class="rows-fold"><summary>8 more, each behind a setting you have not set</summary><ul class="rows rows-leave"><li class="row"><span class="row-name">The embedding model’s weights — a download, no text is sent</span><span class="row-what"><span class="row-to">to Hugging Face</span><span class="row-when">Once, the first time embeddings run</span></span></li><li class="row"><span class="row-name">A notice’s title and text, and titles of finished work</span><span class="row-what"><span class="row-to">to The ntfy URL you set</span><span class="row-when">Only if <code>notifications.ntfy</code> is set</span></span></li><li class="row"><span class="row-name">A <code>gh pr view</code> request, with your own login</span><span class="row-what"><span class="row-to">to GitHub</span><span class="row-when">Only if <code>gh</code> is installed and signed in</span></span></li><li class="row"><span class="row-name">Web pages Gnomon fetches</span><span class="row-what"><span class="row-to">to The site</span><span class="row-when">When you ask Gnomon to read the web</span></span></li><li class="row"><span class="row-name">Internal scoring questions</span><span class="row-what"><span class="row-to">to api.typesafe.ai</span><span class="row-when">Only if <code>TYPESAFE_API_KEY</code> is set</span></span></li><li class="row"><span class="row-name">Tool calls to your own services</span><span class="row-what"><span class="row-to">to The service</span><span class="row-when">Only for services you list under <code>integrations</code></span></span></li><li class="row"><span class="row-name">A background job’s prompt, and what Claude reads from the record</span><span class="row-what"><span class="row-to">to Anthropic, through your own Claude Code login</span><span class="row-when">Only if <code>hands.claude</code> is set</span></span></li><li class="row"><span class="row-name">Whatever an MCP client reads</span><span class="row-what"><span class="row-to">to That client’s own model provider</span><span class="row-when">Only if you connect Claude Code or another agent</span></span></li></ul></details>
-    <p class="col-foot">The model sees cleaned fields only: app, project, window titles, shell commands, branch, meeting title and attendee count — and page text, mail subjects, screen facts or heard speech only when you turned those sensors on. Every call is listed in the Ledger, with its cost. <a href="docs/privacy/">The full privacy page</a>.</p>
+    <p class="col-foot">A screen look sends a text list of controls and values, not a screenshot. That text is cleaned first. Screen looks skip private apps and password fields. Every model call is listed in the Ledger. <a href="docs/privacy/">The full privacy page</a>.</p>
   </div>
 </section>
 
@@ -66,9 +85,9 @@
 
 <section class="film" id="film">
   <div class="film-text">
-    <h2>One Thursday morning</h2>
-    <p>A made-up week. The morning card knows what you did yesterday and where you left off. It lists what you still owe before a client demo, writes a research brief with sources, tests a rule on your record before you keep it, and takes a typed correction as your fact. Every model call lands in the Ledger.</p>
-    <p class="film-note">Nothing in it is real data. The <a href="demo/">demo</a> is this same week, in your browser.</p>
+    <h2>Previous recording: a week in the record</h2>
+    <p>This 0.2.3 recording shows a morning card, open promises, a research brief, a rule, a correction and the model-call Ledger. We are replacing it for 0.3.0 with a tighter story about picking up where you left off.</p>
+    <p class="film-note">The week is made up. Explore its record in the <a href="demo/">browser demo</a>, or read about <a href="docs/screen-acting/">screen actions in 0.3</a>.</p>
   </div>
   <video class="film-video" controls preload="metadata" playsinline aria-label="One Thursday morning in Sundial: the morning card, open promises, a research brief, a rule, a correction, the Ledger" poster="poster-morning.jpg" src="https://github.com/user-attachments/assets/1c495afa-6e27-4635-9cbe-1b2b27628c97"></video>
 </section>
@@ -76,20 +95,20 @@
 <section class="film film-alt" id="agent">
   <video class="film-video" controls preload="metadata" playsinline aria-label="Claude Code asking Sundial over MCP about the week" poster="poster-agent.jpg" src="https://github.com/user-attachments/assets/a155502b-ebc6-4680-bb01-2e1d87177bec"></video>
   <div class="film-text">
-    <h2>Ask it from Claude Code</h2>
-    <p>The same week, asked from outside. Claude Code, with only Sundial’s read-only MCP tools, tells the story of the week and what is still owed — then opens the release call it mentioned, down to the raw capture.</p>
+    <h2>Previous recording: Claude Code and the record (0.2.3)</h2>
+    <p>This earlier clip shows a read-only MCP conversation. It will be replaced for 0.3.0 with a shorter handoff: one question from Claude Code, the grounded answer, then the source it came from.</p>
     <pre class="cmd"><code>claude mcp add sundial --scope user -e SUNDIAL_HOME="$HOME/.sundial" -- node "$PWD/packages/mcp/bin/sundial-mcp.js"</code></pre>
   </div>
 </section>
 
 <section class="start" id="start">
-  <h2>Install in a minute</h2>
+  <h2>Install Sundial</h2>
   <div class="start-grid">
     <div>
       <pre class="cmd"><code>git clone https://github.com/Angelista-Enterprise/sundial.git &amp;&amp; cd sundial
 node bin/sundial install
 node bin/sundial open</code></pre>
-      <p><code>install</code> checks your Mac, builds everything, writes <code>~/.sundial/</code> and starts Sundial at login. <code>open</code> signs your browser in and walks you through the macOS permissions. The first observations arrive within a minute.</p>
+      <p><code>install</code> checks your Mac, builds everything, writes <code>~/.sundial/</code> and starts Sundial at login. The first dependency download can take a few minutes. <code>open</code> signs your browser in and walks you through macOS permissions. The first observations arrive within a minute.</p>
     </div>
     <div>
       <p>Gnomon needs a model to talk. Without one, Sundial still records and the Today screen still shows your day. Pick one on the setup page, or two lines in <code>~/.sundial/.env</code>:</p>
@@ -103,9 +122,9 @@ SUNDIAL_LLM_MODEL=qwen3:8b</code></pre>
 
 </main>
 <footer class="foot">
-  <p>Sundial v0.2.3 · <a href="https://github.com/Angelista-Enterprise/sundial/blob/develop/LICENSE">Licence</a> · <a href="https://github.com/Angelista-Enterprise/sundial/blob/develop/SECURITY.md">Security</a> · <a href="https://github.com/Angelista-Enterprise/sundial/blob/develop/CONTRIBUTING.md">Contributing</a></p>
+  <p>Sundial v0.3.0 preview · <a href="https://github.com/Angelista-Enterprise/sundial/blob/develop/LICENSE">Licence</a> · <a href="https://github.com/Angelista-Enterprise/sundial/blob/develop/SECURITY.md">Security</a> · <a href="https://github.com/Angelista-Enterprise/sundial/blob/develop/CONTRIBUTING.md">Contributing</a></p>
   <p class="foot-note"><b>No counting on these pages.</b> Only the <a href="demo/">demo</a> counts, and only what you do in it — a card placed, a question asked, which model answered — with <a href="https://sundial.goatcounter.com" rel="noopener">GoatCounter</a>: never the words you type, no cookies, no personal data. The only thing kept in your browser is a ten-minute cache of GitHub’s answers on the changelog and feedback pages, and your light-or-dark choice. Sundial itself, the app you install, sends nothing to us — see <a href="docs/privacy/">Privacy</a>.</p>
 </footer>
-<script type="module" src="site.js"></script>
+<script type="module" src="site.js?v=0.3.0"></script>
 </body>
 </html>
