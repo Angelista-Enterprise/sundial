@@ -55,6 +55,42 @@ describe('conversationExtractionInstructions', () => {
   });
 });
 
+describe('transcriptChunks (LongMemEval, 2026-11-17: a 240-turn day lost its first nine tenths)', () => {
+  const turn = (i: number, day = '2026-09-04') => ({ sessionId: `s${i}`, at: `${day}T${String(8 + (i % 10)).padStart(2, '0')}:00:00.000Z`, text: `turn ${i} ${'x'.repeat(40)}` });
+
+  it('keeps every turn, oldest first, in chunks under the cap', async () => {
+    const { transcriptChunks } = await import('./conversation-extract.js');
+    const turns = Array.from({ length: 30 }, (_, i) => turn(i));
+    const chunks = transcriptChunks(turns, 400);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((c) => c.text.length <= 400)).toBe(true);
+    const lines = chunks.flatMap((c) => c.text.split('\n'));
+    expect(lines).toHaveLength(30);
+    expect(lines[0]).toContain('turn 0 ');
+    expect(lines[29]).toContain('turn 29 ');
+  });
+
+  it('marks a Gnomon line, and dates a fact to its day or else the chunk\'s last line', async () => {
+    const { transcriptChunks, factInstant } = await import('./conversation-extract.js');
+    const [chunk] = transcriptChunks([turn(1, '2026-09-03'), { ...turn(2, '2026-09-04'), by: 'gnomon' as const }]);
+    expect(chunk!.text.split('\n')[1]).toBe(`[2026-09-04T10:00 · s2] (Gnomon) turn 2 ${'x'.repeat(40)}`);
+    expect(chunk!.days).toEqual(['2026-09-03', '2026-09-04']);
+    expect(factInstant(chunk!, '2026-09-03')).toBe('2026-09-03T09:00:00.000Z');
+    expect(factInstant(chunk!, '2026-08-01')).toBe('2026-09-04T10:00:00.000Z');
+    expect(factInstant(chunk!, undefined)).toBe('2026-09-04T10:00:00.000Z');
+  });
+
+  it('asks for concrete events with their date, many per call', async () => {
+    const { MAX_CONVERSATION_FACTS } = await import('./conversation-extract.js');
+    const text = conversationExtractionInstructions('pat');
+    expect(MAX_CONVERSATION_FACTS).toBeGreaterThan(10);
+    expect(text).toContain(`up to ${MAX_CONVERSATION_FACTS} objects`);
+    expect(text).toContain('"at": "YYYY-MM-DD"');
+    expect(text).toContain('A past event is worth keeping with its date');
+    expect(text).not.toContain('most days, nothing does');
+  });
+});
+
 describe('promises told to Gnomon in passing (UC1 U1-F11)', () => {
   it('opens only a promise stated outright to a named person, never a request to the assistant', async () => {
     const { promisesInTurns } = await import('./conversation-extract.js');

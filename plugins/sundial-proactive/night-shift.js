@@ -29,9 +29,6 @@ import path from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { INSTALL_ENV, isInstallKey, jobEnv, resolveClaude } from './claude-hand.js'
 
-/** Claude permission modes that approve something by themselves. A job never gets one. */
-export const APPROVING_MODES = ['acceptEdits', 'auto', 'bypassPermissions', 'dontAsk']
-
 const PLUGIN = 'sundial-proactive'
 const expand = (p) => (p === '~' || p.startsWith('~/') ? path.join(os.homedir(), p.slice(1)) : p)
 const within = (p, root) => p === root || p.startsWith(`${root}${path.sep}`)

@@ -61,7 +61,13 @@ export const DEFAULT_SIZE: Record<string, [number, number]> = {
   moment: [560, 480],
   surface: [720, 520],
   figure: [720, 520],
+  // A Nodus card: a figure Gnomon composed from the record, with its walk (packages/nodus).
+  nodus: [1120, 800],
   work: [560, 480],
+  // Plan 15 step 5: About you, what Gnomon believes about the owner.
+  beliefs: [560, 560],
+  // Round 3: the routes Gnomon learned on screen, per app, with Drop.
+  routes: [560, 560],
   web: [720, 560],
   // Same 800 as the floor: a row is as tall as its tallest card, so one
   // 860 card used to push every card in its row past the screen at 1:1.
@@ -83,6 +89,7 @@ export const MIN_SIZE: Record<string, [number, number]> = {
   moment: [440, 360],
   surface: [560, 400],
   figure: [560, 400],
+  nodus: [640, 460],
   work: [360, 240],
   web: [400, 300],
   kanban: [1200, 600],
@@ -144,8 +151,32 @@ export function lensTitle(text: string): string | null {
 }
 
 /**
+ * A Nodus figure's recipe: everything but the rows it drew, which are the
+ * record's and are read again when the figure comes back (packages/nodus,
+ * views.js). The walk, the binding and the verdict are what is worth keeping.
+ * A free scene (no `source`: something in the world, not the record) has
+ * nothing to read again, so its blueprint is the recipe: its parts and joints,
+ * capped as the checker caps them (24 and 48). Null when the text is neither.
+ */
+export function nodusRecipe(text: string): string | null {
+  try {
+    const spec = JSON.parse(text) as Record<string, unknown> | null;
+    if (!spec || typeof spec !== 'object' || typeof spec.title !== 'string') return null;
+    if (!spec.source) {
+      if (spec.form !== 'scene' || !Array.isArray(spec.lanes)) return null;
+      const { parts: _parts, ...blueprint } = spec;
+      return JSON.stringify({ ...blueprint, lanes: spec.lanes.slice(0, 24), links: Array.isArray(spec.links) ? spec.links.slice(0, 48) : [] });
+    }
+    const { lanes: _lanes, parts: _parts, links: _links, facts: _facts, ...recipe } = spec;
+    return JSON.stringify(recipe);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The shelf, after any board change: every lens card on the board is on it, and
- * nothing is ever taken off.
+ * nothing is ever taken off. A Nodus figure is shelved too, as its recipe.
  *
  * WHY IT SWEEPS THE CARDS rather than keying off `board:place`. A shelf that
  * only fills going forward is empty after boot for every lens placed before it
@@ -160,11 +191,12 @@ export function lensTitle(text: string): string | null {
 function shelve(cards: Record<string, BoardCard>, shelf: KernelState['board']['lenses'], at: string): KernelState['board']['lenses'] {
   let next = shelf;
   for (const card of Object.values(cards)) {
-    if (card.kind !== 'lens' || card.text === null) continue;
+    if ((card.kind !== 'lens' && card.kind !== 'nodus') || card.text === null) continue;
+    const spec = card.kind === 'nodus' ? nodusRecipe(card.text) : card.text;
     const held = next[card.id];
-    if (held?.spec === card.text) continue;
+    if (spec === null || held?.spec === spec) continue;
     if (next === shelf) next = { ...shelf };
-    next[card.id] = { title: lensTitle(card.text) ?? held?.title ?? card.id, spec: card.text, at: held?.at ?? at };
+    next[card.id] = { title: lensTitle(card.text) ?? held?.title ?? card.id, spec, at: held?.at ?? at };
   }
   return next;
 }

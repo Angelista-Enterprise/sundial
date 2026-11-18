@@ -2,7 +2,7 @@ import { createEventId } from '@sundial/helpers/event-id.js';
 import { recordLlmAudit, updateLlmAudit, type RecordLlmAuditInput, type UpdateLlmAuditInput } from '@sundial/db/index.js';
 
 /** `route`: the model route that serves the call (`openai`, a provider id, `jev`, …), for `llm:failed` and the breaker; not a column. */
-export type LlmAuditRow = Omit<RecordLlmAuditInput, 'id' | 'requestedAt'> & { id?: string; requestedAt?: string; route?: string };
+export type LlmAuditRow = Omit<RecordLlmAuditInput, 'id' | 'requestedAt' | 'source'> & { id?: string; requestedAt?: string; route?: string };
 
 /** What one settled row came to (W5): only ids, the route and the class — never the prompt, the reply or the error text. */
 export interface LlmAuditOutcome {
@@ -27,7 +27,7 @@ export interface LlmAudit {
   /** The row's id: the reservation's `callId` when one was given, so the spend and the row join. */
   id: string;
   /** Close the row with the call's outcome. Once: a second settle is a no-op. */
-  settle(patch: UpdateLlmAuditInput & { retryAfterMs?: number | null }): Promise<void>;
+  settle(patch: UpdateLlmAuditInput & { retryAfterMs?: number | null; route?: string }): Promise<void>;
 }
 
 /**
@@ -44,16 +44,19 @@ export interface LlmAudit {
  */
 export async function openLlmAudit({ route = 'unknown', ...row }: LlmAuditRow): Promise<LlmAudit> {
   const id = row.id ?? createEventId();
-  await recordLlmAudit({ ...row, id, requestedAt: row.requestedAt ?? new Date().toISOString() });
+  // The route is the row's `source` column too (step 3 of the provider plan); `access` says api, runtime or judge.
+  await recordLlmAudit({ ...row, id, requestedAt: row.requestedAt ?? new Date().toISOString(), source: route, access: row.access ?? (route === 'claude' || route === 'copilot' ? 'runtime' : route === 'jev' ? 'judge' : 'api') });
   let settled = false;
   return {
     id,
-    async settle({ retryAfterMs, ...patch }) {
+    async settle({ retryAfterMs, route: answered, ...patch }) {
       if (settled) return;
       settled = true;
-      await updateLlmAudit(id, patch);
+      // Set 2 R4: a call another route answered (the asked one unreachable) is that route's, in the row and for the breaker.
+      const served = answered ?? route;
+      await updateLlmAudit(id, { ...patch, ...(answered ? { source: answered } : {}) });
       try {
-        auditListener?.({ callId: id, purpose: row.purpose, route, ok: patch.success === true, errorClass: patch.success ? null : (patch.errorClass ?? 'unknown'), attempt: row.attempt ?? 1, ...(typeof retryAfterMs === 'number' ? { retryAfterMs } : {}) });
+        auditListener?.({ callId: id, purpose: row.purpose, route: served, ok: patch.success === true, errorClass: patch.success ? null : (patch.errorClass ?? 'unknown'), attempt: row.attempt ?? 1, ...(typeof retryAfterMs === 'number' ? { retryAfterMs } : {}) });
       } catch {
         // A listener that throws must never turn a settled row into a failure.
       }

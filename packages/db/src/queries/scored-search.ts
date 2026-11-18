@@ -75,6 +75,9 @@ export interface ScoredSearchOptions {
   fusion?: boolean;
   /** Per-retriever vote weights for the rank fusion. Defaults to `DEFAULT_FUSION_WEIGHTS`; exists for measurement. */
   weights?: { semantic?: number; lexical?: number; graph?: number; name?: number };
+  /** Only hits whose `at` falls on or after / on or before this day (YYYY-MM-DD, inclusive): "in March" is a filter, not a hope that ranking finds it. */
+  since?: string;
+  until?: string;
 }
 
 /**
@@ -210,7 +213,8 @@ export async function scoredSearch(query: string, limit: number, now: string = n
   // recency/salience/relevance score stays as the semantic retriever's OWN ranking
   // rather than being replaced, so recency and salience keep the influence the
   // corpus already calibrated them for.
-  const byId = new Map(resolved.map((hit) => [`${hit.refType}:${hit.refId}`, hit]));
+  const inPeriod = (at: string) => (!options.since || at.slice(0, 10) >= options.since) && (!options.until || at.slice(0, 10) <= options.until);
+  const byId = new Map(resolved.filter((hit) => inPeriod(hit.at)).map((hit) => [`${hit.refType}:${hit.refId}`, hit]));
   const semanticRanking = new Map([...byId].map(([key, hit]) => [key, hit.score]));
   const lexicalRanking = bm25(
     query,

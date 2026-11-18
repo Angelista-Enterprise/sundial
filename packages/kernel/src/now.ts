@@ -83,6 +83,29 @@ function selfOf(owner: any, now: number, timeZone: string) {
 }
 
 // `state` is read field by field, every one optional: a partial or older state reads as nulls, never throws.
+/** A Jev reading older than this says what WAS on screen, not what is. */
+const SCREEN_READING_FRESH_MS = 15 * MINUTE
+
+/** The typed facts of the last capture, and Jev's text and frame readings while fresh. */
+export function screenNow(screen: any, now: number) {
+  const fresh = (at: unknown) => typeof at === 'string' && now - Date.parse(at) <= SCREEN_READING_FRESH_MS
+  const facts = Array.isArray(screen?.facts) ? screen.facts.slice(0, 6) : []
+  const answer = screen?.read?.answer
+  const read = answer && fresh(answer.at) ? { activity: answer.activity, p: answer.activityP, meeting: answer.meeting, blocked: answer.blocked } : null
+  const f = screen?.frame
+  const frame = f && fresh(f.at) ? { shows: f.shows, p: f.showsP, meeting: f.meeting, error: f.error } : null
+  return facts.length > 0 || read || frame ? { facts, read, frame } : null
+}
+
+/** How long an offer stays on the strip after its notice. Untaken by then, it was ignored. */
+export const OFFER_LIFE_MS = 30 * MINUTE
+
+/** The newest offer younger than `OFFER_LIFE_MS`: its notice key, the button's words, the notice kind and the notice's own line. Never the call itself. */
+export function offerNow(offers: any, now: number) {
+  const newest = Object.entries(offers ?? {}).map(([noticeKey, o]: [string, any]) => ({ noticeKey, label: o?.label, kind: o?.kind, at: o?.at, ...(typeof o?.line === 'string' && o.line !== '' ? { line: o.line } : {}) })).filter((o) => typeof o.label === 'string' && now - Date.parse(o.at) <= OFFER_LIFE_MS).sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0]
+  return newest ?? null
+}
+
 export function nowSnapshot(state: any, now = Date.now()) {
   const coverage = state?.coverage ?? {}
   const moment = state?.moment ?? null
@@ -181,6 +204,8 @@ export function nowSnapshot(state: any, now = Date.now()) {
     },
     /** An app holding the microphone right now, and for how long. */
     call: state?.av?.call ? { app: state.av.call.app, kind: state.av.call.kind, min: minutesSince(state.av.call.since, now) } : null,
+    /** Round 4: the newest notice offer still open (`notices.offers`), for the strip's one button. */
+    offer: offerNow(state?.notices?.offers, now),
     /** A command that has failed several times in a row, if the streak is fresh. */
     failing: failingStreak(state?.shell?.streak, now),
     /** The owner's coding-agent sessions: how many are working, and which wait for them. */
@@ -189,6 +214,8 @@ export function nowSnapshot(state: any, now = Date.now()) {
     unpushed: unpushedSummary(state?.git?.unpushed),
     /** Ticket keys and PR numbers read off the screen in the last capture. */
     screenRefs: Array.isArray(state?.screen?.refs) ? state.screen.refs.slice(0, 4) : [],
+    /** What the screen shows, typed on this Mac, plus Jev's readings when the owner consented and they are fresh. Null when there is nothing. */
+    screen: screenNow(state?.screen, now),
     /** The file touched most today, once it has been touched three times. */
     hotFile: hottest(state?.files?.hot),
     /** Badges that have sat unchanged for hours. */
@@ -219,8 +246,6 @@ export function nowSnapshot(state: any, now = Date.now()) {
     },
   }
 }
-
-export type NowSnapshot = ReturnType<typeof nowSnapshot>;
 
 function currentPage(browser: any, frontApp: unknown, now: number) {
   const current = browser?.current

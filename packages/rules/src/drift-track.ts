@@ -91,8 +91,11 @@ export const driftTrack: Rule = (state, event) => {
   }
 
   if (event.type === 'git:commit') {
-    if (p.backfill === true || wakingMinute(event.ts, tz) < LATE_FROM_MIN) return { state, effects: [] };
-    return { state: { ...state, drift: withDay(drift, wakingDate(event.ts, tz), (d) => ({ ...d, late: d.late + 1 })) }, effects: [] };
+    if (p.backfill === true) return { state, effects: [] };
+    const late = wakingMinute(event.ts, tz) >= LATE_FROM_MIN ? 1 : 0;
+    const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0);
+    // Code volume per day: the commit's own insertions and deletions, which the sensor has carried since July.
+    return { state: { ...state, drift: withDay(drift, wakingDate(event.ts, tz), (d) => ({ ...d, late: d.late + late, added: (d.added ?? 0) + n(p.insertions), removed: (d.removed ?? 0) + n(p.deletions) })) }, effects: [] };
   }
 
   if (event.type === 'calendar:active') {

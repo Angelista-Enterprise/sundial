@@ -15,6 +15,11 @@ function withMeeting(state: KernelState, attendees: string[], startMs = -60 * 60
   state.schedule.upcoming.push({ title: 'Sanity certification', start: at(startMs), end: at(endMs), attendees, isAllDay: false });
   return state;
 }
+/** The owner on a call in it: a conferencing app holds the microphone during one tick inside the meeting. */
+function onCall(state: KernelState, ms = -30 * 60_000): KernelState {
+  const s = meetingFollowup({ ...state, av: { ...state.av, call: { app: 'zoom.us', kind: 'work-call', since: at(ms - 60_000), cameraEver: false } } }, tick(ms)).state;
+  return { ...s, av: { ...s.av, call: null } };
+}
 
 describe('meetingFollowup', () => {
   it('asks once, a few minutes after a meeting with other people ended, and never again for the same meeting', () => {
@@ -25,12 +30,14 @@ describe('meetingFollowup', () => {
     expect(Object.values(state.meetings.seen)).toHaveLength(1);
     expect(out.effects).toEqual([]);
 
-    // Calendar poll dropped it; the rule still remembers.
+    // Calendar poll dropped it; the rule still remembers. The owner was on the call.
     state.schedule.upcoming = [];
+    state = onCall(state);
     out = meetingFollowup(state, tick(0));
     state = out.state;
-    expect(out.effects).toHaveLength(1);
-    expect(out.effects[0]).toMatchObject({
+    const asked = out.effects.filter((e) => e.type === 'EmitEvent' && (e as { event: { type: string } }).event.type === 'ask:owner-opened');
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({
       type: 'EmitEvent',
       event: { type: 'ask:owner-opened', payload: { question: 'How did "Sanity certification" go — did you promise anything?', reason: expect.stringContaining('Bob, Noah'), choices: ['No', 'Yes — tell me'] } },
     });
@@ -65,13 +72,56 @@ describe('meetingFollowup', () => {
       state = { ...state, hearing: { ...state.hearing, listening: false } };
       // UC1-X3: the question waits up to eight minutes for the meeting's promise pass.
       const first = meetingFollowup(state, tick(0));
-      return [...first.effects, ...meetingFollowup(first.state, tick(9 * 60_000)).effects].filter((e) => e.type === 'EmitEvent').length;
+      return [...first.effects, ...meetingFollowup(first.state, tick(9 * 60_000)).effects].filter((e) => e.type === 'EmitEvent' && (e as { event: { type: string } }).event.type === 'ask:owner-opened').length;
     };
     expect(run(16, true), 'the skipped standup: 16 utterances').toBe(0);
     expect(run(96, true), 'an attended one').toBe(1);
     expect(run(1, true), 'the skipped Crrntlive: one stray utterance').toBe(0);
-    expect(run(0, false), 'hearing asleep: silence says nothing, so ask').toBe(1);
-    expect(run(0, true), 'awake but nothing at all: the transcriber may be down, so ask').toBe(1);
+    // 2026-10-07: no evidence is not attendance. The calendar alone never puts the owner in a meeting.
+    // No evidence either way: the one question asks whether they were there at all (next test).
+    expect(run(0, false), 'hearing asleep and no call: unknown, so "were you in it?"').toBe(1);
+    expect(run(0, true), 'awake but nothing at all: unknown, so "were you in it?"').toBe(1);
+  });
+
+  it('reports a meeting the owner joined as attended once it ends, so "met with" facts follow — and not one only on the calendar', () => {
+    const attended = (state: KernelState) => [0, 60_000].flatMap((ms) => { const out = meetingFollowup(state, tick(ms)); state = out.state; return out.effects; }).filter((e) => e.type === 'EmitEvent' && (e as { event: { type: string } }).event.type === 'meeting:attended');
+    const seenOnly = meetingFollowup(withMeeting(createInitialState('d'), ['pat', 'Bob']), tick(-70 * 60_000)).state;
+    const joined = attended(onCall(seenOnly));
+    expect(joined).toHaveLength(1);
+    expect((joined[0] as unknown as { event: { payload: { event: { attendees: string[] } } } }).event.payload.event.attendees).toEqual(['Bob']);
+    expect(attended(seenOnly)).toEqual([]);
+  });
+
+  it('asks whether the owner was there when nothing says, and takes the answer as the verdict', () => {
+    let state = meetingFollowup(withMeeting(createInitialState('d'), ['pat', 'Bob']), tick(-70 * 60_000)).state;
+    const out = meetingFollowup(state, tick(9 * 60_000));
+    state = out.state;
+    const ask = out.effects.find((e) => e.type === 'EmitEvent' && (e as { event: { type: string } }).event.type === 'ask:owner-opened') as unknown as { event: { payload: { askId: string; question: string; choices: string[] } } };
+    expect(ask.event.payload).toMatchObject({ question: 'Were you in "Sanity certification"? If so — did you promise anything?', choices: ["Wasn't there", 'Yes — nothing promised', 'Yes — tell me'] });
+    const answered = (answer: string) => meetingFollowup(state, { id: 'ans', type: 'ask:owner-answered', ts: at(10 * 60_000), payload: { askId: ask.event.payload.askId, answer }, sanitized: true }).state;
+    expect(Object.values(answered("Wasn't there").meetings.seen)[0]!.confirmed).toBe('no');
+    const yes = answered('Yes — nothing promised');
+    expect(Object.values(yes.meetings.seen)[0]!.confirmed).toBe('yes');
+    // Their yes counts as being there: the "met with" facts follow, even after the usual window.
+    const later = meetingFollowup(yes, tick(40 * 60_000)).effects.filter((e) => e.type === 'EmitEvent' && (e as { event: { type: string } }).event.type === 'meeting:attended');
+    expect(later).toHaveLength(1);
+  });
+
+  it('asks about a meeting the owner was on a call in, never about one they missed or merely had on the calendar', () => {
+    const asks = (state: KernelState) => {
+      const first = meetingFollowup(state, tick(0));
+      return [...first.effects, ...meetingFollowup(first.state, tick(9 * 60_000)).effects].filter((e) => e.type === 'EmitEvent' && (e as { event: { type: string } }).event.type === 'ask:owner-opened').length;
+    };
+    const seenOnly = meetingFollowup(withMeeting(createInitialState('d'), ['Bob']), tick(-70 * 60_000)).state;
+    expect(asks(onCall(seenOnly)), 'a call app on the mic during it').toBe(1);
+    expect(asks(seenOnly), 'on the calendar and nothing else: one question, whether they were there').toBe(1);
+    // An online meeting, the owner typing through it with no call app open: missed.
+    let missed = withMeeting(createInitialState('d'), ['Bob']);
+    missed.schedule.upcoming[0]!.online = true;
+    missed = meetingFollowup(missed, tick(-70 * 60_000)).state;
+    for (const ms of [-50, -40, -30, -20]) missed = meetingFollowup({ ...missed, lifeEvent: { ...missed.lifeEvent, idle: { isIdle: false } } } as KernelState, tick(ms * 60_000)).state;
+    expect(Object.values(missed.meetings.seen)[0]).toMatchObject({ online: true, ticks: 4, active: 4 });
+    expect(asks(missed)).toBe(0);
   });
 
   it('counts only the microphone as the owner being there — the far side of a call is heard in an empty room too', () => {
@@ -82,8 +132,10 @@ describe('meetingFollowup', () => {
     for (let i = 0; i < 200; i += 1) state = meetingFollowup(state, { id: `s${++seq}`, type: 'audio:transcript', ts: at(-40 * 60_000 + i), payload: { spokenText: 'the far side', channel: 'system' }, sanitized: true }).state;
     state = meetingFollowup(state, { id: `m${++seq}`, type: 'audio:transcript', ts: at(-30 * 60_000), payload: { spokenText: 'ja', channel: 'mic' }, sanitized: true }).state;
     expect(Object.values(state.meetings.seen)[0]!.heard).toBe(1);
-    // No question for a room the owner was not in; the promise pass still reads what the far side said (W6 P2).
-    expect(meetingFollowup(state, tick(0)).effects.map((e) => e.type)).toEqual(['RunMeetingPromises']);
+    // Hearing awake and one mic line in 55 minutes: a room the owner was not in. No pass, no question.
+    expect(meetingFollowup(state, tick(0)).effects).toEqual([]);
+    // The same meeting with the owner on the call, mostly listening (W6 P2): the pass reads what the far side said.
+    expect(meetingFollowup(onCall(state), tick(0)).effects.map((e) => (e.type === 'EmitEvent' ? (e as { event: { type: string } }).event.type : e.type))).toEqual(['meeting:attended', 'RunMeetingPromises']);
   });
 
   it('forgets meetings older than two days', () => {

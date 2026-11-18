@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { briefSubagent, ensureWorkAgent, installWorkLoop, WORK_SESSION_ID } from './work.js'
+import { briefSubagent, ensureWorkAgent, installWorkLoop, jobPrompt, markRigDelegate, SANDBOX_USD_PER_JOB, shelvePayload, WORK_SESSION_ID } from './work.js'
 
 /**
  * A job used to be a `followup` on the one persistent `gnomon-work` agent, so
@@ -36,6 +36,7 @@ function fakeCtx({ subagents, reserve = async () => 'call-1' } = {}) {
       get: (name) => (name === 'subagents' ? subagents : undefined),
     },
     agent,
+    handlers,
     audits,
     actors,
     // W3: the executor calls the `subagent` actor for StartSubagent, with its in-lane budget gate.
@@ -125,6 +126,20 @@ describe('the work loop', () => {
     expect(ctx.gnomonKernel.appendSignal).not.toHaveBeenCalled()
   })
 
+  it("names each child's route (the chat's default now), never the work agent's stale one, and a failed child says why", async () => {
+    // On the record the work agent's last request was weeks old: every child inherited that route and died on its 401
+    // in 3 to 5 s, closed as "the worker ended without reporting" with nothing more. Made-up route names.
+    const subagents = fakeSubagents()
+    const { ctx, notice, handlers } = fakeCtx({ subagents })
+    ctx.gnomonKernel.getState = () => ({ config: { llm: { providers: [{ id: 'cloud-a', model: 'vendor/flash-1' }], use: {}, roles: { chat: ['cloud-a:vendor/flash-1'] } } } })
+    installWorkLoop(ctx, { home: '/home', cwd: '/ws', log: () => {}, warn: () => {} })
+    const started = await notice(JOB)
+    expect(subagents.calls[0].request.agentOptions).toEqual({ provider: 'cloud-a', model: 'vendor/flash-1' })
+    handlers.get('session/event')({ id: 'child-1' }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'error', error: { message: 'Invalid API key.', code: 'AUTH', status: 401 } } } })
+    subagents.finish('error')
+    expect(await started.done).toBe('error: AUTH 401: Invalid API key.')
+  })
+
   it('falls back to the work agent when the profile has no subagent provider', async () => {
     const { ctx, agent, notice } = fakeCtx({ subagents: undefined })
     installWorkLoop(ctx, { home: '/home', cwd: '/ws', log: () => {}, warn: () => {} })
@@ -150,7 +165,7 @@ describe('the work loop', () => {
 })
 
 /**
- * `hands.claude`: the job runs on the owner's Claude Code. What it is GIVEN is
+ * `llm.roles.jobs: ['claude']`: the job runs on the owner's Claude Code. What it is GIVEN is
  * the read-only contract, so the argv is pinned; the result comes back as a
  * schema answer and must land through the same two signals a dsh child uses.
  */
@@ -161,32 +176,36 @@ describe('Claude hands', () => {
   function fakeSpawn(stdout, code = 0) {
     const calls = []
     const fn = vi.fn((cmd, args, opts) => {
-      calls.push({ cmd, args, opts })
+      const call = { cmd, args, opts, prompt: '' }
+      calls.push(call)
       const child = new EventEmitter()
       child.stdout = new EventEmitter()
       child.stderr = new EventEmitter()
+      child.stdin = { end: (s) => (call.prompt = s) }
+      child.kill = () => {}
       setImmediate(() => {
-        if (opts.signal?.aborted) return child.emit('close', null)
-        child.stdout.emit('data', stdout)
-        child.emit('close', code)
+        if (opts.signal?.aborted) return child.emit('close', null, 'SIGINT')
+        child.stdout.emit('data', Buffer.from(stdout))
+        child.emit('close', code, null)
       })
       return child
     })
     fn.calls = calls
     return fn
   }
-  const envelope = (structured) => JSON.stringify({ is_error: false, subtype: 'success', total_cost_usd: 0.1, usage: { input_tokens: 4, output_tokens: 20 }, structured_output: structured })
-  const hands = { claude: true, claudePath: '/bin/claude', maxBudgetUsd: 0.5 }
+  // One `stream-json` result line, as `claude -p --output-format stream-json` ends.
+  const envelope = (structured) => `${JSON.stringify({ type: 'result', is_error: false, subtype: 'success', total_cost_usd: 0.1, usage: { input_tokens: 4, output_tokens: 20 }, structured_output: structured })}\n`
+  const hands = { llm: { sources: { claude: { path: '/bin/claude' } }, roles: { jobs: ['claude'] } }, jobs: { maxUsdPerJob: 0.5 } }
 
   it('gives Claude only the read-only tools and Sundial\'s MCP', async () => {
     const spawnFn = fakeSpawn(envelope({ outcome: 'nothing' }))
     const subagents = fakeSubagents()
     const { ctx, notice } = fakeCtx({ subagents })
-    installWorkLoop(ctx, { home, cwd: '/ws', hands, resolveClaudeFn: (p) => p, spawnFn, log: () => {}, warn: () => {} })
+    installWorkLoop(ctx, { home, cwd: '/ws', ...hands, resolveClaudeFn: (p) => p, spawnFn, log: () => {}, warn: () => {} })
 
     await notice(JOB)
     await vi.waitFor(() => expect(spawnFn.calls).toHaveLength(1))
-    const { cmd, args, opts } = spawnFn.calls[0]
+    const { cmd, args, opts, prompt } = spawnFn.calls[0]
     const flag = (name) => args[args.indexOf(name) + 1]
     expect(cmd).toBe('/bin/claude')
     expect(args).toContain('--strict-mcp-config')
@@ -200,16 +219,45 @@ describe('Claude hands', () => {
     expect(opts.env.SUNDIAL_HOME).toBeUndefined()
     expect(opts.env.DSH_HOME).toBeUndefined()
     expect(opts.env.PATH).toBe(process.env.PATH)
-    expect(flag('-p')).toContain('Job id: job-1')
+    expect(args).toContain('-p')
+    expect(prompt).toContain('Job id: job-1')
+    expect(args).not.toContain('--bare')
     // Not the dsh child.
     expect(subagents.calls).toHaveLength(0)
+  })
+
+  it('gives a hand job the job\'s own time, not the runtime\'s three-minute one-shot default', async () => {
+    // On the record every failed hand ran 180 s or more and every kept one under a minute: the default cut them.
+    const seen = []
+    const runtime = { id: 'claude', async *run(job) { seen.push(job); yield { type: 'done', output: '', structured: { outcome: 'nothing' } } }, authStatus: async () => ({ ok: true, detail: '' }), listModels: async () => [] }
+    const { ctx, notice } = fakeCtx({})
+    installWorkLoop(ctx, { home, cwd: '/ws', ...hands, resolveClaudeFn: (p) => p, runtimes: { claude: runtime }, log: () => {}, warn: () => {} })
+
+    await notice(JOB)
+    await vi.waitFor(() => expect(seen).toHaveLength(1))
+    expect(seen[0].timeoutMs).toBeGreaterThan(10 * 60 * 1000)
+    expect(seen[0].timeoutMs).toBeLessThan(20 * 60 * 1000)
+  })
+
+  it('the morning packet stays on the work agent\'s own cheap route, never a Claude hand, and is told to read no mail', async () => {
+    const spawnFn = fakeSpawn(envelope({ outcome: 'nothing' }))
+    const subagents = fakeSubagents()
+    const { ctx, notice } = fakeCtx({ subagents })
+    installWorkLoop(ctx, { home, cwd: '/ws', ...hands, resolveClaudeFn: (p) => p, spawnFn, log: () => {}, warn: () => {} })
+
+    await notice({ id: 'job-2', kind: 'day-packet', subject: 'the morning packet for 2026-11-16', reason: 'your first touch of the day', detail: { day: '2026-11-16', leftOut: 'Mail and Messages are left out.' } })
+    await vi.waitFor(() => expect(subagents.calls).toHaveLength(1))
+    expect(spawnFn.calls).toHaveLength(0)
+    const prompt = JSON.stringify(subagents.calls[0])
+    expect(prompt).toContain('gnomon_pull_requests')
+    expect(prompt).toContain('no mail, no messages')
   })
 
   it('shelves a shelved answer under the job id', async () => {
     const spawnFn = fakeSpawn(envelope({ outcome: 'shelved', title: 'Standup prep', body: 'Alex owes the review.', sources: ['gnomon_people'] }))
     const onShelved = vi.fn()
     const { ctx, notice } = fakeCtx({})
-    installWorkLoop(ctx, { home, cwd: '/ws', hands, resolveClaudeFn: (p) => p, spawnFn, onShelved, log: () => {}, warn: () => {} })
+    installWorkLoop(ctx, { home, cwd: '/ws', ...hands, resolveClaudeFn: (p) => p, spawnFn, onShelved, log: () => {}, warn: () => {} })
 
     await notice(JOB)
     await vi.waitFor(() => expect(ctx.gnomonKernel.appendSignal).toHaveBeenCalled())
@@ -218,9 +266,9 @@ describe('Claude hands', () => {
   })
 
   it('closes "nothing" as nothing, and bad output as failed', async () => {
-    for (const [stdout, outcome] of [[envelope({ outcome: 'nothing' }), 'nothing'], ['not json', 'failed'], [JSON.stringify({ is_error: true, subtype: 'error_max_budget_usd' }), 'failed']]) {
+    for (const [stdout, outcome] of [[envelope({ outcome: 'nothing' }), 'nothing'], ['not json', 'failed'], [`${JSON.stringify({ type: 'result', is_error: true, subtype: 'error_max_budget_usd' })}\n`, 'failed']]) {
       const { ctx, notice } = fakeCtx({})
-      installWorkLoop(ctx, { home, cwd: '/ws', hands, resolveClaudeFn: (p) => p, spawnFn: fakeSpawn(stdout, 1), log: () => {}, warn: () => {} })
+      installWorkLoop(ctx, { home, cwd: '/ws', ...hands, resolveClaudeFn: (p) => p, spawnFn: fakeSpawn(stdout, 1), log: () => {}, warn: () => {} })
       await notice(JOB)
       await vi.waitFor(() => expect(ctx.gnomonKernel.appendSignal).toHaveBeenCalled())
       expect(ctx.gnomonKernel.appendSignal.mock.calls[0][0]).toBe('work:closed')
@@ -235,7 +283,7 @@ describe('Claude hands', () => {
       return child
     })
     const { ctx, notice } = fakeCtx({})
-    const dispose = installWorkLoop(ctx, { home, cwd: '/ws', hands, resolveClaudeFn: (p) => p, spawnFn, log: () => {}, warn: () => {} })
+    const dispose = installWorkLoop(ctx, { home, cwd: '/ws', ...hands, resolveClaudeFn: (p) => p, spawnFn, log: () => {}, warn: () => {} })
     await notice(JOB)
     await vi.waitFor(() => expect(spawnFn).toHaveBeenCalled())
     dispose()
@@ -245,19 +293,75 @@ describe('Claude hands', () => {
   it('W3: reserves a hand call first — its id is the audit row\'s — and a spent budget refuses the job', async () => {
     const spawnFn = fakeSpawn(envelope({ outcome: 'nothing' }))
     const { ctx, notice, audits } = fakeCtx({})
-    installWorkLoop(ctx, { home, cwd: '/ws', hands, resolveClaudeFn: (p) => p, spawnFn, log: () => {}, warn: () => {} })
+    installWorkLoop(ctx, { home, cwd: '/ws', ...hands, resolveClaudeFn: (p) => p, spawnFn, log: () => {}, warn: () => {} })
     await notice(JOB)
-    expect(audits).toMatchObject([{ id: 'call-1', purpose: 'hand', model: 'claude-code' }])
+    expect(audits).toMatchObject([{ id: 'call-1', purpose: 'hand', model: 'claude/default', route: 'claude' }])
     const spent = fakeCtx({ reserve: async () => null })
-    installWorkLoop(spent.ctx, { home, cwd: '/ws', hands, resolveClaudeFn: (p) => p, spawnFn, log: () => {}, warn: () => {} })
+    installWorkLoop(spent.ctx, { home, cwd: '/ws', ...hands, resolveClaudeFn: (p) => p, spawnFn, log: () => {}, warn: () => {} })
     await expect(spent.notice(JOB)).rejects.toThrow(/hand budget is spent/)
     expect(spent.audits).toEqual([])
+  })
+
+  it('a limit on the first runtime moves the job to the next, one audit row each, chained', async () => {
+    const limited = { id: 'copilot', run: async function* () { yield { type: 'error', kind: 'limit', message: 'copilot: quota exhausted' } }, authStatus: async () => ({ ok: true, detail: '' }), listModels: async () => [] }
+    const spawnFn = fakeSpawn(envelope({ outcome: 'nothing' }))
+    const { ctx, notice, audits } = fakeCtx({})
+    installWorkLoop(ctx, { home, cwd: '/ws', llm: { sources: { claude: { path: '/bin/claude' } }, roles: { jobs: ['copilot:gpt-5', 'claude'] } }, jobs: { maxUsdPerJob: 0.5 }, resolveClaudeFn: (p) => p, spawnFn, runtimes: { copilot: limited }, log: () => {}, warn: () => {} })
+    await notice(JOB)
+    await vi.waitFor(() => expect(ctx.gnomonKernel.appendSignal).toHaveBeenCalledWith('work:closed', expect.objectContaining({ jobId: 'job-1', outcome: 'nothing' })))
+    expect(audits).toMatchObject([{ id: 'call-1', purpose: 'hand', model: 'copilot/gpt-5', route: 'copilot', access: 'runtime', attempt: 1 }, { purpose: 'hand', model: 'claude/default', route: 'claude', attempt: 2, parentCallId: 'call-1' }])
+    expect(spawnFn.calls).toHaveLength(1)
+  })
+
+  // S4 (Fable H1, H2, M4): a rig chat's sandbox job.
+  const BOXED = { id: 'job-rig-1', kind: 'owner-request', subject: 'crate sum 7', reason: 'you asked', detail: { brief: 'Work out 12 plus 30.' }, sandbox: 'session-rig' }
+
+  it('a sandbox job runs prompt-only: no MCP, no web, no tools, a $0.25 cap, never the owner\'s hand budget; its rows carry the mark and nothing is pushed', async () => {
+    const spawnFn = fakeSpawn(envelope({ outcome: 'shelved', title: 'Crate sum', body: '42', sources: [] }))
+    const reserve = vi.fn(async () => 'call-1')
+    const onShelved = vi.fn()
+    const { ctx, actors } = fakeCtx({ reserve })
+    installWorkLoop(ctx, { home, cwd: '/ws', ...hands, resolveClaudeFn: (p) => p, spawnFn, onShelved, log: () => {}, warn: () => {} })
+    await actors.get('subagent').start({ type: 'StartSubagent', job: BOXED }, { reserve })
+    await vi.waitFor(() => expect(ctx.gnomonKernel.appendSignal).toHaveBeenCalled())
+    const { args, prompt } = spawnFn.calls[0]
+    const flag = (name) => args[args.indexOf(name) + 1]
+    expect(JSON.parse(flag('--mcp-config'))).toEqual({ mcpServers: {} })
+    expect(args).not.toContain('--allowedTools')
+    expect(flag('--tools')).toBe('')
+    expect(flag('--max-budget-usd')).toBe(String(SANDBOX_USD_PER_JOB))
+    expect(SANDBOX_USD_PER_JOB).toBe(0.25)
+    expect(prompt).toMatch(/This is a test chat's job: you have no tools at all/)
+    expect(reserve).not.toHaveBeenCalled()
+    expect(ctx.gnomonKernel.appendSignal).toHaveBeenCalledWith('work:shelved', { title: 'Crate sum', body: '42', sources: [], jobId: 'job-rig-1', sandbox: 'session-rig' })
+    expect(onShelved).not.toHaveBeenCalled()
+  })
+
+  it('a sandbox job with no runtime is refused, never a dsh child that would inherit every tool and the owner\'s brief', async () => {
+    const subagents = fakeSubagents()
+    const { ctx, actors } = fakeCtx({ subagents })
+    installWorkLoop(ctx, { home, cwd: '/ws', resolveClaudeFn: () => null, log: () => {}, warn: () => {} })
+    await expect(actors.get('subagent').start({ type: 'StartSubagent', job: BOXED }, {})).rejects.toThrow('a sandbox job needs a runtime')
+    expect(subagents.calls).toHaveLength(0)
+  })
+
+  it('gnomon_shelve and gnomon_work_done on a job a sandbox holds carry its mark and push nothing; on the owner\'s, as before', async () => {
+    const onShelved = vi.fn()
+    const { ctx } = fakeCtx({})
+    ctx.gnomonKernel.getState = () => ({ rigSessions: { 'session-rig': 't' }, sandbox: { 'session-rig': { workbench: { open: { id: 'job-rig-1' }, queue: [], recent: [] } } }, workbench: { open: { id: 'job-own' }, queue: [], recent: [] } })
+    installWorkLoop(ctx, { home, cwd: '/ws', onShelved, log: () => {}, warn: () => {} })
+    const tool = (name) => ctx.tools.register.mock.calls.map(([t]) => t).find((t) => t.name === name)
+    await tool('gnomon_shelve').execute({ jobId: 'job-rig-1', title: 'Crate sum', body: '42' })
+    await tool('gnomon_work_done').execute({ jobId: 'job-rig-1' })
+    await tool('gnomon_shelve').execute({ jobId: 'job-own', title: 'Owner', body: 'x' })
+    expect(ctx.gnomonKernel.appendSignal.mock.calls.map(([type, p]) => [type, p.jobId, p.sandbox ?? null])).toEqual([['work:shelved', 'job-rig-1', 'session-rig'], ['work:closed', 'job-rig-1', 'session-rig'], ['work:shelved', 'job-own', null]])
+    expect(onShelved.mock.calls).toEqual([['Owner']])
   })
 
   it('stays on dsh when no claude binary is found', async () => {
     const subagents = fakeSubagents()
     const { ctx, notice } = fakeCtx({ subagents })
-    installWorkLoop(ctx, { home, cwd: '/ws', hands, resolveClaudeFn: () => null, log: () => {}, warn: () => {} })
+    installWorkLoop(ctx, { home, cwd: '/ws', ...hands, resolveClaudeFn: () => null, log: () => {}, warn: () => {} })
     await notice(JOB)
     await vi.waitFor(() => expect(subagents.calls).toHaveLength(1))
   })
@@ -285,6 +389,23 @@ describe('a helper the model starts is briefed once (W5)', () => {
   })
 })
 
+describe('a helper a rig chat starts is a rig chat (Fable L7)', () => {
+  const setup = (parentSession, rigSessions = { 'session-rig': 't' }) => {
+    const appendSignal = vi.fn(async () => {})
+    const child = { session: { header: { parentSession } } }
+    return { appendSignal, ctx: { agents: { get: () => child }, gnomonKernel: { appendSignal, getState: () => ({ rigSessions }) } } }
+  }
+  it('appends one thread:delegate naming the child and its rig parent; nothing for the owner\'s chat or a remote helper', async () => {
+    const rig = setup('session-rig')
+    expect(await markRigDelegate(rig.ctx, { id: 'child-1', local: true })).toBe(true)
+    expect(rig.appendSignal.mock.calls).toEqual([['thread:delegate', { sessionId: 'child-1', parent: 'session-rig' }]])
+    const own = setup('session-own')
+    expect(await markRigDelegate(own.ctx, { id: 'child-2', local: true })).toBe(false)
+    expect(await markRigDelegate(rig.ctx, { id: 'child-3', local: false })).toBe(false)
+    expect(own.appendSignal).not.toHaveBeenCalled()
+  })
+})
+
 describe('ensureWorkAgent', () => {
   it('creates the work session once when two jobs start in the same tick', async () => {
     const agent = { id: WORK_SESSION_ID, status: 'idle' }
@@ -295,5 +416,22 @@ describe('ensureWorkAgent', () => {
     expect(create).toHaveBeenCalledTimes(1)
     expect(a.agent).toBe(agent)
     expect(b.agent).toBe(agent)
+  })
+})
+
+describe('a self-review job (Round 5)', () => {
+  it('carries its one proposal back on the shelve, as a rule-idea carries its rule', () => {
+    expect(shelvePayload({ title: 'Spotify: drop a route', body: 'It kept failing.', jobId: 'j1', review: '{"kind":"drop-route","routeKey":"play the album"}' })).toMatchObject({ jobId: 'j1', review: { kind: 'drop-route', routeKey: 'play the album' } })
+    expect(shelvePayload({ title: 't', body: 'b' }).review).toBeUndefined()
+    const text = jobPrompt({ id: 'j1', kind: 'self-review', subject: 'Spotify', detail: { failures: '3', cluster: 'not-found' } }).content[0].text
+    expect(text).toMatch(/exactly ONE fix/)
+    expect(text).toMatch(/gnomon_look with id "routes"/)
+  })
+
+  it('a review of replies that claimed an act never run reads the chat rows and proposes a note, not a route', () => {
+    const text = jobPrompt({ id: 'j2', kind: 'self-review', subject: 'Gnomon', detail: { failures: '3', cluster: 'unbacked-claim' } }).content[0].text
+    expect(text).toMatch(/said an act was done 3 times with no act in the turn/)
+    expect(text).toMatch(/"kind":"app-note"/)
+    expect(text).not.toMatch(/routes/)
   })
 })

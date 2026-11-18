@@ -8,16 +8,21 @@
 // the almanac's law made literal: the assistant emits events, folded by
 // ordinary rules, and the owner's verdict is the only thing that moves belief.
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { randomBytes } from 'node:crypto'
 import { createEventId } from '@sundial/helpers/event-id.js'
 // The ONE re-ask predicate, shared with the `ownerAsk` reducer: a copy here is
 // how the tool came to refuse questions the reducer accepts, and the symptom is
 // the duplicate ask this guard exists to stop.
 import { recentlyAnswered } from '@sundial/helpers/asked.js'
-import { openAsk } from '@sundial/helpers/loops.js'
+import { answerPayload, openAsk } from '@sundial/helpers/loops.js'
 import { CLAIMABLE_ENTITY_KINDS } from '@sundial/helpers/vocab.js'
 import { nextOccurrence, parseRepeat, repeatKey } from '@sundial/helpers/repeat-schedule.js'
+import { sandboxView } from '@sundial/helpers/sandbox.js'
 
 const ENTITY_KINDS = CLAIMABLE_ENTITY_KINDS
+
+/** L6: the tail of an id a tool mints (a promise, a question): the time and six random hex digits, so two in one millisecond never collide. */
+const mintTail = () => `${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`
 
 /** How long a WAITING ask holds its turn. A person who has not answered in ten minutes has walked away; the ask stays open on the record without the turn. */
 const ASK_WAIT_MS = 10 * 60 * 1000
@@ -49,6 +54,17 @@ function slugifyWakeupKey(reason) {
  */
 export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS, askPollMs = ASK_POLL_MS } = {}) {
   /**
+   * S4: where a call writes and what it reads. In a rig chat with a live sandbox (the gate lets the daily tools through
+   * only there), the row carries the chat's `sessionId`, so the fold files it in that sandbox and nowhere else, and the
+   * tool reads the sandbox's own slices (its question, its jobs). Anywhere else: the owner's state, and the row as it was.
+   */
+  const seat = (exec) => {
+    const sessionId = exec?.agent?.session?.id
+    const view = sandboxView(getState?.(), sessionId)
+    return view ? { state: () => sandboxView(getState?.(), sessionId) ?? {}, mark: { sessionId } } : { state: () => getState?.(), mark: {} }
+  }
+
+  /**
    * Hold the turn until the open ask `askId` closes, or `askWaitMs` passes.
    *
    * A poll, not a subscription: the kernel exposes state and `appendSignal`
@@ -56,7 +72,7 @@ export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS,
    * one read a second under it costs nothing anyone can measure.
    * ponytail: poll; a kernel change event if a second waiter ever appears.
    */
-  async function waitForAnswer(askId, signal) {
+  async function waitForAnswer(askId, signal, read = () => getState?.()) {
     const deadline = Date.now() + askWaitMs
     while (Date.now() < deadline) {
       // The owner pressing Stop must end the wait too. Without this the turn
@@ -64,8 +80,8 @@ export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS,
       // holding a tool call open on a turn that no longer existed.
       if (signal?.aborted === true) return { answered: false, reason: 'the owner stopped the turn before answering' }
       await new Promise((resolve) => setTimeout(resolve, askPollMs))
-      const ask = getState?.().ownerAsk
-      if (openAsk(getState?.())?.askId === askId) continue
+      const ask = read()?.ownerAsk
+      if (openAsk(read())?.askId === askId) continue
       const answer = (ask?.recent ?? []).find((entry) => entry.askId === askId)?.answer
       return answer === undefined ? { answered: false, reason: 'the question closed without an answer (expired, or superseded)' } : { answered: true, answer }
     }
@@ -122,17 +138,18 @@ export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS,
         evidence: { type: 'array', items: { type: 'string' }, description: 'Two to eight short lines naming what the draft rests on — a moment, a heard promise, a PR, a calendar row. The owner sees these; the judge reads them.' },
       },
       output: {
-        schema: { type: 'object', additionalProperties: false, properties: { recorded: { type: 'boolean' }, proposalId: { type: 'string' } } },
-        render: (_args, value) => [{ type: 'text', text: value.recorded ? 'Draft placed on the owner’s Today with its evidence. They send it, or dismiss it; you do not.' : 'Not recorded.' }],
+        schema: { type: 'object', additionalProperties: false, properties: { recorded: { type: 'boolean' }, proposalId: { type: 'string' }, test: { type: 'boolean' } } },
+        render: (_args, value) => [{ type: 'text', text: !value.recorded ? 'Not recorded.' : value.test ? 'Draft kept in this test chat, not on the owner’s Today. Its card can be sent or dismissed; you do not.' : 'Draft placed on the owner’s Today with its evidence. They send it, or dismiss it; you do not.' }],
       },
-      async execute(args) {
+      async execute(args, exec) {
         const kind = args.kind === 'email' || args.kind === 'note' ? args.kind : null
         const subject = String(args.subject ?? '').trim()
         const body = String(args.body ?? '').trim()
         if (!kind || !subject || !body) throw new Error('kind (email|note), subject and body are required')
         const evidence = Array.isArray(args.evidence) ? args.evidence.filter((e) => typeof e === 'string' && e.trim()).slice(0, 12) : []
-        await appendSignal('assistant:draft', { kind, subject, body, evidence, ...(typeof args.to === 'string' && args.to.trim() ? { to: args.to.trim() } : {}) })
-        return { recorded: true }
+        const { mark } = seat(exec)
+        await appendSignal('assistant:draft', { kind, subject, body, evidence, ...(typeof args.to === 'string' && args.to.trim() ? { to: args.to.trim() } : {}), ...mark })
+        return { recorded: true, ...(mark.sessionId ? { test: true } : {}) }
       },
     }),
 
@@ -206,7 +223,7 @@ export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS,
         },
         render: (_args, value) => [{ type: 'text', text: value.scheduled ? `Wake-up set for ${value.at} (${value.key}).` : 'Not scheduled.' }],
       },
-      async execute(args) {
+      async execute(args, exec) {
         const reason = String(args.reason ?? '').trim()
         if (!reason) throw new Error('reason is required')
 
@@ -225,7 +242,7 @@ export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS,
         const key = typeof args.key === 'string' && args.key.trim() ? args.key.trim() : slugifyWakeupKey(reason)
         if (!key) throw new Error('reason must contain at least one letter or digit, or pass an explicit key')
         const iso = new Date(dueAt).toISOString()
-        await appendSignal('wakeup:scheduled', { at: iso, reason, key })
+        await appendSignal('wakeup:scheduled', { at: iso, reason, key, ...seat(exec).mark })
         return { scheduled: true, at: iso, key }
       },
     }),
@@ -254,16 +271,16 @@ export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS,
         schema: { type: 'object', additionalProperties: false, properties: { tracked: { type: 'boolean' }, id: { type: 'string' } } },
         render: (_args, value) => [{ type: 'text', text: value.tracked ? 'Tracking it.' : 'Not tracked.' }],
       },
-      async execute(args) {
+      async execute(args, exec) {
         const moving = typeof args.id === 'string' && args.id.startsWith('commitment:') && typeof args.move_to === 'string'
         if (moving) {
           if (!Number.isFinite(Date.parse(args.move_to))) throw new Error('move_to must be an ISO 8601 instant')
-          await appendSignal('commitment:closed', { id: args.id, by: 'owner', due: new Date(Date.parse(args.move_to)).toISOString() })
+          await appendSignal('commitment:closed', { id: args.id, by: 'owner', due: new Date(Date.parse(args.move_to)).toISOString(), ...seat(exec).mark })
           return { tracked: true, id: args.id }
         }
         const what = String(args.what ?? '').trim().slice(0, 80)
         if (!what) throw new Error('what is required')
-        const id = `commitment:promise:chat-${Date.now().toString(36)}`
+        const id = `commitment:promise:chat-${mintTail()}`
         await appendSignal('commitment:heard', {
           source: 'chat',
           id,
@@ -272,6 +289,7 @@ export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS,
           ...(typeof args.to === 'string' && args.to.trim() ? { counterparty: args.to.trim().slice(0, 80) } : {}),
           ...(typeof args.due === 'string' && args.due.trim() ? { dueText: args.due.trim().slice(0, 40) } : {}),
           quote: typeof args.words === 'string' && args.words.trim() ? args.words.trim().slice(0, 160) : what,
+          ...seat(exec).mark,
         })
         return { tracked: true, id }
       },
@@ -288,10 +306,10 @@ export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS,
         schema: { type: 'object', additionalProperties: false, properties: { cancelled: { type: 'boolean' }, key: { type: 'string' } } },
         render: (_args, value) => [{ type: 'text', text: value.cancelled ? `Cancelled ${value.key}.` : 'Not cancelled.' }],
       },
-      async execute(args) {
+      async execute(args, exec) {
         const key = String(args.key ?? '').trim()
         if (!key) throw new Error('key is required')
-        await appendSignal('wakeup:cancelled', { key })
+        await appendSignal('wakeup:cancelled', { key, ...seat(exec).mark })
         return { cancelled: true, key }
       },
     }),
@@ -345,19 +363,20 @@ export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS,
         // Refused here rather than silently dropped by the rule, so the model
         // learns it still owes an answer on the question already open instead of
         // believing it asked a second one.
-        const open = openAsk(getState?.())
+        const { state, mark } = seat(exec)
+        const open = openAsk(state())
         if (open) return { asked: false, askId: open.askId, reason: `already waiting on an answer to: "${open.question}"` }
 
         // Answered a moment ago, most likely in the web seat. Refused HERE with
         // the answer in hand, so the model gets the fact it wanted instead of a
         // second chance to ask the owner the same thing (2026-09-07, twice).
-        const recent = recentlyAnswered(getState?.().ownerAsk?.recent, question, new Date().toISOString())
+        const recent = recentlyAnswered(state()?.ownerAsk?.recent, question, new Date().toISOString())
         if (recent) return { asked: false, askId: recent.askId, reason: `the owner already answered this at ${recent.answeredAt}: "${recent.answer}". Do not ask again; use that answer.` }
 
         // Minted here, not in the rule, because the tool has to hand it back to
         // the model in the same breath — a question whose id arrives later
         // cannot be answered by the caller that asked it.
-        const askId = `owner-ask:${Date.now().toString(36)}`
+        const askId = `owner-ask:${mintTail()}`
         // `choices` is passed through as-is: the `ownerAsk` rule normalizes it
         // (length, count, duplicates), because a replay or the CLI can produce
         // the same signal without ever passing through this tool.
@@ -368,12 +387,13 @@ export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS,
           ...(typeof args.reason === 'string' && args.reason.trim() ? { reason: args.reason.trim() } : {}),
           ...(Array.isArray(args.choices) ? { choices: args.choices } : {}),
           ...(wait ? { mode: 'wait' } : {}),
+          ...mark,
         })
         if (!wait) return { asked: true, askId, reason: '' }
         // The fold closes the ask on `ask:owner-answered` (a tap in the seat or a
         // typed line — the web shell posts both without a model turn) and records
         // the answer in `ownerAsk.recent`, which is where it is read back from.
-        const outcome = await waitForAnswer(askId, exec?.signal)
+        const outcome = await waitForAnswer(askId, exec?.signal, state)
         return { asked: true, askId, reason: outcome.reason ?? '', ...outcome }
       },
     }),
@@ -392,30 +412,38 @@ export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS,
         repeat: { type: 'string', description: 'Only for a repeating job, in English: days then a time — "every monday at 9am", "weekdays at 17:30", "daily at 8", "every tuesday and thursday at 14:00", "weekends at 10". Nothing finer than a day.' },
       },
       output: {
-        schema: { type: 'object', additionalProperties: false, properties: { queued: { type: 'boolean' }, subject: { type: 'string' }, repeat: { type: 'string' }, nextRun: { type: 'string' } } },
-        render: (_args, value) => [{ type: 'text', text: value.repeat ? `Repeating job kept: "${value.subject}", ${value.repeat}. Next run ${value.nextRun}; each result lands on the shelf.` : value.queued ? `Job taken: "${value.subject}". It runs in the background; the result appears on the shelf and you will be told.` : 'Not queued.' }],
+        schema: { type: 'object', additionalProperties: false, properties: { queued: { type: 'boolean' }, subject: { type: 'string' }, repeat: { type: 'string' }, nextRun: { type: 'string' }, test: { type: 'boolean' } } },
+        render: (_args, value) => [{
+          type: 'text',
+          text: value.test
+            ? value.repeat ? `Repeating job kept in this test chat: "${value.subject}", ${value.repeat}. In a test chat its schedule never runs.` : `Job taken in this test chat: "${value.subject}". It runs without tools; its result comes back here as a line, never on the owner's shelf.`
+            : value.repeat ? `Repeating job kept: "${value.subject}", ${value.repeat}. Next run ${value.nextRun}; each result lands on the shelf.` : value.queued ? `Job taken: "${value.subject}". It runs in the background; the result appears on the shelf and you will be told.` : 'Not queued.',
+        }],
       },
-      async execute(args) {
+      async execute(args, exec) {
         const subject = String(args.subject ?? '').trim()
         const brief = String(args.brief ?? '').trim()
         const repeat = String(args.repeat ?? '').trim()
         if (subject === '' || brief === '') throw new Error('subject and brief are both required')
         // Refused HERE so the model learns it, where the rule can only drop it.
-        const state = getState?.()
+        const { state: read, mark } = seat(exec)
+        const state = read()
         const bench = state?.workbench
         if (repeat !== '') {
           const schedule = parseRepeat(repeat)
           if (!schedule) throw new Error(`cannot read "${repeat}" as a schedule; write days then a time, e.g. "every monday at 9am" or "weekdays at 17:30"`)
           const repeats = bench?.repeats ?? {}
           if (!(repeatKey(subject) in repeats) && Object.keys(repeats).length >= 10) throw new Error(`ten repeating jobs already: ${Object.values(repeats).map((r) => r.subject).join(', ')}; ask the owner which to stop`)
-          await appendSignal('work:requested', { subject, brief, repeat })
+          await appendSignal('work:requested', { subject, brief, repeat, ...mark })
           const zone = state?.config?.timezone ?? 'UTC'
           const next = nextOccurrence(schedule, new Date().toISOString(), zone)
-          return { queued: false, subject, repeat, nextRun: next ? new Date(next).toLocaleString('en-GB', { timeZone: zone, weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }) : 'within a week' }
+          return { queued: false, subject, repeat, ...(mark.sessionId ? { test: true } : {}), nextRun: next ? new Date(next).toLocaleString('en-GB', { timeZone: zone, weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }) : 'within a week' }
         }
+        // S4: a test chat runs one job at a time (the sandbox lane drops another); said here, so the model knows.
+        if (mark.sessionId && (bench?.open || (bench?.queue ?? []).length > 0)) throw new Error(`this test chat already has a job running ("${bench.open?.subject ?? bench.queue[0]?.subject}"); one at a time here`)
         if ((bench?.queue ?? []).length >= 5) throw new Error('five jobs are already waiting; tell the owner and ask which to drop')
-        await appendSignal('work:requested', { subject, brief })
-        return { queued: true, subject }
+        await appendSignal('work:requested', { subject, brief, ...mark })
+        return { queued: true, subject, ...(mark.sessionId ? { test: true } : {}) }
       },
     }),
 
@@ -429,15 +457,16 @@ export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS,
         schema: { type: 'object', additionalProperties: false, properties: { stopped: { type: 'string' }, remaining: { type: 'array', items: { type: 'string' } } } },
         render: (_args, value) => [{ type: 'text', text: `Stopped "${value.stopped}".${value.remaining.length > 0 ? ` Still repeating: ${value.remaining.join(', ')}.` : ''}` }],
       },
-      async execute(args) {
+      async execute(args, exec) {
         const subject = String(args.subject ?? '').trim()
-        const repeats = getState?.().workbench?.repeats ?? {}
+        const { state, mark } = seat(exec)
+        const repeats = state()?.workbench?.repeats ?? {}
         const key = repeatKey(subject)
         if (!(key in repeats)) {
           const kept = Object.values(repeats).map((r) => `"${r.subject}" (${r.schedule})`)
           throw new Error(kept.length > 0 ? `no repeating job called "${subject}"; the kept ones are ${kept.join(', ')}` : 'there are no repeating jobs')
         }
-        await appendSignal('work:repeat-stopped', { subject })
+        await appendSignal('work:repeat-stopped', { subject, ...mark })
         return { stopped: repeats[key].subject, remaining: Object.entries(repeats).filter(([k]) => k !== key).map(([, r]) => r.subject) }
       },
     }),
@@ -454,7 +483,7 @@ export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS,
         schema: { type: 'object', additionalProperties: false, properties: { recorded: { type: 'boolean' }, askId: { type: 'string' }, reason: { type: 'string' } } },
         render: (_args, value) => [{ type: 'text', text: value.recorded ? `Answer recorded for ${value.askId}.` : `Not recorded: ${value.reason}` }],
       },
-      async execute(args) {
+      async execute(args, exec) {
         const askId = String(args.askId ?? '').trim()
         const answer = String(args.answer ?? '').trim()
         if (!askId) throw new Error('askId is required')
@@ -463,8 +492,9 @@ export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS,
         // silently. Saying "recorded" for it is what sent the model looking for
         // an id to re-record against — by asking the owner again. Refuse first,
         // and say why, so the model stops rather than retries.
-        const ask = getState?.().ownerAsk
-        const open = openAsk(getState?.())
+        const { state, mark } = seat(exec)
+        const ask = state()?.ownerAsk
+        const open = openAsk(state())
         if (open === null) {
           const recent = (ask?.recent ?? []).find((entry) => entry.askId === askId)
           return {
@@ -478,7 +508,8 @@ export function internalTools(appendSignal, getState, { askWaitMs = ASK_WAIT_MS,
         if (open.askId !== askId) {
           return { recorded: false, askId, reason: `the open question has askId ${open.askId} ("${open.question}"), not ${askId}. Record against the open one, or let it go.` }
         }
-        await appendSignal('ask:owner-answered', { askId, answer })
+        // A watch rule's question also names its rule, so another rule can branch on the answer.
+        await appendSignal('ask:owner-answered', { ...answerPayload(askId, answer), ...mark })
         return { recorded: true, askId }
       },
     }),
@@ -587,17 +618,22 @@ export function reminderCreateTool(appendSignal, helperPath, run) {
       promiseId: { type: 'string', description: 'The promise this mirrors (commitment:promise:…).' },
     },
     output: {
-      schema: { type: 'object', additionalProperties: false, properties: { created: { type: 'boolean' }, reminderId: { type: 'string' }, due: { type: 'string' }, error: { type: 'string' } } },
-      render: (_args, value) => [{ type: 'text', text: value.created ? `Added to Reminders${value.due ? `, due ${value.due}` : ''}.` : `Not added: ${value.error}` }],
+      schema: { type: 'object', additionalProperties: false, properties: { created: { type: 'boolean' }, reminderId: { type: 'string' }, due: { type: 'string' }, note: { type: 'string' }, error: { type: 'string' } } },
+      render: (_args, value) => [{ type: 'text', text: value.created ? `Added to Reminders${value.due ? `, due ${value.due}` : ', with NO due date set (give due as ISO-8601 to set one)'}.` : `Not added: ${value.error}` }],
     },
     isConcurrencySafe: () => false,
     async execute(args) {
       const title = String(args.title ?? '').trim()
       if (!title) throw new Error('title is required')
+      // Run 11 sent `when`: a dateless reminder was made, then a second one with `due`.
+      const odd = Object.keys(args).filter((k) => !['title', 'due', 'dueDate', 'promiseId'].includes(k))
+      if (odd.length) throw new Error(`nothing was added: unknown field ${odd.join(', ')}; the fields are title, due (ISO-8601 with offset), promiseId`)
       const argv = ['--create-reminder', '--title', title]
-      if (typeof args.due === 'string' && args.due.trim() !== '') {
-        if (!Number.isFinite(Date.parse(args.due))) throw new Error('due must be an ISO-8601 date')
-        argv.push('--due', args.due.trim())
+      // Runs 9 and 11 sent `dueDate`: it was dropped without a word, and the answer said 9:00 anyway.
+      const due = typeof args.due === 'string' ? args.due : args.dueDate
+      if (typeof due === 'string' && due.trim() !== '') {
+        if (!Number.isFinite(Date.parse(due))) throw new Error('due must be an ISO-8601 date')
+        argv.push('--due', due.trim())
       }
       const output = await new Promise((resolve) => {
         run(helperPath, argv, { timeout: 30_000 }, (error, stdout) => {
@@ -613,7 +649,7 @@ export function reminderCreateTool(appendSignal, helperPath, run) {
       const r = output.created
       const promiseId = typeof args.promiseId === 'string' ? args.promiseId.trim() : ''
       await appendSignal('action:performed', { tool: 'reminder_create', reminderId: r.id, title: r.title, due: r.due ?? null, ...(promiseId ? { promiseId } : {}) })
-      return { created: true, reminderId: String(r.id), ...(r.due ? { due: String(r.due) } : {}) }
+      return { created: true, reminderId: String(r.id), ...(r.due ? { due: String(r.due) } : { note: 'NO due date was set: do not say it has one' }) }
     },
   })
 }

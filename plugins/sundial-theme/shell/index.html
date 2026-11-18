@@ -10,17 +10,21 @@
       try {
         var t = localStorage.getItem('sundial-theme');
         if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
-        // First visit: the setup page explains the permissions before the board.
-        if (!localStorage.getItem('sundial-setup-seen')) location.replace('/setup');
+        // Sundial.app's summon panel over the owner's screen (overlay.js `overlayMode`, overlay.css): one slip.
+        if (/[?&]overlay=(1|board|figure|slip)(&|$)/.test(location.search)) document.documentElement.dataset.overlay = 'slip';
+        // First visit: the setup page explains the permissions before the board,
+        // unless setup is already done on this Mac (the server marks the page).
+        if (!document.documentElement.hasAttribute('data-setup-done') && !document.documentElement.hasAttribute('data-overlay') && !localStorage.getItem('sundial-setup-seen')) location.replace('/setup');
       } catch (e) {}
     </script>
-    <!-- One copy of the shared words for host and page alike (packages/helpers/src/vocab.ts). -->
-    <script type="importmap">{ "imports": { "@sundial/helpers/vocab.js": "/gnomon/app/vocab.js" } }</script>
+    <!-- One copy of the shared words for host and page alike (packages/helpers/src/vocab.ts), and Nodus's card modules (packages/nodus). -->
+    <script type="importmap">{ "imports": { "@sundial/helpers/vocab.js": "/gnomon/app/vocab.js", "@sundial/nodus/": "/gnomon/app/nodus/" } }</script>
     <title>Sundial</title>
     <!-- The gnomon itself: a rod on its plate, casting the shadow. Inline, so the tab needs no request. -->
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 26V6M16 26l9 3' stroke='%23d98a2b' stroke-width='3' fill='none'/%3E%3C/svg%3E" />
     <link rel="preload" as="font" type="font/ttf" href="/gnomon/font/inter-tight.ttf" crossorigin />
     <link rel="stylesheet" href="/gnomon/app/app.css" />
+    <link rel="stylesheet" href="/gnomon/app/overlay.css" />
   </head>
   <body>
     <!-- The shell: a head that never scrolls (what is happening, and the gnomon
@@ -80,6 +84,8 @@
           <!-- Shown only in a side thread: where you are, and the way back into the conversation. -->
           <!-- Which thread this is, and the list of them (the old Threads card) one click away. -->
           <div class="thread-bar" id="thread-bar"></div>
+          <!-- Every other thread working now, with its newest step: click one to open it. -->
+          <div class="live-strip" id="live-strip" role="group" aria-label="Threads working now" hidden></div>
           <div class="thread-picker" id="thread-picker" hidden></div>
           <div class="canvas" id="canvas" tabindex="-1"></div>
 
@@ -105,6 +111,16 @@
                   <span class="model-name" id="model-name">…</span>
                 </button>
                 <div class="model-menu" id="model-menu" role="listbox" aria-label="Models" hidden></div>
+              </div>
+              <!-- Which conversation the next turn joins. The board has the thread list in its
+                   conversation card; this is the same choice in the shape of the model pill, and
+                   the slip moves it into its own row. Hidden until it does. -->
+              <div class="model" id="thread" hidden>
+                <button type="button" class="model-pick" id="thread-pick" aria-haspopup="listbox" aria-expanded="false" aria-label="The thread this turn joins">
+                  <span class="model-provider">Thread</span>
+                  <span class="model-name" id="thread-name">Gnomon</span>
+                </button>
+                <div class="model-menu" id="thread-menu" role="listbox" aria-label="Threads" hidden></div>
               </div>
               <!-- How much this turn may do without stopping to ask. Beside the
                    model for the same reason the model is here: it is a property
@@ -167,5 +183,6 @@
     </div>
 
     <script type="module" src="/gnomon/app/app.js"></script>
+    <script type="module" src="/gnomon/app/overlay.js"></script>
   </body>
 </html>

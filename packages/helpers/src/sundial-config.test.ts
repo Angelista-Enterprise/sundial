@@ -2,10 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadSundialConfig, DEFAULT_SUNDIAL_CONFIG, canonicalProjectName, resolveActionPolicy } from './sundial-config.js';
+import { loadSundialConfig, DEFAULT_SUNDIAL_CONFIG, canonicalProjectName, resolveActionPolicy, resolveSundialConfig } from './sundial-config.js';
 
 let scratchDir: string;
-const ORIGINAL_GNOMON_DIR = process.env.SUNDIAL_HOME;
+const ORIGINAL_SUNDIAL_HOME = process.env.SUNDIAL_HOME;
 const ORIGINAL_POLL_ENV = process.env.SUNDIAL_POLL_INTERVAL_MS;
 
 function writeConfig(contents: string): void {
@@ -21,7 +21,7 @@ describe('loadSundialConfig', () => {
 
   afterEach(() => {
     fs.rmSync(scratchDir, { recursive: true, force: true });
-    process.env.SUNDIAL_HOME = ORIGINAL_GNOMON_DIR;
+    process.env.SUNDIAL_HOME = ORIGINAL_SUNDIAL_HOME;
     if (ORIGINAL_POLL_ENV === undefined) delete process.env.SUNDIAL_POLL_INTERVAL_MS;
     else process.env.SUNDIAL_POLL_INTERVAL_MS = ORIGINAL_POLL_ENV;
   });
@@ -42,6 +42,33 @@ describe('loadSundialConfig', () => {
     expect('telegram' in loadSundialConfig()).toBe(false);
   });
 
+  it('workdays: Monday to Friday unless a list of weekday numbers 0 to 6 says otherwise', () => {
+    expect(loadSundialConfig().workdays).toEqual([1, 2, 3, 4, 5]);
+    writeConfig(JSON.stringify({ workdays: [2, 3, 3, 6] }));
+    expect(loadSundialConfig().workdays).toEqual([2, 3, 6]);
+    writeConfig(JSON.stringify({ workdays: [1, 7] }));
+    expect(loadSundialConfig().workdays).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it('choreDays: 3 unless a whole number 2 to 14 says otherwise', () => {
+    expect(loadSundialConfig().choreDays).toBe(3);
+    writeConfig(JSON.stringify({ choreDays: 5 }));
+    expect(loadSundialConfig().choreDays).toBe(5);
+    writeConfig(JSON.stringify({ choreDays: 1 }));
+    expect(loadSundialConfig().choreDays).toBe(3);
+  });
+
+  it('offerBar (S6): the offers bar is 1 unless a number 0.1 to 4 says otherwise', () => {
+    expect(loadSundialConfig().offerBar).toBe(1);
+    expect(DEFAULT_SUNDIAL_CONFIG.offerBar).toBe(1);
+    writeConfig(JSON.stringify({ offerBar: 0.7 }));
+    expect(loadSundialConfig().offerBar).toBe(0.7);
+    for (const bad of [0, 5, 'high', null]) {
+      writeConfig(JSON.stringify({ offerBar: bad }));
+      expect(loadSundialConfig().offerBar).toBe(1);
+    }
+  });
+
   // lane E (#12)
   it('jobs: the night shift is off unless enabled is exactly true, and a bad cap falls back', () => {
     const off = { enabled: false, maxUsdPerJob: 2, maxUsdPerNight: 5, maxJobsPerNight: 2, maxMinutes: 90 };
@@ -52,12 +79,57 @@ describe('loadSundialConfig', () => {
     expect(loadSundialConfig().jobs).toEqual({ ...off, enabled: true, maxUsdPerJob: 0.5, maxJobsPerNight: 1 });
   });
 
-  it('hands: Claude is off unless it is exactly true, and a bad path or budget falls back', () => {
-    expect(loadSundialConfig().hands).toEqual({ claude: false, claudePath: null, maxBudgetUsd: 1 });
+  it('llm.sources and llm.roles: shape-checked, a single string is a list of one, and the old hands keys alias into them', () => {
+    expect(loadSundialConfig().llm).toMatchObject({ sources: {}, roles: {} });
+    writeConfig(JSON.stringify({ llm: { sources: { claude: { access: 'runtime', path: 'claude' }, odd: { access: 'api' } }, roles: { background: 'claude:sonnet', judge: ['jev', 'nope!', 'claude:sonnet'], Jobs: ['claude'] } } }));
+    expect(loadSundialConfig().llm).toMatchObject({ sources: { claude: { access: 'runtime', runtime: 'claude-cli', path: null } }, roles: { background: ['claude:sonnet'], judge: ['jev', 'claude:sonnet'] } });
     writeConfig(JSON.stringify({ hands: { claude: 'yes', claudePath: 'claude', maxBudgetUsd: -2 } }));
-    expect(loadSundialConfig().hands).toEqual({ claude: false, claudePath: null, maxBudgetUsd: 1 });
+    expect(loadSundialConfig().llm).toMatchObject({ sources: {}, roles: {} });
+    expect(loadSundialConfig().jobs.maxUsdPerJob).toBe(2);
     writeConfig(JSON.stringify({ hands: { claude: true, claudePath: '/opt/homebrew/bin/claude', maxBudgetUsd: 0.5 } }));
-    expect(loadSundialConfig().hands).toEqual({ claude: true, claudePath: '/opt/homebrew/bin/claude', maxBudgetUsd: 0.5 });
+    expect(loadSundialConfig().llm).toMatchObject({ sources: { claude: { path: '/opt/homebrew/bin/claude' } }, roles: { jobs: ['claude'] } });
+    expect(loadSundialConfig().jobs.maxUsdPerJob).toBe(0.5);
+    writeConfig(JSON.stringify({ hands: { maxBudgetUsd: 0.5 }, jobs: { maxUsdPerJob: 3 } }));
+    expect(loadSundialConfig().jobs.maxUsdPerJob).toBe(3);
+  });
+
+  it('llm.compactAt: a positive whole number of tokens, else unset', () => {
+    writeConfig(JSON.stringify({ llm: { compactAt: 150000 } }));
+    expect(loadSundialConfig().llm.compactAt).toBe(150000);
+    writeConfig(JSON.stringify({ llm: { compactAt: '150k' } }));
+    expect('compactAt' in loadSundialConfig().llm).toBe(false);
+  });
+
+  it('llm.compactKeepFront: true only when written true, else unset (off)', () => {
+    writeConfig(JSON.stringify({ llm: { compactKeepFront: true } }));
+    expect(loadSundialConfig().llm.compactKeepFront).toBe(true);
+    writeConfig(JSON.stringify({ llm: { compactKeepFront: 'yes' } }));
+    expect('compactKeepFront' in loadSundialConfig().llm).toBe(false);
+  });
+
+  it('llm.hedgeAfterMs: a whole number of ms, 0 kept (off), else unset', () => {
+    writeConfig(JSON.stringify({ llm: { hedgeAfterMs: 0 } }));
+    expect(loadSundialConfig().llm.hedgeAfterMs).toBe(0);
+    writeConfig(JSON.stringify({ llm: { hedgeAfterMs: -1 } }));
+    expect('hedgeAfterMs' in loadSundialConfig().llm).toBe(false);
+  });
+
+  it('llm.stallMs: a whole number of ms, 0 kept (off), else unset', () => {
+    writeConfig(JSON.stringify({ llm: { stallMs: 0 } }));
+    expect(loadSundialConfig().llm.stallMs).toBe(0);
+    writeConfig(JSON.stringify({ llm: { stallMs: '20s' } }));
+    expect('stallMs' in loadSundialConfig().llm).toBe(false);
+  });
+
+  it('llm.connectMs: a whole number of ms, clamped to 2000..30000, else unset (the plugin uses 7000)', () => {
+    writeConfig(JSON.stringify({ llm: { connectMs: 15_000 } }));
+    expect(loadSundialConfig().llm.connectMs).toBe(15_000);
+    writeConfig(JSON.stringify({ llm: { connectMs: 500 } }));
+    expect(loadSundialConfig().llm.connectMs).toBe(2_000);
+    writeConfig(JSON.stringify({ llm: { connectMs: 120_000 } }));
+    expect(loadSundialConfig().llm.connectMs).toBe(30_000);
+    writeConfig(JSON.stringify({ llm: { connectMs: '7s' } }));
+    expect('connectMs' in loadSundialConfig().llm).toBe(false);
   });
 
   it('filters non-string entries out of the privacy string arrays', () => {
@@ -176,7 +248,14 @@ describe('loadSundialConfig', () => {
 
   it('P7: ocr defaults to disabled with default intervals when absent', () => {
     writeConfig(JSON.stringify({ retentionDays: 30 }));
-    expect(loadSundialConfig().ocr).toEqual({ enabled: false, fullIntervalMs: 5000, cursorIntervalMs: 1500, cursorRegionPx: 480, retentionDays: 14, vision: { enabled: false, model: 'gemma4:e4b-mlx', intervalMs: 60_000 } });
+    expect(loadSundialConfig().ocr).toEqual({ enabled: false, fullIntervalMs: 5000, cursorIntervalMs: 1500, cursorRegionPx: 480, slowApps: ['claude'], slowIntervalMs: 60_000, retentionDays: 14, vision: { enabled: false, model: 'gemma4:e4b-mlx', intervalMs: 60_000 }, jev: { text: false, frames: false, framesPerHour: 12 } });
+  });
+
+  it('the screen to Jev: two consents, each given only by a literal true; frames at most 60 an hour', () => {
+    writeConfig(JSON.stringify({ ocr: { enabled: true, jev: { text: 'yes', frames: true, framesPerHour: 500 } } }));
+    expect(loadSundialConfig().ocr.jev).toEqual({ text: false, frames: true, framesPerHour: 60 });
+    writeConfig(JSON.stringify({ ocr: { enabled: true, jev: { text: true } } }));
+    expect(loadSundialConfig().ocr.jev).toEqual({ text: true, frames: false, framesPerHour: 12 });
   });
 
   it('P7: reads ocr overrides and floors the intervals', () => {
@@ -189,11 +268,10 @@ describe('loadSundialConfig', () => {
   });
 
   describe('actions', () => {
-    it('is safe by default: internal auto, outward off, no filesystem writes', () => {
+    it('is safe by default: internal auto, outward off', () => {
       const { actions } = loadSundialConfig();
       expect(resolveActionPolicy(actions, 'internal', 'remember')).toBe('auto');
       expect(resolveActionPolicy(actions, 'outward', 'send_email')).toBe('off');
-      expect(actions.filesystemAllow).toEqual([]);
     });
 
     it('accepts a bare policy applied to a whole class', () => {
@@ -217,9 +295,9 @@ describe('loadSundialConfig', () => {
       expect(resolveActionPolicy(actions, 'outward', 'send_email')).toBe('off'); // fell back to the safe default
     });
 
-    it('carries the filesystem allowlist through', () => {
-      writeConfig(JSON.stringify({ actions: { filesystemAllow: ['~/Projects/sundial', '/tmp/gnomon'] } }));
-      expect(loadSundialConfig().actions.filesystemAllow).toEqual(['~/Projects/sundial', '/tmp/gnomon']);
+    it('reads earnAfter as an integer 1 to 100', () => {
+      // Round 3: the ladder's k, default 10, an integer 1 to 100.
+      expect([undefined, 12, 0, 'x', 500].map((earnAfter) => (writeConfig(JSON.stringify({ actions: { earnAfter } })), loadSundialConfig().actions.earnAfter))).toEqual([10, 12, 10, 10, 100]);
     });
   });
 });
@@ -239,5 +317,44 @@ describe('canonicalProjectName', () => {
 
   it('collapses casing variants to the same canonical form', () => {
     expect(canonicalProjectName('WCS', {})).toBe(canonicalProjectName('wcs', {}));
+  });
+});
+
+describe('S4 browser.pageTextAx and privacy.privateHosts (Fable M5, H3)', () => {
+  it('the Firefox Accessibility read is its own switch: off by default, never implied by pageText', () => {
+    expect(DEFAULT_SUNDIAL_CONFIG.browser).toEqual({ pageText: false, pageTextAx: false });
+    expect(resolveSundialConfig({ browser: { pageText: true } } as never).browser).toEqual({ pageText: true, pageTextAx: false });
+    expect(resolveSundialConfig({ browser: { pageTextAx: true } } as never).browser).toEqual({ pageText: false, pageTextAx: true });
+    expect(resolveSundialConfig({ browser: { pageTextAx: 'yes' } } as never).browser.pageTextAx).toBe(false);
+  });
+
+  it('privateHosts are the owner\'s, added to the defaults', () => {
+    expect(resolveSundialConfig({ privacy: { privateHosts: ['bank.example', 7] } } as never).privacy.extraPrivateHosts).toEqual(['bank.example']);
+    expect(DEFAULT_SUNDIAL_CONFIG.privacy.extraPrivateHosts).toEqual([]);
+  });
+});
+
+describe('sensors.githubPrs', () => {
+  it('on unless the file says false', () => {
+    expect(DEFAULT_SUNDIAL_CONFIG.sensors).toEqual({ githubPrs: true });
+    expect(resolveSundialConfig({} as never).sensors.githubPrs).toBe(true);
+    expect(resolveSundialConfig({ sensors: { githubPrs: false } } as never).sensors.githubPrs).toBe(false);
+  });
+});
+
+describe('atlas.libraries', () => {
+  it('on unless the file says false', () => {
+    expect(DEFAULT_SUNDIAL_CONFIG.atlas).toEqual({ libraries: true });
+    expect(resolveSundialConfig({ atlas: { libraries: false } } as never).atlas.libraries).toBe(false);
+  });
+});
+
+describe('audio.whisperUrl stays on this Mac', () => {
+  it('a loopback URL is kept; any other host is refused for the default', () => {
+    const url = (whisperUrl: unknown) => resolveSundialConfig({ audio: { whisperUrl } } as never).audio.whisperUrl;
+    expect(url('http://127.0.0.1:9000/inference')).toBe('http://127.0.0.1:9000/inference');
+    expect(url('http://localhost:8771/inference')).toBe('http://localhost:8771/inference');
+    expect(url('http://[::1]:8771/inference')).toBe('http://[::1]:8771/inference');
+    for (const away of ['https://whisper.example.com/inference', 'http://100.101.102.103:8771/inference', 'http://127.0.0.1.example.com/x', 'not a url']) expect(url(away)).toBe(DEFAULT_SUNDIAL_CONFIG.audio.whisperUrl);
   });
 });

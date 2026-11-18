@@ -1,6 +1,6 @@
 {
   "name": "sundial",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "license": "MIT",
   "description": "Local-first context engine for macOS: passive telemetry folded into a knowledge base an LLM assistant (Gnomon) can reason over",
   "type": "module",
@@ -20,8 +20,7 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
-    "@sundial/helpers": "workspace:*",
-    "dotenv": "^17.2.3"
+    "@sundial/helpers": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

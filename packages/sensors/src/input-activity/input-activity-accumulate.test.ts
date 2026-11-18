@@ -33,6 +33,18 @@ describe('accumulateInputActivity', () => {
     expect(event?.payload.keyDownCount).toBe(5);
   });
 
+  it("adds nothing for the helper's hand rewrite: the same window's counts and timestamp, only a newer lastKeyAt", () => {
+    // Set 3: a hardware key rewrites the file within ~100 ms (macos-input-helper.swift `writeHand`); the counts stay the last window's.
+    const acc = createInputActivityAccumulator(0);
+    const window = snapshot('t1', { keyDownCount: 5, ownerOnly: true, ownerKeyDownCount: 5, ownerClickCount: 0, lastKeyAt: '2026-11-15T10:00:00.500Z' });
+    accumulateInputActivity(window, acc, 1000);
+    accumulateInputActivity({ ...window, lastKeyAt: '2026-11-15T10:00:00.900Z' }, acc, 1100);
+    accumulateInputActivity({ ...window, lastKeyAt: '2026-11-15T10:00:01.000Z' }, acc, 1200);
+    const event = accumulateInputActivity(null, acc, 10_000);
+    expect(event?.payload.keyDownCount).toBe(5);
+    expect(event?.payload.ownerKeyDownCount).toBe(5);
+  });
+
   it('resets the accumulator after emitting', () => {
     const acc = createInputActivityAccumulator(0);
     accumulateInputActivity(snapshot('t1', { keyDownCount: 5 }), acc, 1000);
@@ -54,5 +66,20 @@ describe('accumulateInputActivity', () => {
     const stale = accumulateInputActivity(null, acc, 20_000);
     expect(stale?.payload.stale).toBe(true);
     expect(stale?.payload.listenAccessGranted).toBeUndefined();
+  });
+
+  // Set 2 R5
+  it("passes the owner's hardware counts and newest times through, and nothing from an older helper", () => {
+    const acc = createInputActivityAccumulator(0);
+    accumulateInputActivity(snapshot('t1', { keyDownCount: 4, ownerOnly: true, ownerKeyDownCount: 1, ownerClickCount: 0, lastKeyAt: '2026-11-15T09:00:01.000Z' }), acc, 1000);
+    accumulateInputActivity(snapshot('t2', { mouseClickCount: 1, ownerOnly: true, ownerKeyDownCount: 0, ownerClickCount: 1, lastKeyAt: '2026-11-15T09:00:01.000Z', lastClickAt: '2026-11-15T09:00:02.500Z' }), acc, 2000);
+    const owned = accumulateInputActivity(null, acc, 10_000);
+    expect(owned?.payload).toMatchObject({ keyDownCount: 4, ownerOnly: true, ownerKeyDownCount: 1, ownerClickCount: 1, lastKeyAt: '2026-11-15T09:00:01.000Z', lastClickAt: '2026-11-15T09:00:02.500Z' });
+
+    accumulateInputActivity(snapshot('t3', { keyDownCount: 2 }), acc, 11_000);
+    const old = accumulateInputActivity(null, acc, 20_000);
+    expect(old?.payload.keyDownCount).toBe(2);
+    expect(old?.payload.ownerOnly).toBeUndefined();
+    expect(old?.payload.lastKeyAt).toBeUndefined();
   });
 });

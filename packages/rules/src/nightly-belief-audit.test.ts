@@ -19,14 +19,16 @@ const result = (isFalse: number, provenance = 'inference', extra: Record<string,
   });
 
 describe('nightlyBeliefAudit', () => {
-  it('runs once on the first tick after it ships, then only on a day boundary', () => {
+  it('runs when the owner goes idle, at most once a day, and never on a clock', () => {
     const base = createInitialState('d1');
-    const first = nightlyBeliefAudit(base, ev('clock:tick'));
+    expect(nightlyBeliefAudit(base, ev('clock:tick')).effects).toEqual([]);
+    expect(nightlyBeliefAudit(base, ev('day:boundary')).effects).toEqual([]);
+    const first = nightlyBeliefAudit(base, ev('idle:start'));
     expect(first.effects).toEqual([{ type: 'RunBeliefAudit', ts: TS }]);
     expect(first.state.memory.lastBeliefAuditAt).toBe(TS);
-    expect(nightlyBeliefAudit(first.state, ev('clock:tick', {}, '2026-09-22T22:01:00.000Z', 'e2')).effects).toEqual([]);
-    const night = nightlyBeliefAudit(first.state, ev('day:boundary', {}, '2026-09-23T00:00:00.000Z', 'e3'));
-    expect(night.effects).toEqual([{ type: 'RunBeliefAudit', ts: '2026-09-23T00:00:00.000Z' }]);
+    expect(nightlyBeliefAudit(first.state, ev('idle:start', {}, '2026-09-23T10:00:00.000Z', 'e2')).effects).toEqual([]);
+    const next = nightlyBeliefAudit(first.state, ev('idle:start', {}, '2026-09-23T18:30:00.000Z', 'e3'));
+    expect(next.effects).toEqual([{ type: 'RunBeliefAudit', ts: '2026-09-23T18:30:00.000Z' }]);
   });
 });
 

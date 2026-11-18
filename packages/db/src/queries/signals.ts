@@ -188,6 +188,23 @@ export async function getSignalFreshness(): Promise<SignalFreshness[]> {
 }
 
 /**
+ * The apps that came to the front and the web hosts opened since `since`, newest first, by name only (never a
+ * title): what the privacy settings suggest from. An app's `windowId` is `<bundle id or name>:<window>` from its newest row.
+ */
+export async function getSeenNames(since: string): Promise<{ apps: { name: string; windowId: string | null }[]; hosts: string[] }> {
+  const db = getDb();
+  const [apps, hosts] = await Promise.all([
+    db.all<{ name: string; windowId: string | null }>(
+      sql`SELECT json_extract(data, '$.processName') AS name, json_extract(data, '$.windowId') AS windowId, max(captured_at) AS last FROM signals WHERE signal_type = 'window' AND event_type = 'changed' AND captured_at >= ${since} GROUP BY 1 HAVING name IS NOT NULL AND name != '' ORDER BY last DESC LIMIT 300`,
+    ),
+    db.all<{ host: string }>(
+      sql`SELECT json_extract(data, '$.host') AS host, max(captured_at) AS last FROM signals WHERE signal_type = 'browser' AND event_type = 'tab' AND captured_at >= ${since} GROUP BY 1 HAVING host IS NOT NULL AND host != '' ORDER BY last DESC LIMIT 500`,
+    ),
+  ]);
+  return { apps: apps.map(({ name, windowId }) => ({ name, windowId })), hosts: hosts.map((h) => h.host) };
+}
+
+/**
  * Rows written after `signalId`, in insertion order — Phase 2's
  * boot replay: fold these through reduce() to fast-forward state from the
  * last snapshot. `signalId` null means "replay everything" (no snapshot yet).

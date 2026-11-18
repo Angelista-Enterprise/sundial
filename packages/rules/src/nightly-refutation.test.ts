@@ -3,11 +3,12 @@ import { createInitialState } from '@sundial/kernel/initial-state.js';
 import type { KernelState, SanitizedEvent } from '@sundial/kernel/types.js';
 import { nightlyRefutation, REFUTATION_MIN_INTERVAL_MS, REFUTATION_SAMPLE_SIZE } from './nightly-refutation.js';
 
-const tick = (ts: string): SanitizedEvent => ({ id: 't1', type: 'clock:tick', ts, payload: {}, sanitized: true });
+// Round 5: the pass rides the owner going idle, at any hour; a clock tick asks for nothing.
+const tick = (ts: string): SanitizedEvent => ({ id: 't1', type: 'idle:start', ts, payload: {}, sanitized: true });
 
 /**
- * The conditions the pass runs under: enabled, night, owner idle, and not run
- * recently. `refutationEnabled` has to be set explicitly because
+ * The conditions the pass runs under: enabled, the owner just went idle, and
+ * not run recently. `refutationEnabled` has to be set explicitly because
  * `createInitialState` defaults it to false — which is the safety property, and
  * is asserted on its own below.
  */
@@ -46,42 +47,31 @@ describe('nightlyRefutation', () => {
     expect(createInitialState('d1').config.refutationEnabled).toBe(true);
   });
 
-  it('asks for a pass when it is night and the owner is away', () => {
+  it('asks for a pass when the owner goes idle', () => {
     const { state, effects } = nightlyRefutation(ready(), tick('2026-08-02T02:00:00.000Z'));
 
     expect(effects).toMatchObject([{ type: 'RunRefutation', sampleSize: REFUTATION_SAMPLE_SIZE }]);
     expect(state.memory.lastRefutationAt).toBe('2026-08-02T02:00:00.000Z');
   });
 
-  it('ignores anything that is not a tick', () => {
-    const { effects } = nightlyRefutation(ready(), { id: 'e', type: 'day:boundary', ts: '2026-08-02T02:00:00.000Z', payload: {}, sanitized: true });
-    expect(effects).toEqual([]);
-  });
-
-  /**
-   * D2/D11 — heavy autonomous work happens while the owner is away, never in
-   * the middle of their afternoon. Same gate `endogenousReflection` applies.
-   */
-  it('will not run during the day, however idle the owner is', () => {
-    for (const circadian of ['day', 'evening'] as const) {
-      const { state, effects } = nightlyRefutation(ready({ circadian }), tick('2026-08-02T14:00:00.000Z'));
-      expect(effects, circadian).toEqual([]);
-      // And it must not advance the cursor, or a daytime tick would suppress
-      // tonight's real pass.
-      expect(state.memory.lastRefutationAt, circadian).toBeNull();
+  it('asks for nothing on a clock: a tick or a day boundary', () => {
+    for (const type of ['clock:tick', 'day:boundary']) {
+      const { state, effects } = nightlyRefutation(ready(), { id: 'e', type, ts: '2026-08-02T02:00:00.000Z', payload: {}, sanitized: true });
+      expect(effects, type).toEqual([]);
+      expect(state.memory.lastRefutationAt, type).toBeNull();
     }
   });
 
-  it('will not run while the owner is still at the desk', () => {
-    const { effects } = nightlyRefutation(ready({ isIdle: false }), tick('2026-08-02T02:00:00.000Z'));
-    expect(effects).toEqual([]);
+  it('runs in the afternoon too, when the owner steps away: not only at night', () => {
+    const { effects } = nightlyRefutation(ready({ circadian: 'day' }), tick('2026-08-02T14:00:00.000Z'));
+    expect(effects).toHaveLength(1);
   });
 
   it('runs at most once a day, even across a restart or an odd run of ticks', () => {
     const first = nightlyRefutation(ready(), tick('2026-08-02T02:00:00.000Z'));
     expect(first.effects).toHaveLength(1);
 
-    // Ten minutes later, still night, still idle.
+    // Ten minutes later, idle again.
     const second = nightlyRefutation(first.state, tick('2026-08-02T02:10:00.000Z'));
     expect(second.effects).toEqual([]);
     expect(second.state).toBe(first.state);

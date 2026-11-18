@@ -77,7 +77,7 @@ function toLosslessJson(value) {
  *   canonical schema stays unconstrained and the VALUE is the contract.
  * - render: the same text projection gnomon's tool loop showed the model.
  *
- * @param gnomonTool one entry of TOOL_REGISTRY / ASK_TOOL_REGISTRY
+ * @param gnomonTool one entry of TOOL_REGISTRY
  * @param deps optional capture points: `{ onFigure?, handles?, today? }`
  *   — `handles` is the per-session repeat-call cache (handles.js) and `today`
  *   the owner-local date it decides staleness against; both absent means every

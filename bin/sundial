@@ -20,6 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
+import { HOSTS, installHost, installedHosts, removeHost } from './mcp-hosts.js';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HOME = process.env.SUNDIAL_HOME || path.join(os.homedir(), '.sundial');
@@ -54,7 +55,7 @@ const UID = process.getuid?.() ?? 0;
 const SIDECAR_NODE = process.env.SUNDIAL_SIDECAR_NODE || process.execPath;
 
 /** Plugin folders, in the order dsh must mount them. */
-const PLUGINS = ['llm-openai', 'db', 'memory', 'kernel', 'sensors', 'tools', 'proactive', 'theme', 'actions', 'web-browser'];
+const PLUGINS = ['llm-openai', 'db', 'memory', 'kernel', 'sensors', 'tools', 'nodus', 'proactive', 'theme', 'actions', 'web-browser'];
 
 /** Folders no command may ever write to or delete, whatever SUNDIAL_HOME says. */
 const PROTECTED = new Set([
@@ -85,6 +86,15 @@ function run(cmd, cmdArgs, opts = {}) {
     fail(`${cmd} ${cmdArgs.join(' ')} failed (exit ${result.status})${opts.quiet ? `\n${result.stderr ?? ''}` : ''}`);
   }
   return result;
+}
+
+/** A yes or no on a terminal, `yes` on Enter; null without one (CI, a script), so the caller keeps its default. */
+async function ask(question, yes = false) {
+  if (!process.stdin.isTTY) return null;
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const answer = (await rl.question(`${question} ${yes ? '[Y/n]' : '[y/N]'} `)).trim().toLowerCase();
+  rl.close();
+  return answer === '' ? yes : answer === 'y' || answer === 'yes';
 }
 
 const has = (cmd) => spawnSync('/bin/sh', ['-c', `command -v ${cmd}`], { stdio: 'ignore' }).status === 0;
@@ -142,19 +152,28 @@ function readAppEnv() {
   }
 }
 
-/** What an existing install needs to still start: the Node its app.env names. Empty before an install. */
+/** What an existing install needs to still start: the Node its app.env names, and a whisper URL on this Mac. Empty before an install. */
 function installChecks() {
   const env = readAppEnv();
-  if (!env.SUNDIAL_NODE) return [];
-  return [{ name: `app.env's Node (${env.SUNDIAL_NODE})`, ok: fs.existsSync(env.SUNDIAL_NODE), fix: 'That Node is gone (a Homebrew upgrade moves it). Run `node bin/sundial install --skip-build` with the Node you use now; it rewrites app.env and rebuilds nothing.' }];
+  // Speech is transcribed on this Mac only: a whisper URL off the loopback stops doctor (and so install) here.
+  let whisper;
+  try {
+    whisper = JSON.parse(fs.readFileSync(path.join(HOME, 'config.json'), 'utf8'))?.audio?.whisperUrl;
+  } catch {}
+  const local = (url) => URL.canParse(url) && /^(127\.\d+\.\d+\.\d+|localhost|\[::1\])$/.test(new URL(url).hostname);
+  const audio = typeof whisper === 'string' ? [{ name: `audio.whisperUrl on this Mac (${whisper})`, ok: local(whisper), fix: 'audio.whisperUrl in config.json must be on this Mac (127.0.0.1, localhost or [::1]); speech is never sent elsewhere. Fix it or remove it (the default is http://127.0.0.1:8771/inference).' }] : [];
+  if (!env.SUNDIAL_NODE) return audio;
+  return [...audio, { name: `app.env's Node (${env.SUNDIAL_NODE})`, ok: fs.existsSync(env.SUNDIAL_NODE), fix: 'That Node is gone (a Homebrew upgrade moves it). Run `node bin/sundial install --skip-build` with the Node you use now; it rewrites app.env and rebuilds nothing.' }];
 }
 
 function checks() {
   const node = Number(process.versions.node.split('.')[0]);
   const clt = spawnSync('xcode-select', ['-p'], { encoding: 'utf8' });
+  const mac = process.platform === 'darwin' ? spawnSync('sw_vers', ['-productVersion'], { encoding: 'utf8' }).stdout?.trim() : '';
   return [
     ...installChecks(),
-    { name: 'macOS', ok: process.platform === 'darwin', fix: 'Sundial runs on macOS only (the sensors are native Swift).' },
+    // macOS 14 is Darwin 23. The app's window reader (apps/macos/ScreenLook.swift) uses ScreenCaptureKit calls macOS 13 lacks, so it does not compile there.
+    { name: `macOS 14 or newer${mac ? ` (found ${mac})` : ''}`, ok: process.platform === 'darwin' && Number(os.release().split('.')[0]) >= 23, fix: process.platform === 'darwin' ? 'Sundial needs macOS 14 (Sonoma) or newer: the app reads windows with ScreenCaptureKit calls that older macOS does not have. Update in System Settings, General, Software Update.' : 'Sundial runs on macOS only (the sensors are native Swift).' },
     { name: `Node.js >= 22 (found ${process.versions.node})`, ok: node >= 22, fix: 'Install Node 22 or newer: https://nodejs.org or `brew install node`.' },
     { name: 'pnpm', ok: has('pnpm'), fix: 'Install pnpm: `npm install -g pnpm` or `brew install pnpm`.' },
     { name: 'Xcode Command Line Tools', ok: clt.status === 0 && has('swiftc'), fix: 'Run `xcode-select --install`, then run this again.' },
@@ -195,15 +214,38 @@ function writeProfile() {
   }
   const manifest = { name: 'sundial-profile', private: true, dsh: { profile: { bundles } } };
   fs.writeFileSync(path.join(PROFILE, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-  fs.copyFileSync(path.join(REPO, 'apps', 'harness', 'profile', 'cordis.patch.yml'), path.join(PROFILE, 'cordis.patch.yml'));
+  const patchPath = path.join(PROFILE, 'cordis.patch.yml');
+  const saved = fs.existsSync(patchPath) ? savedPatchRows(fs.readFileSync(patchPath, 'utf8')) : '';
+  fs.writeFileSync(patchPath, fs.readFileSync(path.join(REPO, 'apps', 'harness', 'profile', 'cordis.patch.yml'), 'utf8') + saved);
 
-  // Gnomon's agent preset. dsh skips a symlinked DIRECTORY during discovery,
-  // so the entry is a real folder holding links to the repo's files.
+  // Gnomon's agent preset is a row in plugins/sundial-tools/cordis.patch.yml (dsh
+  // 0.2); only its skills are files, linked where that row's `customSkillDirs`
+  // looks. dsh skips a symlinked DIRECTORY during discovery, so the entry is a
+  // real folder holding a link.
   const preset = path.join(DSH_HOME, '.agent-presets', 'gnomon');
   fs.mkdirSync(preset, { recursive: true });
-  for (const f of ['agent.cordis.yml', 'preset.yml', 'skills']) {
-    linkForce(path.join(REPO, 'plugins', 'sundial-tools', 'presets', 'gnomon', f), path.join(preset, f));
+  linkForce(path.join(REPO, 'plugins', 'sundial-tools', 'presets', 'gnomon', 'skills'), path.join(preset, 'skills'));
+  for (const stale of ['agent.cordis.yml', 'preset.yml']) fs.rmSync(path.join(preset, stale), { force: true }); // the pre-0.2 preset files
+
+  // dsh's credential layer (the pi-ai routes' `apiKeyEnv`) reads the launch environment,
+  // then $DSH_HOME/.credentials.yaml, then $DSH_HOME/.env. Sundial keeps every key in its
+  // own .env, so that file IS dsh's: one file, no copy of a secret.
+  linkForce(path.join(HOME, '.env'), path.join(DSH_HOME, '.env'));
+}
+
+/**
+ * The rows dsh itself writes into the profile patch, kept across an install
+ * that rewrites the file from the repo's copy: the default model the owner
+ * picked in the chat (dsh's config editor saves `agent-default-model` there).
+ * A top-level `- id: <row>` block runs to the next top-level entry.
+ */
+function savedPatchRows(text) {
+  const kept = [];
+  for (const id of ['agent-default-model']) {
+    const m = text.match(new RegExp(`^- id: ${id}\n(?:(?![-#]).*\n?)*`, 'm'));
+    if (m) kept.push(m[0].trimEnd());
   }
+  return kept.length > 0 ? `\n# Saved by Sundial itself; kept across \`sundial install\`.\n${kept.join('\n\n')}\n` : '';
 }
 
 function writeStartScript({ sidecars }) {
@@ -407,7 +449,22 @@ function writeHomeFiles() {
   // The hook runs in your shell, which has no SUNDIAL_HOME: bake this install's folder in.
   const hook = fs.readFileSync(path.join(REPO, 'packages', 'sensors', 'shell-hook.zsh'), 'utf8').replaceAll('${SUNDIAL_HOME:-$HOME/.sundial}', HOME);
   fs.writeFileSync(path.join(HOME, 'shell-hook.zsh'), hook, { mode: 0o600 });
+  if (!flag('no-shell-hook')) addShellHookLine();
   writeProfile();
+}
+
+/**
+ * One line in ~/.zshrc that loads the hook, once. Until 2026-10-14 the install only
+ * printed it as optional, nobody added it, and the shell stream ran on the days a
+ * shell happened to source the hook by hand (six days in six weeks). --no-shell-hook skips it.
+ */
+function addShellHookLine() {
+  const rc = path.join(os.homedir(), '.zshrc');
+  const line = `[ -f "${path.join(HOME, 'shell-hook.zsh')}" ] && source "${path.join(HOME, 'shell-hook.zsh')}"  # sundial shell hook`;
+  const have = fs.existsSync(rc) ? fs.readFileSync(rc, 'utf8') : '';
+  if (have.includes('shell-hook.zsh')) return;
+  fs.appendFileSync(rc, `${have.endsWith('\n') || have === '' ? '' : '\n'}\n# Sundial: one JSON line per command you type, for the shell sensor (node bin/sundial install --no-shell-hook to skip)\n${line}\n`);
+  say('  added the shell hook line to ~/.zshrc (new terminals pick it up)');
 }
 
 /**
@@ -418,6 +475,9 @@ function writeHomeFiles() {
 function prepare() {
   claimHome();
   makeDirs();
+  // The app has no terminal to ask in: a new home starts with the search model question open, so
+  // nothing downloads it until /setup (or Settings) has an answer. packages/memory reads this.
+  writeIfMissing(path.join(HOME, 'config.json'), '{\n  "memory": { "embeddings": "ask" }\n}\n');
   writeHomeFiles();
   writeMarker({ sidecars: process.env.SUNDIAL_NATIVE_HELPERS !== '0', mode: 'app', app: APP });
 }
@@ -435,6 +495,8 @@ async function install() {
     step(3, 'Installing dependencies and building (a few minutes the first time)');
     run('pnpm', ['install', '--frozen-lockfile'], { cwd: REPO });
     run('npx', ['tsc', '-b', 'tsconfig.json'], { cwd: REPO });
+    // The MCP App pages (Today, a figure, the goals) a host draws beside a tool's answer.
+    run(process.execPath, [path.join(REPO, 'packages', 'mcp', 'apps', 'build.mjs')], { cwd: REPO });
     step(4, 'Building the macOS sensors (Swift) into the data folder');
     moveAppOutOfHome();
     for (const script of ['swift.sh', 'app.sh']) run('bash', [path.join(REPO, 'apps', 'daemon', 'scripts', script)], { cwd: REPO, env: { ...process.env, SUNDIAL_HOME: HOME, SUNDIAL_BUNDLE_ID: BUNDLE_ID, SUNDIAL_APP_PATH: APP } });
@@ -450,10 +512,18 @@ async function install() {
   writeStartScript({ sidecars });
   writeAppEnv({ sidecars });
   writeMarker({ sidecars, mode, app: APP });
+  await embeddings();
+  if (has('gh')) say(readConfig().sensors?.githubPrs === false ? '  Pull requests: off (sensors.githubPrs is false).' : '  Pull requests: while gh is signed in, Sundial asks GitHub for your open pull requests every five minutes, with your own gh login (off: "sensors": { "githubPrs": false } in config.json, then restart).');
   await hearing({ fromInstall: true });
-  // A test install (its own label) leaves the owner's Claude settings alone unless asked.
-  if (flag('claude-hooks') || (LABEL === 'dev.sundial.agent' && !flag('no-claude-hooks'))) addClaudeHooks();
-  if (flag('claude-context') || (LABEL === 'dev.sundial.agent' && !flag('no-claude-context'))) addClaudeContext();
+  // Each change to Claude Code is asked on a terminal (Enter is yes); --claude-X says yes and
+  // --no-claude-X no without asking, no terminal keeps yes. A test install (its own label)
+  // leaves the owner's Claude settings alone unless a flag asks.
+  const claude = async (name, question) => flag(name) || (LABEL === 'dev.sundial.agent' && !flag(`no-${name}`) && (await ask(question, true)) !== false);
+  if (await claude('claude-hooks', `\nAdd report-only hooks to ${CLAUDE_SETTINGS}? Each Claude Code session then tells Sundial when it waits, asks, fails or ends; nothing leaves this Mac.`)) addClaudeHooks();
+  if (await claude('claude-context', `\nAdd the SessionStart context hook to ${CLAUDE_SETTINGS}? Each new Claude Code session then starts with up to five lines from your record (project, open ticket, promises, last failure), which reach Anthropic through Claude Code.`)) addClaudeContext();
+  if (fs.existsSync(MOD_DIR) && (await claude('claude-mod', `\nLink the gnomon-band mod into ${path.dirname(MOD_LINK)}? Claude Code loads it in every session it starts.`))) {
+    if (addClaudeMod() !== false) await offerMcpAllow();
+  }
 
   if (flag('no-launchagent')) {
     step(6, `Not starting Sundial (--no-launchagent). Start by hand: ${mode === 'app' ? `open ${APP}` : `zsh ${path.join(HOME, 'start.sh')}`}`);
@@ -474,10 +544,30 @@ async function install() {
     fail(`the web client did not answer. Read ${path.join(HOME, 'logs', 'sundial.log')}.`);
   }
   say(`\nSundial is running: http://127.0.0.1:${WEB_PORT}  (setup: http://127.0.0.1:${WEB_PORT}/setup)`);
-  say('Next: the page walks you through the macOS permissions. Nothing is sent anywhere until you add an LLM key.');
-  say(`Optional shell history: add this line to ~/.zshrc\n  [ -f "${path.join(HOME, 'shell-hook.zsh')}" ] && source "${path.join(HOME, 'shell-hook.zsh')}"`);
+  say("Next: the page walks you through the macOS permissions. Until you add an LLM key, the only text from your record that leaves this Mac is the Claude Code context hook's (up to five lines per new session, to Anthropic), if you added it. docs/privacy.md lists every network call.");
+  if (flag('no-shell-hook')) say(`Shell history: add this line to ~/.zshrc when you want it\n  [ -f "${path.join(HOME, 'shell-hook.zsh')}" ] && source "${path.join(HOME, 'shell-hook.zsh')}"`);
   await offerMcp();
-  if (!flag('no-open')) openBrowser();
+  await offerHosts();
+  if (!flag('no-open')) await openBrowser();
+}
+
+const readConfig = () => JSON.parse(fs.readFileSync(path.join(HOME, 'config.json'), 'utf8') || '{}');
+
+/**
+ * The embedding model (Xenova/all-MiniLM-L6-v2, about 90 MB) downloads from
+ * huggingface.co when the first moment closes. Asked once (Enter is yes), the
+ * answer kept as `memory.embeddings` in config.json; --embeddings and
+ * --no-embeddings answer without asking, and without a terminal it stays on.
+ */
+async function embeddings() {
+  const file = path.join(HOME, 'config.json');
+  const config = readConfig();
+  const given = flag('embeddings') ? true : flag('no-embeddings') ? false : null;
+  if (given === null && typeof config.memory?.embeddings === 'boolean') return;
+  const on = given ?? (await ask('\nDownload the search model? One file of about 90 MB from huggingface.co, once, when the first moment closes. No text from your record is sent; Hugging Face sees your IP address. Without it, semantic search is off and search matches words only.', true)) ?? true;
+  config.memory = { ...config.memory, embeddings: on };
+  fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  say(on ? '  The search model downloads when the first moment closes (off: "memory": { "embeddings": false } in config.json, then restart).' : '  Semantic search is off; nothing is downloaded (on: "memory": { "embeddings": true } in config.json, then restart).');
 }
 
 /**
@@ -502,7 +592,7 @@ async function hearing({ fromInstall = false } = {}) {
   if (!flag('hearing')) {
     if (!process.stdin.isTTY) return say(`\nHearing is off. ${later}`);
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    const answer = (await rl.question(`\nLet Gnomon hear meetings and calls on this Mac? It listens to the microphone only in meetings, on this Mac, in English and Dutch.\n${todo.length ? `This will: ${todo.join(', ')} (about 575 MB in total).\n` : ''}Turn on hearing? [y/N] `)).trim().toLowerCase();
+    const answer = (await rl.question(`\nLet Gnomon hear speech on this Mac? It listens to the microphone only while you press Listen or hold to talk, transcribed on this Mac, in English and Dutch.\n${todo.length ? `This will: ${todo.join(', ')} (about 575 MB in total).\n` : ''}Turn on hearing? [y/N] `)).trim().toLowerCase();
     rl.close();
     if (answer !== 'y' && answer !== 'yes') return say(`Skipped. ${later}`);
   }
@@ -517,9 +607,25 @@ async function hearing({ fromInstall = false } = {}) {
     run('curl', ['-fL', '--progress-bar', '-C', '-', '-o', `${file}.part`, MODELS[name]]);
     fs.renameSync(`${file}.part`, file);
   }
-  config.audio = { autoMeetings: true, ...config.audio, enabled: true };
+  // Its own question, never implied by the yes above: it records the others in a call, who are not told.
+  const kept = typeof config.audio?.autoMeetings === 'boolean' && !flag('auto-meetings') && !flag('no-auto-meetings');
+  const autoMeetings = kept ? config.audio.autoMeetings : !flag('no-auto-meetings') && (flag('auto-meetings') || (await ask('\nShould a call (another app using the microphone) open hearing by itself? The others in the call are not told. No: hearing opens only when you press Listen.')) === true);
+  config.audio = { ...config.audio, enabled: true, autoMeetings };
   fs.writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-  say('Hearing is on. Restart Sundial to pick it up: node bin/sundial restart');
+  say(`Hearing is on; calls ${autoMeetings ? 'open it by themselves' : 'do not open it by themselves'} (audio.autoMeetings). Restart Sundial to pick it up: node bin/sundial restart`);
+}
+
+/** The other hosts on this Mac, offered once, the same way: asked on a terminal, printed otherwise. */
+async function offerHosts() {
+  const found = installedHosts(os.homedir());
+  if (found.length === 0 || flag('no-mcp')) return;
+  const titles = found.map((n) => HOSTS[n].title).join(', ');
+  if (!process.stdin.isTTY) return say(`\nUse Sundial from ${titles}:\n  node bin/sundial mcp-hosts`);
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const answer = (await rl.question(`\nAdd Sundial to ${titles} too? [y/N] `)).trim().toLowerCase();
+  rl.close();
+  if (answer !== 'y' && answer !== 'yes') return say('Skipped. Later: node bin/sundial mcp-hosts');
+  mcpHosts();
 }
 
 /**
@@ -551,9 +657,29 @@ async function offerMcp() {
 }
 
 /**
+ * `sundial mcp-hosts [--remove] [--host NAME,...] [--all]`: the MCP entry for every other host on
+ * this Mac (VS Code, Cursor, Codex, Goose, Gemini CLI, Claude Desktop). By default the hosts whose
+ * folder exists; `--all` every one; `--host` names. Claude Code is `sundial install`'s own step.
+ */
+function mcpHosts() {
+  const home = os.homedir();
+  const named = args.find((a) => a.startsWith('--host='))?.slice(7) ?? (args.includes('--host') ? args[args.indexOf('--host') + 1] : null);
+  const names = named ? named.split(',').map((n) => n.trim()).filter(Boolean) : flag('all') ? Object.keys(HOSTS) : installedHosts(home);
+  if (names.length === 0) return say('No MCP host found on this Mac (looked for VS Code, Cursor, Codex, Goose, Gemini CLI, Claude Desktop). Name one: sundial mcp-hosts --host cursor');
+  for (const name of names) {
+    if (!HOSTS[name]) fail(`No such host: ${name}. Hosts: ${Object.keys(HOSTS).join(', ')}`);
+    const r = flag('remove') ? removeHost(name, { home, repo: REPO }) : installHost(name, { home, repo: REPO, sundialHome: HOME });
+    const word = { added: 'added to', kept: 'already in', removed: 'removed from', none: 'not in', skipped: 'left alone in' }[r.did];
+    say(`${HOSTS[name].title}: ${word} ${r.file}${r.why ? ` (${r.why})` : ''}`);
+  }
+  if (!flag('remove')) say('Restart the host to pick it up.');
+}
+
+/**
  * The sign-in URL: dsh prints `http://127.0.0.1:<port>/?token=…` when it starts,
  * and opening it once gives this browser a session cookie. The log lives in the
- * 0700 data folder, so only this user can read the token.
+ * 0700 data folder, so only this user can read the token. The token is random
+ * per process, so it cannot be derived here: only the log has it.
  */
 function signInUrl() {
   try {
@@ -565,11 +691,34 @@ function signInUrl() {
   }
 }
 
-function openBrowser() {
-  const url = signInUrl();
-  if (!url) fail(`no sign-in URL in ${path.join(HOME, 'logs', 'sundial.log')} yet. Is Sundial running? Try \`sundial status\`.`);
+/**
+ * A sign-in URL the running server takes (303 to `/`), waiting for one: right
+ * after a start the log holds no link yet, or the previous run's until the new
+ * process blanks it (plugins/sundial-theme/host/signin-log.js).
+ */
+async function liveSignInUrl(timeoutMs) {
+  const until = Date.now() + timeoutMs;
+  for (let waited = false; ; waited = true) {
+    const url = signInUrl();
+    if (url) {
+      try {
+        if ((await fetch(url, { redirect: 'manual' })).status === 303) return url;
+      } catch {
+        /* not up yet */
+      }
+    }
+    if (Date.now() >= until) return null;
+    if (!waited) say('Waiting for Sundial to start…');
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
+
+async function openBrowser() {
+  const url = await liveSignInUrl(Number(option('timeout') ?? 120) * 1000);
+  if (!url) fail(`Sundial did not offer a sign-in link in ${path.join(HOME, 'logs', 'sundial.log')}. Is it running? Try \`sundial status\`.`);
   spawnSync('open', [url]);
-  say(`Opened ${url.replace(/token=.*/, 'token=…')} (it signs this browser in, then shows the setup page).`);
+  const next = fs.existsSync(path.join(HOME, '.daemon', 'setup-done')) ? 'the board' : 'the setup page';
+  say(`Opened ${url.replace(/token=.*/, 'token=…')} (it signs this browser in, then shows ${next}).`);
 }
 
 // ---------------------------------------------------------------------------
@@ -682,6 +831,81 @@ function claudeContext() {
   addClaudeContext();
 }
 
+// The gnomon-band Claude Code mod (granted 2026-10-05, docs/decision-mods-may-act.md): a symlink
+// in Claude's skills folder, which Claude Code loads in every session it starts. Its own switch,
+// like the context hook. Only a link that points at this checkout's mod is ever replaced or removed.
+const MOD_DIR = path.join(REPO, 'claude-mod', 'gnomon-band');
+const MOD_LINK = path.join(CLAUDE_DIR, 'skills', 'gnomon-band');
+const linkTarget = () => {
+  try {
+    return fs.lstatSync(MOD_LINK).isSymbolicLink() ? path.resolve(path.dirname(MOD_LINK), fs.readlinkSync(MOD_LINK)) : false;
+  } catch {
+    return null;
+  }
+};
+
+/** False when this checkout has no mod to link (the public export leaves claude-mod/ out). */
+function addClaudeMod() {
+  if (!fs.existsSync(MOD_DIR)) {
+    say(`  This checkout has no Claude Code mod (${MOD_DIR}). Nothing linked.`);
+    return false;
+  }
+  const target = linkTarget();
+  if (target === MOD_DIR) return say(`  Claude Code mod gnomon-band: ${MOD_LINK} (off: sundial claude-mod --remove)`);
+  if (target !== null) return say(`  ${MOD_LINK} is already there and is not this checkout's mod. Left as it is.`);
+  fs.mkdirSync(path.dirname(MOD_LINK), { recursive: true });
+  fs.symlinkSync(MOD_DIR, MOD_LINK);
+  say(`  Claude Code mod gnomon-band: ${MOD_LINK} -> ${MOD_DIR} (off: sundial claude-mod --remove)`);
+}
+
+/** True when this checkout's link was there and is gone now. */
+function removeClaudeMod() {
+  if (linkTarget() !== MOD_DIR) return false;
+  fs.unlinkSync(MOD_LINK);
+  return true;
+}
+
+// Auto mode refuses a mod's MCP call (no model request stands behind it to judge) unless a rule
+// allows the server. The owner chose (2026-10-05) to allow the whole server, its three writes
+// included. Asked, never assumed: it changes the owner's Claude settings.
+const MCP_ALLOW = 'mcp__sundial';
+const allowList = (settings) => (Array.isArray(settings.permissions?.allow) ? settings.permissions.allow : []);
+
+async function offerMcpAllow() {
+  const settings = readClaudeSettings();
+  if (allowList(settings).includes(MCP_ALLOW)) return say(`  ${MCP_ALLOW} is already allowed in ${CLAUDE_SETTINGS}.`);
+  const why = `The mod reads Sundial only when "${MCP_ALLOW}" is in permissions.allow (auto mode refuses it otherwise). The rule also lets Claude use Sundial's three write tools without asking.`;
+  if (!flag('allow')) {
+    if (!process.stdin.isTTY || flag('no-allow')) return say(`  ${why}\n  To add it: sundial claude-mod --allow`);
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const answer = (await rl.question(`\n${why}\nAdd it to ${CLAUDE_SETTINGS}? [y/N] `)).trim().toLowerCase();
+    rl.close();
+    if (answer !== 'y' && answer !== 'yes') return say('  Skipped. To add it later: sundial claude-mod --allow');
+  }
+  writeClaudeSettings({ ...settings, permissions: { ...(settings.permissions ?? {}), allow: [...allowList(settings), MCP_ALLOW] } });
+  say(`  Allowed ${MCP_ALLOW} in ${CLAUDE_SETTINGS} (off: sundial claude-mod --remove)`);
+}
+
+/** Takes out exactly the `mcp__sundial` entry, and an allow list or permissions block it leaves empty. True when it was there. */
+function removeMcpAllow() {
+  if (!fs.existsSync(CLAUDE_SETTINGS)) return false;
+  const settings = readClaudeSettings();
+  if (!allowList(settings).includes(MCP_ALLOW)) return false;
+  const allow = allowList(settings).filter((rule) => rule !== MCP_ALLOW);
+  const { allow: _, ...rest } = settings.permissions;
+  const permissions = allow.length > 0 ? { ...settings.permissions, allow } : rest;
+  writeClaudeSettings(Object.fromEntries(Object.entries(settings).flatMap(([k, v]) => (k !== 'permissions' ? [[k, v]] : Object.keys(permissions).length > 0 ? [[k, permissions]] : []))));
+  return true;
+}
+
+async function claudeMod() {
+  if (flag('remove')) {
+    say(removeClaudeMod() ? `Removed the gnomon-band mod link ${MOD_LINK}.` : `No gnomon-band mod link of this checkout at ${MOD_LINK}.`);
+    return say(removeMcpAllow() ? `Removed ${MCP_ALLOW} from permissions.allow in ${CLAUDE_SETTINGS}.` : `No ${MCP_ALLOW} allow rule to remove.`);
+  }
+  if (addClaudeMod() !== false) await offerMcpAllow();
+}
+
 // ---------------------------------------------------------------------------
 // uninstall
 
@@ -726,6 +950,13 @@ function uninstall() {
   if (plistOurs) fs.rmSync(plist, { force: true });
   if (appOurs) fs.rmSync(app, { recursive: true, force: true });
   if (removeClaudeHooks(isAnyOurHook)) say(`Removed Sundial's Claude Code hooks from ${CLAUDE_SETTINGS}.`);
+  // The link is not per install: only the owner's own install takes it, so only that one removes it.
+  if (LABEL === 'dev.sundial.agent' && removeClaudeMod()) say(`Removed the gnomon-band mod link ${MOD_LINK}.`);
+  if (LABEL === 'dev.sundial.agent' && removeMcpAllow()) say(`Removed ${MCP_ALLOW} from permissions.allow in ${CLAUDE_SETTINGS}.`);
+  for (const name of Object.keys(HOSTS)) {
+    const r = removeHost(name, { home: os.homedir(), repo: REPO });
+    if (r.did === 'removed') say(`Removed Sundial from ${HOSTS[name].title} (${r.file}).`);
+  }
   fs.rmSync(HOME, { recursive: true, force: true });
   say(`Removed ${targets.join(' and ')}.`);
   say('macOS keeps permission grants per app. To clear them too, run:');
@@ -787,13 +1018,11 @@ function migrate() {
     config.privacy = { mail: true, ...config.privacy };
     config.browser = { pageText: true, ...config.browser };
     // Three experiments became switches too; the old install ran all three.
-    config.experiments = { forecasting: true, gateFeatures: true, presence: true, ...config.experiments };
+    config.experiments = { forecasting: true, gateFeatures: true, ...config.experiments };
     fs.writeFileSync(path.join(HOME, 'config.json'), `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
   }
   if (fs.existsSync(path.join(from, '.env'))) {
     let env = fs.readFileSync(path.join(from, '.env'), 'utf8').replace(/^(\s*(?:export\s+)?)GNOMON_/gm, '$1SUNDIAL_');
-    // The old install always listened for the phone; the new one only when asked.
-    if (fs.existsSync(path.join(from, '.daemon', 'api-token')) && !/^SUNDIAL_PHONE_INGEST=/m.test(env)) env += '\nSUNDIAL_PHONE_INGEST=1\n';
     fs.writeFileSync(path.join(HOME, '.env'), env, { mode: 0o600 });
   }
   copyTree(path.join(from, 'models'), path.join(HOME, 'models'));
@@ -853,6 +1082,38 @@ function status() {
   spawnSync(process.execPath, [path.join(REPO, 'apps', 'harness', 'bin', 'sundial-sidecars.js'), 'status'], { stdio: 'inherit', env: { ...process.env, SUNDIAL_HOME: HOME } });
 }
 
+/**
+ * `sundial ingest <type> [json]`: one event from another system (a deploy, a webhook, a Shortcut),
+ * as `ext:<name>`. Queued like the MCP server's `gnomon_ingest`: one request file in
+ * `.daemon/mcp-writes/`, applied by the running Sundial (or at its next start), which keeps only
+ * the type's fields declared in `inlets.json` and sanitizes the row like a sensor's. The JSON is
+ * the argument, or stdin when it is left out.
+ */
+function ingest() {
+  const [type, json] = process.argv.slice(3);
+  if (!/^ext:[a-z-]+$/.test(type ?? '')) return fail('Usage: sundial ingest ext:<name> [json]   (the type is declared in inlets.json)');
+  let payload;
+  try {
+    payload = JSON.parse(json ?? fs.readFileSync(0, 'utf8'));
+  } catch {
+    return fail('The event is a JSON object, as the argument or on stdin.');
+  }
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return fail('The event is a JSON object.');
+  let declared = {};
+  try {
+    declared = JSON.parse(fs.readFileSync(path.join(HOME, 'inlets.json'), 'utf8'));
+  } catch {
+    /* none declared */
+  }
+  if (!declared?.[type]?.fields) return fail(`${type} is not declared in ${path.join(HOME, 'inlets.json')}: add {"${type}": {"fields": {"name": "string"}}} first.`);
+  const dir = path.join(HOME, '.daemon', 'mcp-writes');
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const name = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}.json`;
+  fs.writeFileSync(path.join(dir, `.${name}`), JSON.stringify({ write: 'ingest', at: new Date().toISOString(), body: { type, payload } }), { mode: 0o600 });
+  fs.renameSync(path.join(dir, `.${name}`), path.join(dir, name));
+  say(`Queued ${type} for Sundial: it applies it within seconds while it runs, or at its next start.`);
+}
+
 const commands = {
   install,
   prepare,
@@ -882,7 +1143,10 @@ const commands = {
   hearing,
   'claude-hooks': claudeHooks,
   'claude-context': claudeContext,
-  mcp: () => run(process.execPath, [path.join(REPO, 'packages', 'mcp', 'bin', 'sundial-mcp.js')], { env: { ...process.env, SUNDIAL_HOME: HOME } }),
+  'claude-mod': claudeMod,
+  'mcp-hosts': mcpHosts,
+  ingest,
+  mcp: () => run(process.execPath, [path.join(REPO, 'packages', 'mcp', 'bin', 'sundial-mcp.js'), ...process.argv.slice(3)], { env: { ...process.env, SUNDIAL_HOME: HOME } }),
 };
 
 const command = process.argv[2];
@@ -893,24 +1157,35 @@ if (!commands[command]) {
                 --no-open  --no-sidecars  --no-launchagent  --no-mcp  --skip-build
                 --no-app (a LaunchAgent instead of the Mac app)  --no-login-item
                 --no-hearing  --hearing (answer the hearing question)
-                --no-claude-hooks  --claude-hooks (a test install adds none unless asked)
+                --no-auto-meetings  --auto-meetings (answer whether calls open hearing by themselves)
+                --no-embeddings  --embeddings (answer the search model question)
+                --no-claude-hooks  --claude-hooks (answer without asking; a test install adds none unless asked)
                 --no-claude-context  --claude-context (the same, for the SessionStart context hook)
+                --no-claude-mod  --claude-mod (the same, for the gnomon-band Claude Code mod)
                 --timeout <seconds>  (how long to wait for the web client, default 120)
   hearing     turn on hearing: whisper-server + two models (575 MB), asks first; --hearing = yes
+                then asks whether calls open it by themselves; --auto-meetings / --no-auto-meetings answer
   status      what is installed and running
   doctor      check prerequisites only
   open        sign this browser in and open Sundial
   start|stop|restart
-  mcp         run the read-only MCP server over stdio (for Claude Code etc.)
+  mcp         run the MCP server over stdio (for Claude Code etc.); --http: on 127.0.0.1:3090/mcp
+                --owner NAME (with --http): also accept .daemon/mcp-owner-token, whose sessions may adopt, drop, pause and resume rules
+  ingest      ext:<name> [json] — one event from another system, declared in inlets.json (json on stdin if left out)
+  mcp-hosts   add Sundial's MCP entry to VS Code, Cursor, Codex, Goose, Gemini CLI and Claude Desktop
+              (the ones found; --all, --host NAME,...); --remove takes it out
   migrate     copy an old ~/.gnomon install into ${HOME} (never moves)
                 --from <dir>  --dsh-from <dir>
   claude-hooks  add Sundial's report-only hooks to Claude Code's settings.json
                 --remove  (take exactly Sundial's entries out again)
   claude-context  add the SessionStart hook that gives a new Claude session Gnomon's
                 context for its folder (at most 5 lines); --remove takes it out
+  claude-mod  link the gnomon-band mod (a band, /fleet, notice toasts) into
+                ~/.claude/skills, and offer the mcp__sundial allow rule it needs
+                --allow (add the rule, no question)  --no-allow  --remove (both out)
   uninstall   remove what install wrote (dry run without --yes)
 
-Environment: SUNDIAL_HOME, SUNDIAL_LABEL, SUNDIAL_WEB_PORT, SUNDIAL_PHONE_PORT, SUNDIAL_CHROME_PORT, SUNDIAL_SIDECAR_NODE`);
+Environment: SUNDIAL_HOME, SUNDIAL_LABEL, SUNDIAL_WEB_PORT, SUNDIAL_PHONE_PORT, SUNDIAL_CHROME_PORT, SUNDIAL_MCP_PORT, SUNDIAL_SIDECAR_NODE`);
   process.exit(command ? 2 : 0);
 }
 await commands[command]();

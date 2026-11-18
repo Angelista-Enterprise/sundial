@@ -4,7 +4,7 @@ import { deriveId } from '@sundial/helpers/derive-id.js';
 import { recentlyAnswered } from '@sundial/helpers/asked.js';
 import { isRedactedPlaceholder } from '@sundial/helpers/redact/redact-policy.js';
 import { askLoop, askOf, closeLoop, type AskLike } from '@sundial/helpers/loops.js';
-import type { AnsweredOwnerAsk, Effect, HabituationEntry, KernelState, OpenLoop, OpenOwnerAsk, OwnerAskRow, Rule, SanitizedEvent } from '@sundial/kernel/types.js';
+import type { AnsweredOwnerAsk, Effect, HabituationEntry, KernelState, OpenLoop, OpenOwnerAsk, OwnerAskRow, QueuedOwnerAsk, Rule, SanitizedEvent } from '@sundial/kernel/types.js';
 import { REDACTION_ALIAS } from './entity-name-validation.js';
 import { DEFAULT_GATE_POLICY, habituatedGain } from './notice-gate.js';
 
@@ -19,8 +19,9 @@ import { DEFAULT_GATE_POLICY, habituatedGain } from './notice-gate.js';
  *
  * Shaped after `solicitFeedback` rather than after `askTrack`: one open question
  * at a time with a TTL, closed by the reducer recognizing the answering event.
- * A queue would be an interrogation, and — worse — an assistant holding three
- * open questions cannot tell which one a reply answers.
+ * Several open at once would be an interrogation, and — worse — an assistant
+ * holding three open questions cannot tell which one a reply answers. So a
+ * second question waits unseen in `ownerAsk.queue` (I13) until the first closes.
  *
  * The question reaches the owner as an ordinary `notice:candidate`, not by a
  * private channel. That is the point: asking is a form of speaking, priced by
@@ -252,10 +253,8 @@ export function foldOwnerAsk(state: KernelState, event: SanitizedEvent): { state
     // Never put a hash or a redaction placeholder to a human.
     if (unanswerable(question) !== null) return { state, effects: [] };
 
-    // A second question while one is pending is DROPPED, not queued. The tool
-    // reads the open ask and refuses first, so reaching here means a
-    // race, and losing the newer question is the safer half of that race: the
-    // owner is already looking at one.
+    // A second question while one is pending is not opened: the owner is
+    // already looking at one. `ownerAsk` below puts it in the queue (I13).
     if (asksOf(state).length > 0) return { state, effects: [] };
 
     // Already answered a moment ago — by a tap in the seat, most likely, while
@@ -331,11 +330,46 @@ export function foldOwnerAsk(state: KernelState, event: SanitizedEvent): { state
   return { state: { ...state, loops: closeLoop(state.loops, gone) }, effects: [] };
 }
 
-/** The counts, the answered ring and the `owner_asks` rows, off what `foldOwnerAsk` did on this same event. */
+/** I13: how many questions may wait. The lowest priority, then the newest, falls off. */
+export const QUEUE_MAX = 5;
+
+/** I13: the queue with this unopened question in it, or null when it is not worth keeping (a `wait` ask belongs to a chat turn that will be gone). */
+function queued(state: KernelState, event: SanitizedEvent, open: OpenLoop): QueuedOwnerAsk[] | null {
+  const question = trim(event.payload.question);
+  const askId = trim(event.payload.askId);
+  const queue = state.ownerAsk.queue ?? [];
+  if (question === '' || event.payload.mode === 'wait' || unanswerable(question) !== null || recentlyAnswered(state.ownerAsk.recent, question, event.ts) !== null) return null;
+  const same = (other: { askId: string; question: string }) => other.question === question || (askId !== '' && other.askId === askId);
+  if (same(askOf(open)) || queue.some(same)) return null;
+  const entry: QueuedOwnerAsk = {
+    askId,
+    question,
+    reason: trim(event.payload.reason),
+    choices: choicesFrom(event.payload.choices),
+    priority: typeof event.payload.priority === 'number' ? event.payload.priority : 0,
+    ts: trim(event.payload.queuedAt) || event.ts,
+  };
+  return [...queue, entry].sort((a, b) => b.priority - a.priority || a.ts.localeCompare(b.ts)).slice(0, QUEUE_MAX);
+}
+
+/** I13: the open question closed on this event, so the head of the queue comes back as an ordinary `ask:owner-opened`. */
+function openNext(state: KernelState, event: SanitizedEvent): { state: KernelState; effects: Effect[] } {
+  const [head, ...rest] = state.ownerAsk.queue ?? [];
+  if (!head) return { state, effects: [] };
+  const { ts: queuedAt, askId, ...ask } = head;
+  return {
+    state: { ...state, ownerAsk: { ...state.ownerAsk, queue: rest } },
+    effects: [{ type: 'EmitEvent', event: { id: deriveId(event.ts, event.id, 'owner-ask-next', head.question), type: 'ask:owner-opened', ts: event.ts, payload: { timestamp: event.ts, ...ask, ...(askId === '' ? {} : { askId }), queuedAt } } }],
+  };
+}
+
+/** The counts, the answered ring, the waiting queue and the `owner_asks` rows, off what `foldOwnerAsk` did on this same event. */
 export const ownerAsk: Rule = (state, event) => {
   if (event.type === 'ask:owner-opened') {
-    if (!asksOf(state).some((l) => l.detail?.openedBy === event.id)) return { state, effects: [] };
-    return { state: { ...state, ownerAsk: { ...state.ownerAsk, askedCount: state.ownerAsk.askedCount + 1 } }, effects: [] };
+    const asks = asksOf(state);
+    if (asks.some((l) => l.detail?.openedBy === event.id)) return { state: { ...state, ownerAsk: { ...state.ownerAsk, askedCount: state.ownerAsk.askedCount + 1 } }, effects: [] };
+    const queue = asks[0] ? queued(state, event, asks[0]) : null;
+    return { state: queue ? { ...state, ownerAsk: { ...state.ownerAsk, queue } } : state, effects: [] };
   }
   if (event.type !== 'ask:owner-answered' && event.type !== 'clock:tick') return { state, effects: [] };
   const loop = state.loops.recent.find((l) => l.kind === 'owner-ask' && l.detail?.closedBy === event.id);
@@ -345,25 +379,17 @@ export const ownerAsk: Rule = (state, event) => {
   if (event.type === 'ask:owner-answered') {
     const answer = String(loop.detail?.answer ?? '');
     const remembered: AnsweredOwnerAsk = { askId: open.askId, question: open.question, answer, answeredAt: event.ts };
-    const ownerAskState: KernelState['ownerAsk'] = {
-      askedCount: state.ownerAsk.askedCount,
-      answeredCount: state.ownerAsk.answeredCount + 1,
-      recent: [...(state.ownerAsk.recent ?? []), remembered].slice(-RECENT_MAX),
-      lastBackfillAt: state.ownerAsk.lastBackfillAt,
-      backfillDone: state.ownerAsk.backfillDone,
-      classGain: state.ownerAsk.classGain,
-    };
-    const effects: Effect[] = [
-      { type: 'WriteDB', table: 'owner_asks', row: rowFor(open, { answer, answeredAt: event.ts, outcome: 'answered' }) },
-    ];
-    return { state: { ...state, ownerAsk: ownerAskState }, effects };
+    const ownerAskState: KernelState['ownerAsk'] = { ...state.ownerAsk, answeredCount: state.ownerAsk.answeredCount + 1, recent: [...(state.ownerAsk.recent ?? []), remembered].slice(-RECENT_MAX) };
+    const next = openNext({ ...state, ownerAsk: ownerAskState }, event);
+    return { state: next.state, effects: [{ type: 'WriteDB', table: 'owner_asks', row: rowFor(open, { answer, answeredAt: event.ts, outcome: 'answered' }) }, ...next.effects] };
   }
 
+  const next = openNext(state, event);
   return {
-    state,
+    state: next.state,
     // Recorded rather than silently dropped: a question the owner ignored says
     // something about the asking, and a table of only-answered questions would
     // report the asking as perfectly calibrated by construction.
-    effects: [{ type: 'WriteDB', table: 'owner_asks', row: rowFor(open, { answer: null, answeredAt: null, outcome: 'expired' }) }],
+    effects: [{ type: 'WriteDB', table: 'owner_asks', row: rowFor(open, { answer: null, answeredAt: null, outcome: 'expired' }) }, ...next.effects],
   };
 };

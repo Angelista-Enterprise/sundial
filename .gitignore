@@ -7,6 +7,15 @@ plugins/**/*.d.ts.map
 .DS_Store
 .pnpm-store/
 
+# Working notes, benches and local files; release/sync-public.sh excludes them too.
+/SETS.md
+/ENGINE.md
+/SCREEN.md
+/look-example.txt
+/bench/
+plugins/sundial-theme/.impeccable/
+*.local
+
 # Sundial reads $SUNDIAL_HOME/.env only (packages/helpers/src/sundial-env.ts).
 # A repo-root .env should never exist; never risk committing one.
 /.env
@@ -21,3 +30,24 @@ plugins/**/*.d.ts.map
 
 # The Mac app build output (apps/macos/build.sh)
 apps/macos/build/
+
+# The Lookout loop's copy inside the Claude mod: built by tsc from packages/lookout/src.
+claude-mod/gnomon-band/lookout/*
+!claude-mod/gnomon-band/lookout/tsconfig.json
+!claude-mod/gnomon-band/lookout/README.md
+
+# The MCP App pages, bundled by packages/mcp/apps/build.mjs (pnpm build, sundial install)
+packages/mcp/apps/dist/
+# The Nodus lab's builds, photos and asset cache.
+lab/nodus/out/
+# The screen rig's run data, owner settings and compiled helpers.
+lab/screen-rig/data/
+# Bench runs: datasets, ledgers, results (lab/bench/README.md).
+lab/bench/data/
+lab/screen-rig/keys
+lab/screen-rig/click
+lab/screen-rig/focus
+lab/screen-rig/ocr
+lab/screen-rig/eye
+lab/screen-rig/runbar
+__pycache__/

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const callChatCompletion = vi.fn();
 vi.mock('./transport.js', () => ({ callChatCompletion: (...args: unknown[]) => callChatCompletion(...args) }));
-vi.mock('./config.js', () => ({ getLlmConfig: () => ({ baseUrl: 'x', apiKey: null, model: 'qwen/qwen3.8-flash-next' }) }));
+vi.mock('./config.js', () => ({ getLlmConfig: () => ({ baseUrl: 'x', apiKey: null, model: 'qwen/qwen3.8-flash-next' }), roleSources: () => [], splitSourceModel: (e: string) => ({ source: e, model: null }) }));
 
 const { callSystemOneTextModel, systemOneBackend } = await import('./systemone-text-model.js');
 
@@ -41,6 +41,32 @@ describe('callSystemOneTextModel', () => {
     const result = await callSystemOneTextModel({}, questions);
     expect(result.answers.subject).toMatchObject({ type: 'choice', choice: 'project', confidence: 0.9 });
     expect(result.answers.depth).toMatchObject({ type: 'score', score: 1 });
+  });
+
+  const reply = (content: string) => ({ content, statusCode: 200, promptTokens: 1, completionTokens: 1, totalTokens: 2, toolCalls: [], finishReason: 'stop' });
+
+  it('closes a root object whose final brace is missing', async () => {
+    callChatCompletion.mockResolvedValueOnce(reply('{"answers":{"is_work":{"noul":0.9},"subject":{"probabilities":{"project":1,"app":0}}}'));
+    const result = await callSystemOneTextModel({}, questions);
+    expect(result.answers.is_work).toEqual({ type: 'noul', noul: 0.9 });
+    expect(result.answers.subject).toMatchObject({ choice: 'project' });
+  });
+
+  it('closes two missing braces', async () => {
+    callChatCompletion.mockResolvedValueOnce(reply('{"answers":{"is_work":{"noul":0.4}'));
+    expect((await callSystemOneTextModel({}, questions)).answers.is_work).toEqual({ type: 'noul', noul: 0.4 });
+  });
+
+  it('ignores braces inside a string value when closing', async () => {
+    callChatCompletion.mockResolvedValueOnce(reply('{"note":"a { b \\" [","answers":{"is_work":{"noul":0.7}}'));
+    expect((await callSystemOneTextModel({}, questions)).answers.is_work).toEqual({ type: 'noul', noul: 0.7 });
+  });
+
+  it('reads a bare number in [0,1] as a noul answer', async () => {
+    callChatCompletion.mockResolvedValueOnce(reply('{"answers":{"is_work":1,"subject":1}}'));
+    const result = await callSystemOneTextModel({}, questions);
+    expect(result.answers.is_work).toEqual({ type: 'noul', noul: 1 });
+    expect(result.answers.subject).toBeUndefined();
   });
 
   it('throws on prose instead of JSON so the executor can count it as a failure', async () => {

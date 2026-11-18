@@ -159,11 +159,11 @@ describe('entityExtract', () => {
   // entity-extract.ts's header). This test pins those three, since they are what
   // make the trigger safe to reuse: no project link, no meeting title, and no
   // per-meeting cursor entry.
-  it('mints attendees from calendar:active without reviving the removed shape', () => {
+  it('mints attendees from meeting:attended without reviving the removed shape', () => {
     const state = withMomentAndProject(createInitialState('d1'));
     const event: SanitizedEvent = {
       id: 'e1',
-      type: 'calendar:active',
+      type: 'meeting:attended',
       ts: '2026-01-01T10:05:00.000Z',
       payload: { event: { eventId: 'evt-sprint', title: 'Sprint planning', attendees: ['Priya Sharma', 'sam@example.com'] } },
       sanitized: true,
@@ -250,7 +250,7 @@ describe('entityExtract', () => {
 describe('entityExtract — colleagues from calendar attendees', () => {
   const active = (attendees: string[], eventId: string, ts = '2026-01-01T10:00:00.000Z', id = 'e1'): SanitizedEvent => ({
     id,
-    type: 'calendar:active',
+    type: 'meeting:attended',
     ts,
     payload: { event: { attendees, eventId, title: 'Standup' } },
     sanitized: true,
@@ -279,7 +279,7 @@ describe('entityExtract — colleagues from calendar attendees', () => {
     expect(JSON.stringify(effects)).not.toContain('Standup');
   });
 
-  it('mints once per meeting however often calendar:active polls it', () => {
+  it('mints once per meeting however often it is reported', () => {
     let state = createInitialState('d1');
     const first = entityExtract(state, active(['Ben de Groot'], 'evt-1', '2026-01-01T10:00:00.000Z', 'e1'));
     expect(people(first.effects)).toHaveLength(1);

@@ -18,7 +18,7 @@ export const SYSTEMONE_DEFAULT_MODEL = 'jev-latest';
 const REQUEST_TIMEOUT_MS = 30_000;
 
 export interface SystemOneQuestion {
-  type: 'choice' | 'score' | 'noul';
+  type: 'choice' | 'score' | 'noul' | 'box';
   instructions: string;
   criteria?: Record<string, string> | string[];
 }
@@ -31,6 +31,8 @@ export interface SystemOneAnswer {
   probabilities?: Record<string, number>;
   confidence?: number;
   legend?: Record<string, string>;
+  /** A `box` answer: where in the image. Shape as Jev returns it; `screenFrameOf` reads it defensively. */
+  box?: unknown;
 }
 
 export interface SystemOneResult {
@@ -63,10 +65,17 @@ function parseRetryAfterMs(header: string | null): number | null {
   return Number.isNaN(dateMs) ? null : Math.max(0, dateMs - Date.now());
 }
 
+/** An image the state names by id (`{ frame: 'frame-1' }`); Jev takes 280..1568 px a side. */
+export interface SystemOneImageAsset {
+  type: 'image';
+  data_base64: string;
+  format: 'jpeg' | 'png';
+}
+
 export async function callSystemOne(
   state: unknown,
   questions: Record<string, SystemOneQuestion>,
-  opts: { model?: string; timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+  opts: { model?: string; timeoutMs?: number; fetchImpl?: typeof fetch; assets?: Record<string, SystemOneImageAsset> } = {},
 ): Promise<SystemOneResult> {
   const apiKey = systemOneApiKey();
   const model = opts.model ?? SYSTEMONE_DEFAULT_MODEL;
@@ -76,8 +85,9 @@ export async function callSystemOne(
   try {
     const response = await (opts.fetchImpl ?? fetch)(systemOneUrl(), {
       method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ state, model, questions }),
+      // Images are opt-in per request on TypeSafe's side: the header goes only with an asset.
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', ...(opts.assets ? { 'TypeSafe-Danger-Zone-Images': 'true' } : {}) },
+      body: JSON.stringify({ state, model, questions, ...(opts.assets ? { assets: opts.assets } : {}) }),
       signal: controller.signal,
     });
     const latencyMs = performance.now() - startedAt;

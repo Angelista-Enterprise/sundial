@@ -62,7 +62,7 @@ describe('agentFleetTrack', () => {
     const { candidates } = run(present(), [fleet(waiting), ev('clock:tick', {}, at(3)), ev('clock:tick', {}, at(7)), ev('clock:tick', {}, at(9))]);
     expect(candidates).toHaveLength(1);
     expect(candidates[0]).toMatchObject({ kind: 'agent-waiting', key: `agent-waiting:~/Projects/acme/puzzlebox-studio:${DAY}`, precision: 0.85 });
-    expect(candidates[0].observation).toBe('Your Claude session in puzzlebox-studio (feature/x) finished 7 min ago and is waiting for you.');
+    expect(candidates[0].observation).toBe('Your coding session in puzzlebox-studio (feature/x) finished 7 min ago and is waiting for you.');
   });
 
   it('a new wait on the same session is a new candidate', () => {
@@ -86,13 +86,13 @@ describe('agentFleetTrack', () => {
   it('names a pending tool call as a possible approval, and counts the others', () => {
     const { candidates } = run(present(), [fleet({ ...waiting, state: 'tool', branch: 'main' }, { ...waiting, id: 'bbbb2222', cwd: '~/Projects/other', state: 'tool', since: at(2) }), ev('clock:tick', {}, at(9))]);
     expect(candidates[0]).toMatchObject({ kind: 'agent-tool-pending', precision: 0.5 });
-    expect(candidates[0].observation).toBe('Your Claude session in puzzlebox-studio has been on one tool call for 9 min — it may be waiting for your approval. 1 more session waiting too.');
+    expect(candidates[0].observation).toBe('Your coding session in puzzlebox-studio has been on one tool call for 9 min — it may be waiting for your approval. 1 more session waiting too.');
   });
 
   it('one notice kind per wait, named by the session title (U3-F14)', () => {
     const typed = (state: string, extra: Record<string, unknown> = {}) =>
       run(present(), [fleet({ ...waiting, state, source: 'registry', title: 'Fix the checkout timeout', ...extra }), ev('clock:tick', {}, at(4))]).candidates[0];
-    expect(typed('permission')).toMatchObject({ kind: 'agent-permission', precision: 0.9, valueHalfLifeMs: 10 * 60_000, observation: "Your Claude session 'Fix the checkout timeout' in puzzlebox-studio (feature/x) has waited 4 min for your approval." });
+    expect(typed('permission')).toMatchObject({ kind: 'agent-permission', precision: 0.9, valueHalfLifeMs: 10 * 60_000, observation: "Your coding session 'Fix the checkout timeout' in puzzlebox-studio (feature/x) has waited 4 min for your approval." });
     expect(typed('question').kind).toBe('agent-question');
     expect(typed('plan').kind).toBe('agent-plan');
     expect(typed('failed', { error: 'rate_limit' }).observation).toContain('stopped on a rate limit 4 min ago');
@@ -111,7 +111,7 @@ describe('agentFleetTrack', () => {
 
   it('falls back to the last prompt when a session has no title', () => {
     const c = run(present(), [fleet({ ...waiting, lastPrompt: 'make the retry loop back off' }), ev('clock:tick', {}, at(7))]).candidates[0];
-    expect(c.observation).toBe("Your Claude session 'make the retry loop back off' in puzzlebox-studio (feature/x) finished 7 min ago and is waiting for you.");
+    expect(c.observation).toBe("Your coding session 'make the retry loop back off' in puzzlebox-studio (feature/x) finished 7 min ago and is waiting for you.");
   });
 
   it('warns once when two sessions work in one checkout, even from inside Claude', () => {
@@ -120,7 +120,7 @@ describe('agentFleetTrack', () => {
     const { candidates, state } = run(present('Claude'), [fleet(a, b), fleet(a, b, { ...waiting, id: 'c3' })]);
     expect(candidates).toHaveLength(1);
     expect(candidates[0]).toMatchObject({ kind: 'agent-shared-checkout', precision: 0.9 });
-    expect(candidates[0].observation).toContain('2 Claude sessions are open in ~/Projects/sundial at the same time');
+    expect(candidates[0].observation).toContain('2 coding sessions are open in ~/Projects/sundial at the same time');
     expect(state.agent.nudged).toContain('collide:~/Projects/sundial');
   });
 
@@ -212,7 +212,7 @@ describe('agentFleetTrack', () => {
       const { candidates } = run(present(), [edit('a1', 'src/x.ts', 0), edit('b2', 'src/y.ts', 1), edit('b2', 'src/x.ts', 2), edit('a1', 'src/x.ts', 3)]);
       expect(candidates).toHaveLength(1);
       expect(candidates[0]).toMatchObject({ kind: 'agent-file-collision', precision: 0.95 });
-      expect(candidates[0].observation).toBe("Two Claude sessions edited src/x.ts in sundial within ten minutes of each other — one may undo the other's change.");
+      expect(candidates[0].observation).toBe("Two coding sessions edited src/x.ts in sundial within ten minutes of each other — one may undo the other's change.");
       // Past the window the older edit no longer counts.
       expect(run(present(), [edit('a1', 'src/x.ts', 0), edit('b2', 'src/x.ts', 11)]).candidates).toEqual([]);
     });
@@ -222,7 +222,7 @@ describe('agentFleetTrack', () => {
       const { candidates } = run(present('Code'), [fleet(a), edit('a1', 'src/agent.ts', 1), changed('src/agent.ts', 1), changed('README.md', 2), changed('docs/x.md', 3)]);
       expect(candidates).toHaveLength(1);
       expect(candidates[0]).toMatchObject({ kind: 'agent-owner-collision', precision: 0.7 });
-      expect(candidates[0].observation).toBe("You are changing README.md in sundial while your Claude session 'Split the gate' is mid-turn there.");
+      expect(candidates[0].observation).toBe("You are changing README.md in sundial while your coding session 'Split the gate' is mid-turn there.");
     });
 
     it('no owner collision without the session\'s hooks, or when the agent is not working', () => {
@@ -250,7 +250,7 @@ describe('agentFleetTrack', () => {
       expect(back.candidates).toHaveLength(1);
       // Keyed by the owner's day, not the away start, so a second digest that day habituates.
       expect(back.candidates[0]).toMatchObject({ kind: 'agent-digest', key: 'agent-digest:2026-09-28', precision: 0.9 });
-      expect(back.candidates[0].observation).toBe("While you were away, your Claude sessions: 1 needs your approval ('Migrate the ledger' in b (feature/x)), 2 finished.");
+      expect(back.candidates[0].observation).toBe("While you were away, your coding sessions: 1 needs your approval ('Migrate the ledger' in b (feature/x)), 2 finished.");
     });
 
     it('a single wait while away is left to the ordinary notice', () => {
@@ -267,13 +267,13 @@ describe('agentFleetTrack', () => {
     const pr = (checkState: string, minutes: number, branch = 'feature/x') => ev('git:pr-status', { cwd: waiting.cwd, branch, number: 42, checkState, url: 'https://github.com/acme/puzzlebox-studio/pull/42' }, at(minutes));
     const { candidates } = run(present(), [fleet(a), pr('pending', 1), pr('failure', 2), fleet(a), pr('failure', 3), pr('success', 4), pr('failure', 5)]);
     expect(candidates.map((c) => c.kind)).toEqual(['agent-pr-red', 'agent-pr-red']);
-    expect(candidates[0].observation).toBe('The checks failed on PR #42, which your Claude session in puzzlebox-studio (feature/x) is working on — https://github.com/acme/puzzlebox-studio/pull/42.');
+    expect(candidates[0].observation).toBe('The checks failed on PR #42, which your coding session in puzzlebox-studio (feature/x) is working on — https://github.com/acme/puzzlebox-studio/pull/42.');
     expect(run(present(), [fleet(a), pr('failure', 2, 'feature/other')]).candidates).toEqual([]);
   });
 
   it('a finished session says what it leaves to review (U3-F35)', () => {
     const c = run(present(), [fleet({ ...waiting, lines: { added: 120, removed: 30 }, pr: { number: 42, url: 'https://github.com/acme/puzzlebox-studio/pull/42' } }), ev('clock:tick', {}, at(7))]).candidates[0];
-    expect(c.observation).toBe('Your Claude session in puzzlebox-studio (feature/x) finished 7 min ago and is waiting for you (+120 −30, PR #42).');
+    expect(c.observation).toBe('Your coding session in puzzlebox-studio (feature/x) finished 7 min ago and is waiting for you (+120 −30, PR #42).');
   });
 
   it('learns the owner\'s own wait threshold per kind, and says so with n (U3-F21)', () => {

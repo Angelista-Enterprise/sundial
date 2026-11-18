@@ -17,6 +17,7 @@ function emptyCtx(overrides: Partial<DailyContext> = {}): DailyContext {
     timeZone: 'Europe/Amsterdam',
     coverage: { trackedMin: 0, wallClockMin: 0, firstActivity: null, lastActivity: null },
     projects: [],
+    apps: [],
     noProjectMin: 0,
     phaseMix: { setup: 0, focus: 0, meeting: 0, switch: 0, browse: 0, leisure: 0 },
     focus: { deepMin: 0, steadyMin: 0, shallowMin: 0 },
@@ -30,11 +31,18 @@ function emptyCtx(overrides: Partial<DailyContext> = {}): DailyContext {
     anomalies: [],
     continuity: [],
     redactions: { total: 0, byProperty: {} },
+    acts: null,
     ...overrides,
   };
 }
 
 describe('serializeDailyContext', () => {
+  it("names Gnomon's own acts on one line of their own, and says nothing on a day it did nothing", () => {
+    const line = serializeDailyContext(emptyCtx({ acts: { n: 14, apps: ['Notes', 'Mail'], goals: ['file the BOX-484 notes', 'reply to Mira Bakker'] } })).split('\n').filter((l) => l.startsWith('GNOMON'));
+    expect(line).toEqual(["GNOMON (the assistant's own acts, not the owner's work): 14 steps in Notes, Mail, for: \"file the BOX-484 notes\"; \"reply to Mira Bakker\""]);
+    expect(serializeDailyContext(emptyCtx())).not.toContain('GNOMON');
+  });
+
   it('emits labeled sections for the populated parts and skips empty ones', () => {
     const ctx = emptyCtx({
       coverage: { trackedMin: 275, wallClockMin: 391, firstActivity: '2026-07-20T09:49:00.000Z', lastActivity: '2026-07-20T16:20:00.000Z' },

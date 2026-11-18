@@ -148,6 +148,9 @@ describe('gitAheadTrack', () => {
     const hook = ev('git:push', { cwd: '~/puzzlebox-studio', branch: 'main', remote: 'origin', command: 'git push' }, at(4));
     expect(pushes([status('~/puzzlebox-studio', 'main', 3, 0), hook, status('~/puzzlebox-studio', 'main', 0, 5)])).toEqual([]);
     expect(pushes([status('~/puzzlebox-studio', 'feat', 3, 0), status('~/puzzlebox-studio', 'main', 0, 5)])).toEqual([]);
+    // W6 D4: a push of another branch (from a worktree) does not hide the push of this one.
+    const other = ev('git:push', { cwd: '~/puzzlebox-studio', branch: 'feat/box-484', remote: 'origin', source: 'reflog' }, at(4));
+    expect(pushes([status('~/puzzlebox-studio', 'main', 3, 0), other, status('~/puzzlebox-studio', 'main', 0, 5)])).toHaveLength(1);
   });
 });
 

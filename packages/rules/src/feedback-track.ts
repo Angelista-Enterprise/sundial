@@ -24,7 +24,7 @@ const VALID_VERDICTS = new Set<FeedbackVerdict>(VERDICTS);
  * `ask_thread` and `notice` and the CLI kept refusing them — and the drift was
  * invisible because each side was self-consistent.
  */
-export const VALID_ARTIFACT_KINDS = new Set<FeedbackEntry['artifactKind']>(['knowledge_entry', 'moment', 'entity_fact', 'ask_thread', 'notice', 'owner_ask']);
+export const VALID_ARTIFACT_KINDS = new Set<FeedbackEntry['artifactKind']>(['knowledge_entry', 'moment', 'entity_fact', 'ask_thread', 'notice', 'owner_ask', 'routine']);
 
 /**
  * A `wrong` verdict is genuine prediction error — Gnomon asserted something

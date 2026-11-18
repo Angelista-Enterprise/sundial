@@ -21,14 +21,9 @@
 // the bundle's code identity. The TCC responsibility chain bottoms out at
 // whatever starts dsh: Sundial.app, or launchd for a --no-app install.
 //
-// Phone ingest (decision: loopback HTTP listener, port 8767): the paired iOS
-// app's write path, replacing the old daemon's POST /ingest/phone on 8765
-// (the old daemon's port; keep it dark).
-// Same bearer-token file (~/.sundial/.daemon/api-token), same phone:*-only
-// guard; see plugins/sundial-sensors/README.md for the iOS app change.
-//
 // Named exports only — a default export drops `inject`.
-import { SensorRuntime, startPhoneIngestServer, PHONE_INGEST_PORT } from '@sundial/harness-runtime/index.js'
+import { SensorRuntime, startPhoneInbox, startVerdictServer, VERDICT_PORT } from '@sundial/harness-runtime/index.js'
+import { loadSundialConfig } from '@sundial/helpers/sundial-config.js'
 
 export const name = 'sundial-sensors'
 export const inject = ['gnomonKernel', 'gnomonDb']
@@ -39,6 +34,7 @@ export async function apply(ctx, config = {}) {
     getState: () => ctx.gnomonKernel.getState(),
     getAllProjects: () => ctx.gnomonDb.queries.getAllProjects(),
     reserveLlmCall: (purpose, options) => ctx.gnomonKernel.reserveLlmCall(purpose, options),
+    judgeNow: (options) => ctx.gnomonKernel.judgeNow(options),
   })
 
   // Sensors: boot rehydration + git sweep + the 1s poll tick, all torn down
@@ -48,17 +44,19 @@ export async function apply(ctx, config = {}) {
     return () => runtime.stop()
   }, 'sundial-sensors poll loop')
 
-  // Phone ingest listener — loopback only, closed in the disposer. Off unless
-  // SUNDIAL_PHONE_INGEST=1 (in $SUNDIAL_HOME/.env): a listener nobody sends to
-  // is attack surface for nothing.
-  if (process.env.SUNDIAL_PHONE_INGEST === '1') await ctx.effect(async () => {
-    const server = await startPhoneIngestServer({
-      appendSignal: (type, payload, ts) => ctx.gnomonKernel.appendSignal(type, payload, ts),
-      port: config.phoneIngestPort ?? PHONE_INGEST_PORT,
-    })
-    console.log(`[sundial-sensors] phone ingest listening on 127.0.0.1:${config.phoneIngestPort ?? PHONE_INGEST_PORT}`)
+  // The way back from the phone: the ntfy verdict buttons POST here (through the
+  // owner's Tailscale Serve route). Only when the buttons are configured; a
+  // listener nobody sends to is attack surface for nothing.
+  if (loadSundialConfig().notifications.verdictUrl !== '') await ctx.effect(async () => {
+    const server = await startVerdictServer({ appendSignal: (type, payload, ts) => ctx.gnomonKernel.appendSignal(type, payload, ts), port: config.verdictPort ?? VERDICT_PORT })
+    console.log(`[sundial-sensors] verdict listener on 127.0.0.1:${config.verdictPort ?? VERDICT_PORT}`)
     return () => new Promise((resolve) => server.close(() => resolve()))
-  }, 'sundial-sensors phone ingest')
+  }, 'sundial-sensors verdict listener')
+
+  // The phone's way in: Shortcuts post to an ntfy topic on the always-on hub,
+  // and this reads it from where it stopped. Off unless `notifications.inbox` is set.
+  const inbox = loadSundialConfig().notifications.inbox
+  if (inbox !== '') await ctx.effect(() => startPhoneInbox({ url: inbox, appendSignal: (type, payload, ts) => ctx.gnomonKernel.appendSignal(type, payload, ts) }), 'sundial-sensors phone inbox')
 
   ctx.provide('gnomonSensors', {
     /** Sidecar freshness + TCC grant snapshot. Report-only; nothing is respawned. */

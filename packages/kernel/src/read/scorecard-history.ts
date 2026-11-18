@@ -37,7 +37,7 @@ export async function readScorecard({ state, now, days = 30 }: { state: KernelSt
     { id: 10, metric: 'Moments with activeMs within their duration; with an intent', value: `${withN(pct(rate(m.n - m.activeOver, m.n)), m.n)}; ${pct(rate(m.withIntent, m.n - m.skipped))} of ${(m.n - m.skipped).toLocaleString('en-US')} that should have one`, n: m.n, target: '100%; ≥ 95%', meets: m.n === 0 ? null : m.activeOver === 0 && m.withIntent / Math.max(1, m.n - m.skipped) >= 0.95, lives: 'selector' },
     // W6 P5: `ask:harvest-drained` ends the one back-fill sweep (once); the health is answers read, not that ratio.
     { id: 13, metric: 'Your answers to Gnomon, read for knowledge', value: withN(pct(rate(counts.harvest.read, counts.harvest.answered)), counts.harvest.answered), n: counts.harvest.answered, target: '≥ 95%', meets: judged((rate(counts.harvest.read, counts.harvest.answered) ?? 0) >= 0.95, counts.harvest.answered, 20), lives: 'selector' },
-    livenessRow(counts.busyHours, counts.liveBusyHours, freshness, now),
+    livenessRow(counts.busyHours, counts.liveBusyHours, freshness, now, { silent: Object.keys(state?.streamCoverage?.silentSince ?? {}), outageDays: state?.streamCoverage?.outageDays ?? [] }),
   ];
   return [...foldedScorecard(state, now), ...history].sort((a, b) => a.id - b.id);
 }
@@ -47,7 +47,9 @@ export async function readScorecard({ state, now, days = 30 }: { state: KernelSt
  * in busy hours is judged. Every other type quiet a week is listed, not judged: a state sensor that
  * did not change, an owner action not taken, a retired event still in the log all look the same.
  */
-export function livenessRow(busyHours: number, liveBusyHours: number, freshness: { signalType: string; eventType: string; lastCapturedAt: string }[], now: number): ScorecardRow {
+export function livenessRow(busyHours: number, liveBusyHours: number, freshness: { signalType: string; eventType: string; lastCapturedAt: string }[], now: number, coverage: { silent: string[]; outageDays: string[] } = { silent: [], outageDays: [] }): ScorecardRow {
   const quiet = freshness.filter((s) => now - Date.parse(s.lastCapturedAt) > 7 * 86_400_000).map((s) => `${s.signalType}:${s.eventType}`);
-  return { id: 12, metric: 'Busy hours the window sensor spoke in; streams quiet a week', value: `${withN(pct(rate(liveBusyHours, busyHours)), busyHours)}; ${quiet.length} quiet`, n: busyHours, target: '≥ 99%; quiet streams listed, not judged', meets: busyHours === 0 ? null : liveBusyHours / busyHours >= 0.99, lives: 'selector', parts: quiet.map((key) => ({ key, value: null, n: 0, meets: null })) };
+  // `streamSilence`'s own verdicts ride along: streams it said were silent (and that have not spoken since), and the full days it judged an outage.
+  const parts = [...quiet.map((key) => ({ key, value: null, n: 0, meets: null })), ...coverage.silent.map((key) => ({ key: `silent:${key}`, value: null, n: 0, meets: false })), ...coverage.outageDays.map((day) => ({ key: `outage:${day}`, value: null, n: 0, meets: false }))];
+  return { id: 12, metric: 'Busy hours the window sensor spoke in; streams quiet a week', value: `${withN(pct(rate(liveBusyHours, busyHours)), busyHours)}; ${quiet.length} quiet${coverage.silent.length ? `; ${coverage.silent.length} silent` : ''}${coverage.outageDays.length ? `; ${coverage.outageDays.length} outage days` : ''}`, n: busyHours, target: '≥ 99%; quiet streams listed, not judged', meets: busyHours === 0 ? null : liveBusyHours / busyHours >= 0.99, lives: 'selector', parts };
 }

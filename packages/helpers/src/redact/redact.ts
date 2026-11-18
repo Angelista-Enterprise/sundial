@@ -36,10 +36,6 @@ export function redact(text: string, patterns: string[], replacement: string): s
   return result;
 }
 
-export function redactLines(lines: string[], patterns: string[], replacement: string): string[] {
-  return lines.map((line) => redact(line, patterns, replacement));
-}
-
 /** Truncate with ellipsis if over `max` chars. */
 export function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;

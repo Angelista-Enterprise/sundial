@@ -325,7 +325,7 @@ describe('returnFromBreak', () => {
     let state = idleWith(base(), 0, []);
     state = { ...state, lifeEvent: { ...state.lifeEvent, idle: { consecutiveZeroWindows: 0, isIdle: false, lastActiveAt: '2026-03-10T09:59:50.000Z' } } };
     state = returnFromBreak(state, { id: 'i', type: 'moment:intent', ts: '2026-03-10T09:55:00.000Z', payload: { projectId: 'p1', text: 'Fixing the retry test' }, sanitized: true }).state;
-    state = { ...state, meetings: { seen: { 'Design review|2026-03-10T10:00:00.000Z': { title: 'Design review', start: '2026-03-10T10:00:00.000Z', end: '2026-03-10T10:30:00.000Z', attendees: ['Mira Bakker'], askedAt: null } } } };
+    state = { ...state, meetings: { seen: { 'Design review|2026-03-10T10:00:00.000Z': { title: 'Design review', start: '2026-03-10T10:00:00.000Z', end: '2026-03-10T10:30:00.000Z', attendees: ['Mira Bakker'], askedAt: null, called: true } } } };
     const during = returnFromBreak(state, activity('2026-03-10T10:05:00.000Z'));
     expect(during.effects).toEqual([]);
     // A later meeting-time input keeps the line from before the meeting, not from inside it.

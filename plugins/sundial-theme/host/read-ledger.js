@@ -3,7 +3,15 @@ import { shiftDate, spanFrom } from './http.js'
 import { resolveDailyCaps } from '@sundial/kernel/budgets.js'
 import { loadSundialConfig } from '@sundial/helpers/sundial-config.js'
 import { localDate, localDayRange } from '@sundial/helpers/local-day.js'
-import { getLlmAuditByModel, getLlmAuditDaily, getLlmAuditOverview, getLostAnswers, getRecentLlmAudit } from '@sundial/db/index.js'
+import { readDayDoing } from '@sundial/kernel/read/doing.js'
+import { getAllSignalsInRange, getLlmAuditByModel, getLlmAuditDaily, getLlmAuditOverview, getLostAnswers, getRecentLlmAudit } from '@sundial/db/index.js'
+
+/**
+ * Set 4 R2: the day's line, the one read the Ledger (`didToday`) and the slip's summon (`day`, routes-brief.js) share: the owner's
+ * day, rig chats left out. `session` (the Ledger's `?session=`, the rig's evening check) adds that one chat's counts as
+ * `didToday.session`, a rig chat's included. `rows` is the log query, injectable for a test.
+ */
+export const readDayLine = ({ state, now, session = null, timeZone = loadSundialConfig().timezone, rows = getAllSignalsInRange }) => readDayDoing({ state, now, timeZone, rows, session })
 
 /** Named windows → span in days; anything else means the whole ledger. */
 const LEDGER_WINDOWS = { today: 1, '7d': 7, '30d': 30 }
@@ -22,11 +30,13 @@ export async function readLedger({ state, now, url }) {
   const todayStr = localDate(new Date(now).toISOString(), timeZone)
   const since = windowDays ? localDayRange(shiftDate(windowParam ? todayStr : asked.to, -(windowDays - 1)), timeZone).start : null
 
-  const [overview, models, recent, lostAnswers] = await Promise.all([
+  const [overview, models, recent, lostAnswers, didToday] = await Promise.all([
     getLlmAuditOverview(since ?? undefined),
     getLlmAuditByModel(since ?? undefined),
     getRecentLlmAudit(30),
     getLostAnswers(since ?? undefined),
+    // Round 5: what Gnomon did today beside what its thinking cost. Set 4 R2: `?session=<id>` adds that chat's own counts.
+    readDayLine({ state, now, timeZone, session: url.searchParams.get('session') }),
   ])
 
   // The day breakdown belongs to the window the card claims.
@@ -80,6 +90,7 @@ export async function readLedger({ state, now, url }) {
     daily,
     models,
     budgets,
+    didToday,
     recent,
     // The two questions the card could not answer: which of these
     // failures cost an ANSWER, and what the failing cost in money.

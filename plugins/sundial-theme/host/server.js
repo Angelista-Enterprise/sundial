@@ -31,9 +31,14 @@ import { route } from './http.js'
 import { mountWeb } from './api-web.js'
 import { mountConfig } from './api-config.js'
 import { mountWrites } from './api-writes.js'
+import { mountVoice } from './voice-turn.js'
 import { mountSessions } from './api-sessions.js'
 import { mountRead } from './api-read.js'
-import { readdirSync } from 'node:fs'
+import { mountNodus } from './api-nodus.js'
+import { mountAssets } from './api-assets.js'
+import { mountSlipSteps } from './slip-steps.js'
+import { eyeKey } from '../shell/eye.js'
+import { existsSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { getSundialHome } from '@sundial/helpers/config.js'
 import { blankSignInLinks, ownToken } from './signin-log.js'
@@ -42,14 +47,17 @@ import { randomUUID } from 'node:crypto'
 import { dirname, extname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { COMPANION_SESSION_ID } from '@sundial/helpers/vocab.js'
-import { chatDefault } from '@sundial/helpers/llm-providers.js'
+import { chatCandidates, chatDefault, openChatSource, pausedCandidates, routeHeldIn } from '@sundial/helpers/llm-providers.js'
 import { openAsk as openAskOf } from '@sundial/helpers/loops.js'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import { threadModelOf } from '../shell/thread-model.js'
 import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { briefCause, liveFrames, streamFrames } from '../shell/frames.js'
+import { ownerThread, runFrame } from './run-feed.js'
 import { nowSnapshot } from '@sundial/kernel/now.js'
+// An unanswered approval expires rather than holding a tool call forever.
+import { APPROVAL_TTL_MS } from '@sundial/kernel/read/doing.js'
 
 /**
  * How long changed table names are gathered before one `stale` frame goes out.
@@ -64,8 +72,11 @@ const STALE_WINDOW_MS = 1_000
 const HERE = join(dirname(fileURLToPath(import.meta.url)), '..', 'shell')
 const PLUGIN = 'sundial-shell'
 
-/** An unanswered approval expires rather than holding a tool call forever. */
-const APPROVAL_TTL_MS = 300_000
+/**
+ * An ask as the record keeps it: the step as the owner reads it, never a final's preamble or the parts after ` · `
+ * (To, Cc, Path, Command: gate.js finalAsk), which no ingest pattern redacts. The frame keeps the whole reason.
+ */
+const stepLine = (reason) => (typeof reason === 'string' ? reason.split(' · ')[0].replace(/^Gnomon: this .*?, so it asks you first\.\s*/, '').trim().slice(0, 300) : '')
 
 const TYPES = {
   '.js': 'text/javascript; charset=utf-8',
@@ -94,6 +105,19 @@ const ASSETS = Object.fromEntries(
     .map((name) => [`/gnomon/app/${name}`, [name, TYPES[extname(name)]]]),
 )
 ASSETS['/gnomon/app/vocab.js'] = [relative(HERE, createRequire(import.meta.url).resolve('@sundial/helpers/vocab.js')), TYPES['.js']] // from outside this folder: the page's import map names it
+// Nodus's browser modules, as they are (packages/nodus): the import map names `@sundial/nodus/`, and their relative imports resolve beside them.
+const NODUS = dirname(createRequire(import.meta.url).resolve('@sundial/nodus/spec.js'))
+for (const name of readdirSync(NODUS).filter((n) => n.endsWith('.js') && !/\.test(-data)?\.js$/.test(n))) ASSETS[`/gnomon/app/nodus/${name}`] = [relative(HERE, join(NODUS, name)), TYPES['.js']]
+// Nodus's modes (packages/nodus/src/modes): the registry, and Studio and Atlas once their files are in (read at boot: a new file needs a restart).
+for (const name of existsSync(join(NODUS, 'modes')) ? readdirSync(join(NODUS, 'modes')).filter((n) => n.endsWith('.js') && !/\.test\.js$/.test(n)) : []) ASSETS[`/gnomon/app/nodus/modes/${name}`] = [relative(HERE, join(NODUS, 'modes', name)), TYPES['.js']]
+// Nodus's made-up rows (no record values), for the catalogue's demos (shell/catalogue.js); the loop above skips test data.
+ASSETS['/gnomon/app/nodus/fixture.test-data.js'] = [relative(HERE, join(NODUS, 'fixture.test-data.js')), TYPES['.js']]
+// three.js r160 (MIT), vendored whole and loaded once, on the first scene card (three-loader.js).
+ASSETS['/gnomon/app/nodus/vendor/three.module.js'] = [relative(HERE, join(NODUS, '..', 'vendor', 'three.module.js')), TYPES['.js']]
+// three.js r160's OBJ and glTF loaders (MIT), vendored for Atlas mode: loaded with the first atlas card.
+for (const name of ['OBJLoader.js', 'GLTFLoader.js']) ASSETS[`/gnomon/app/nodus/vendor/${name}`] = [relative(HERE, join(NODUS, '..', 'vendor', name)), TYPES['.js']]
+// Studio's runtime page: a model-written program runs in it, in an iframe sandboxed to an opaque origin (no cookies, no page, no network).
+ASSETS['/gnomon/app/nodus/studio-runtime.html'] = [relative(HERE, join(NODUS, 'studio-runtime.html')), 'text/html; charset=utf-8']
 
 /**
  * Mount the shell.
@@ -169,6 +193,15 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
       for (const frame of liveFrames(event)) push(id, frame)
     }),
   )
+  mountSlipSteps(ctx, push) // a screen step's words, and a refused step's recovery line, on the slip's doing line (slip-steps.js)
+  // The owner's hand holds that step, or lets it go (owner-hand.js `onHold`): the same frame, with `hand` and no line.
+  ctx.effect(() => ctx.on('gnomon/hand', ({ session, held } = {}) => typeof session === 'string' && push(session, { type: 'step', hand: held === true })))
+  // Set 2 R5: what the slip's "What I see" pane draws, keyed from the fold. `gnomon/changed` fires on nearly every appended row, so
+  // each stream gets a frame only when the look, the act or the marks moved (the key it was last sent rides on the stream itself).
+  ctx.effect(() => ctx.on('gnomon/changed', () => {
+    const key = eyeKey(ctx.gnomonKernel.getState()?.marks)
+    for (const emit of [...streams.values()].flatMap((set) => [...set])) if (emit.eye !== key) (emit.eye = key), emit({ type: 'eye', key })
+  }))
 
   // The model's prose, which is NOT in the session log while it streams. dsh
   // 0.1.5 split the transient stream off the durable one: chunks are published
@@ -247,6 +280,32 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
     ),
   )
 
+  // ── The chat's fallback (step 3 of the provider plan) ───────────────────
+  // A provider's limit (402, 429, a quota) in the middle of a turn moves THAT
+  // thread to the next source `llm.roles.chat` lists and retries the step;
+  // dsh-llm-retry only retries one route. Prepended, like every answerer here.
+  const LIMIT = /rate.?limit|quota|insufficient|402|429/i
+  ctx.effect(() =>
+    ctx.on(
+      'agent/request-error',
+      async function (payload, next) {
+        const f = payload?.failure ?? {}
+        const limited = f.status === 429 || f.status === 402 || LIMIT.test(String(f.code ?? '')) || LIMIT.test(String(f.message ?? ''))
+        const ref = limited ? threadModels.get(String(payload.agent?.session?.id ?? '')) : undefined
+        const list = ref ? chatCandidates(ctx.gnomonKernel?.getState()?.config?.llm) : []
+        const at = list.findIndex((c) => c.provider === ref?.current?.provider && c.model === ref?.current?.model)
+        const to = at >= 0 ? list[at + 1] : undefined
+        if (!ref || !to) return next()
+        // `current` is what the next step reads; `assembled` is what THIS step's retried request reads (installModelSelection).
+        ref.current = { ...ref.current, provider: to.provider, model: to.model }
+        ref.assembled = { ...(ref.assembled ?? ref.current), provider: to.provider, model: to.model }
+        console.log(`[${PLUGIN}] ${payload.provider} hit a limit (${f.code ?? f.status ?? 'limit'}); thread ${payload.agent.session.id} continues on ${to.provider}/${to.model}`)
+        return { kind: 'retry' }
+      },
+      { prepend: true },
+    ),
+  )
+
   // ── Approvals ───────────────────────────────────────────────────────────
   // `approval/request` is a waterfall, so claiming it is the supported way to
   // be the answerer. This is the seam the Ask layer did not have: without an
@@ -266,9 +325,9 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
   // answers; the queued question resolved never, and a gated call hung forever
   // with no prompt anywhere. Answering first keeps that path intact for anyone
   // who does run dsh's client: an unwatched session still falls through to it.
+  // approval id → { settle, reason }: the resolver, and the gate's full sentence for a replayed card while this process lives (never on the
+  // record: it can hold a To, Path or Command). What is waiting is the fold's (`state.approvals`, read/doing.ts), so it survives a restart.
   const pending = new Map()
-  /** approval id → { sessionId, frame }: what a browser opening that thread later still has to be asked. */
-  const waiting = new Map()
   /**
    * Whose questions this shell holds even with no browser on them: the owner's
    * own threads (`session-<uuid>`, minted here) and the conversation. A turn
@@ -287,17 +346,22 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
 
         const id = `approval-${randomUUID()}`
         const tool = String(req.toolName ?? 'a tool')
-        // W3: every approval on the record, asked and answered, and by whom.
+        const [callId, reason] = [req.callId === undefined ? null : String(req.callId), typeof req.reason === 'string' ? req.reason : null]
+        // W3: every approval on the record, asked and answered, and by whom. Round 2: the ask carries its step line (`text`: the
+        // secret-pattern pass at ingest still runs over it) and a final's kind, what a browser opening the thread later is shown.
         const record = (type, payload) => void Promise.resolve(ctx.gnomonKernel.appendSignal(type, { approvalId: id, sessionId, tool, ...payload })).catch(() => {})
-        record('approval:asked', {})
+        const [line, kind] = [stepLine(reason), / · final: ([a-z-]+)$/.exec(reason ?? '')?.[1]]
+        // Run 204 T01: the card shows a shell call's whole command (its tool/call frame), the reason 200 characters: the frame carries it too, never the record.
+        const command = (() => { try { const a = req.agent?.session?.snapshotEvents?.()?.findLast((e) => e?.type === 'tool/call' && callId && String(e.data?.callId) === callId)?.data?.arguments; const args = typeof a === 'string' ? JSON.parse(a) : a; return typeof args?.command === 'string' ? args.command : null } catch { return null } })()
+        record('approval:asked', { ...(callId ? { callId } : {}), ...(line ? { text: line } : {}), ...(kind ? { kind } : {}) })
         return await new Promise((resolve) => {
           const settle = (outcome, by = 'owner') => {
             if (!pending.has(id)) return
             pending.delete(id)
-            waiting.delete(id)
             clearTimeout(timer)
             req.signal?.removeEventListener?.('abort', onAbort)
-            push(sessionId, { type: 'approval-closed', id, outcome })
+            // On the session's streams, and on the live channel: a stream closed before the close (a stopped turn) must not leave the ask up.
+            for (const send of [(frame) => push(sessionId, frame), broadcast]) send({ type: 'approval-closed', id, outcome })
             record('approval:answered', { answer: outcome, by })
             resolve(outcome)
           }
@@ -308,16 +372,8 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
           const onAbort = () => settle('cancelled', 'asker')
           req.signal?.addEventListener?.('abort', onAbort, { once: true })
 
-          pending.set(id, settle)
-          const frame = {
-            type: 'approval',
-            id,
-            toolName: tool,
-            callId: req.callId === undefined ? null : String(req.callId),
-            reason: typeof req.reason === 'string' ? req.reason : null,
-          }
-          waiting.set(id, { sessionId, frame })
-          push(sessionId, frame)
+          pending.set(id, { settle, reason, ...(command ? { command } : {}) })
+          push(sessionId, { type: 'approval', id, toolName: tool, callId, reason, ...(command ? { command } : {}) })
         })
       },
       { prepend: true },
@@ -340,6 +396,15 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
   const broadcast = (frame) => {
     for (const emit of live) emit(frame)
   }
+  // Every owner thread with a turn running now, for the live strip; a tab that connects mid-run reads it whole.
+  const runs = new Map()
+  ctx.effect(() =>
+    ctx.on('session/event', (session, event) => {
+      if (!ownerThread(session?.id, COMPANION_SESSION_ID)) return
+      const frame = runFrame(runs, session.id, event)
+      if (frame !== null) broadcast(frame)
+    }),
+  )
   const snapshot = () => nowSnapshot(ctx.gnomonKernel.getState())
   const openAsk = () => {
     const open = openAskOf(ctx.gnomonKernel.getState())
@@ -362,6 +427,9 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
   ctx.effect(() => ctx.on('gnomon/board', (board) => broadcast({ type: 'board', board })))
   // The settings, the moment they change: every open tab obeys the same ones.
   ctx.effect(() => ctx.on('gnomon/settings', (settings) => broadcast({ type: 'settings', settings })))
+  // Set 2 R4: a chat route that cannot be reached says so in its own turn (sundial-llm-openai): one line per call,
+  // the fallback first, the honest end over it. The slip reads it off the turn like a tool row.
+  ctx.effect(() => ctx.on('gnomon/llm-line', ({ sessionId, key, line, failed } = {}) => typeof sessionId === 'string' && push(sessionId, { type: 'mark', key: `llm:${key}`, label: line, failed: failed === true })))
 
   // A running job's plan, relayed from the proactive plugin (see work.js). The
   // strip shows "step k of n" from it.
@@ -442,7 +510,7 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
   )
 
   /** W1: a turn's brief, injected as the context it is; `summary` is its one-line account. */
-  const briefMessage = (brief, summary = brief.present) => createUserMessage({ content: [{ type: 'text', text: brief.text }], source: { kind: 'plugin', plugin: PLUGIN, form: 'notice', summary: boundContextSummary(summary) } })
+  const briefMessage = (brief, summary = brief.present) => createUserMessage({ content: [{ type: 'text', text: brief.text }], source: { kind: PLUGIN, form: 'notice', summary: boundContextSummary(summary) } })
 
   function liveText(message) {
     const content = message?.content
@@ -454,7 +522,11 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
   // ── Agents ──────────────────────────────────────────────────────────────
 
   /** The model this deployment is on, as both the agent options and a label. */
-  const selection = () => chatDefault(ctx.agentDefaultModel.currentSelection(), ctx.gnomonKernel?.getState()?.config.llm)
+  const selection = () => {
+    const llm = ctx.gnomonKernel?.getState()?.config?.llm
+    const base = chatDefault(ctx.agentDefaultModel.currentSelection(), llm)
+    return openChatSource(base, chatCandidates(llm), heldRoute) ?? base
+  }
 
   /**
    * The live agent for one session, resumed from its log when it is not already
@@ -473,12 +545,24 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
    * is mutable and read at the next step, so a thread can switch models
    * mid-conversation without a new agent; the shell used to hand dsh a fresh
    * ref and forget it, which left the picker able to change only the default
-   * for NEW threads. The default stays `qwen3.8-flash-next` for every purpose
-   * (owner decision, 2026-09-22); a thread that chose otherwise keeps it
+   * for NEW threads. The default is `glm-5.3-flash` for every purpose (it was
+   * qwen3.8-flash-next from 2026-09-22 until TensorX withdrew it, 2026-11-02); a thread that chose otherwise keeps it
    * across a restart because its own log says which route served it.
    */
   const threadModels = new Map()
   const threadModel = (sessionId) => threadModels.get(sessionId)?.current ?? null
+  // Step 3 of the provider plan: a source the kernel holds (its breaker open, a 429's cooldown) is not
+  // asked again. A new thread starts on the first open chat source; an open thread moves to the next one
+  // at its next turn (`unhold`, from the turn route): its route's `hedgeTo` first (Set 2 R4: a dead primary whose breaker
+  // opened goes to its backup, not to "paused"), then `llm.roles.chat`. Mid-turn, the request-error listener below moves it.
+  const heldRoute = (route) => routeHeldIn(ctx.gnomonKernel?.getState()?.reliability?.llm, route)
+  const unhold = (sessionId) => {
+    const ref = threadModels.get(sessionId)
+    const to = openChatSource(ref?.current, pausedCandidates(ctx.gnomonKernel?.getState()?.config?.llm, ref?.current?.provider), heldRoute)
+    if (!to) return
+    console.log(`[${PLUGIN}] ${ref.current.provider} is paused; thread ${sessionId} continues on ${to.provider}/${to.model}`)
+    ref.current = { ...ref.current, ...to }
+  }
 
   async function rememberedModel(id) {
     try {
@@ -568,6 +652,10 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
   // disabled: dsh's index simply stops being reachable.
   // The two pages take the launch-token exchange (`/?token=…` → cookie), so the
   // URL `sundial open` prints signs a browser in once.
+  // `/` sends a browser to /setup on its first visit (index.html). Once the Mac
+  // app has seen setup through (`.daemon/setup-done`, Sundial.swift), the page
+  // says so, so a new browser signed in by `sundial open` lands on the board.
+  const setupDone = join(home, '.daemon', 'setup-done')
   const servePage = (path, file) =>
     ctx.effect(() =>
       ctx.webServer.register(
@@ -575,8 +663,10 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
           kind: 'exact',
           path,
           handler: async (_req, res) => {
+            let html = await readFile(join(HERE, file), 'utf8')
+            if (file === 'index.html' && existsSync(setupDone)) html = html.replace('<html lang="en" data-gnomon>', '<html lang="en" data-gnomon data-setup-done>')
             res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-            res.end(await readFile(join(HERE, file)))
+            res.end(html)
           },
         }),
       ),
@@ -598,11 +688,13 @@ export function mountShell(ctx, { cwd = process.cwd(), home = getSundialHome() }
 
   console.log(`[${PLUGIN}] Gnomon's own client is serving / (dsh's frontend is no longer reachable)`)
 
-  const shell = { agentFor, api, briefMessage, broadcast, handles, home, live, openAsk, openQuestions, pending, PLUGIN, readSnapshot, rememberedModel, selection, snapshot, snapshots, stoppers, threadModel, threadModels, turnClosed, turning, turnOpened, waiting, watch }
+  const shell = { voice: mountVoice(ctx), agentFor, api, briefMessage, broadcast, handles, home, live, openAsk, openQuestions, pending, PLUGIN, readSnapshot, rememberedModel, runs, selection, snapshot, snapshots, stoppers, threadModel, threadModels, turnClosed, turning, turnOpened, unhold, watch, push }
   mountSessions(ctx, shell)
   mountRead(ctx, shell)
   mountWrites(ctx, shell)
   mountConfig(ctx, shell)
   mountWeb(ctx, shell)
+  mountNodus(ctx)
+  mountAssets(ctx)
 
 }

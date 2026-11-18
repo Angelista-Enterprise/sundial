@@ -170,6 +170,21 @@ describe('deleteSignalsOlderThan — event types', () => {
   });
 });
 
+describe('deleteSignalsOlderThan — kept question sets', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+  });
+
+  it('sweeps old judgements and keeps the fact audit\'s answers', async () => {
+    const db = getDb();
+    await db.run(sql`INSERT INTO signals (id, signal_type, event_type, data, captured_at) VALUES ('j1', 'judgement', 'result', '{"questionSetId":"notice-worth"}', '2026-07-01T00:00:00.000Z')`);
+    await db.run(sql`INSERT INTO signals (id, signal_type, event_type, data, captured_at) VALUES ('j2', 'judgement', 'result', '{"questionSetId":"audit-fact"}', '2026-07-01T00:00:00.000Z')`);
+    await db.run(sql`INSERT INTO signals (id, signal_type, event_type, data, captured_at) VALUES ('j3', 'judgement', 'result', '{}', '2026-07-01T00:00:00.000Z')`);
+    expect(await deleteSignalsOlderThan('2026-07-10T00:00:00.000Z', ['judgement'], { eventTypes: ['result'], keepQuestionSets: ['audit-fact'] })).toBe(2);
+    expect(await db.all(sql`SELECT id FROM signals ORDER BY id`)).toEqual([{ id: 'j2' }]);
+  });
+});
+
 describe('trimAuditBodies (Q10)', () => {
   beforeEach(async () => {
     await setupTestDb();

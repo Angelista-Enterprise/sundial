@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createInitialState } from '@sundial/kernel/initial-state.js';
 import type { KernelState, SanitizedEvent } from '@sundial/kernel/types.js';
-import { ticketKeys, ticketTrack, TICKET_HORIZON_DAYS } from './ticket-track.js';
+import { MAX_TICKETS, ticketKeys, ticketTrack, TICKET_HORIZON_DAYS } from './ticket-track.js';
 
 let seq = 0;
 const day = (d: number, h = 10) => new Date(Date.UTC(2026, 8, 20 + d, h)).toISOString();
@@ -40,6 +40,22 @@ describe('ticketTrack', () => {
     ]);
     // The commit names the ticket twice (line and branch) but is one commit.
     expect(s.tickets?.['BOX-411']).toMatchObject({ stage: 'pr', commits: 1, pr: { number: 12, state: 'OPEN', reviewState: 'approved' } });
+  });
+
+  it('reads a merge commit as the PR merged', () => {
+    const s = fold([
+      ev('git:pr-status', { branch: 'feature/BOX-471', title: 'BOX-471: colours', number: 12, state: 'OPEN', reviewState: 'approved' }, day(0)),
+      ev('git:commit', { commitLine: 'abc1234 Merge pull request #12 from acme/feature/BOX-471', branch: 'develop' }, day(2)),
+    ]);
+    expect(s.tickets?.['BOX-471']).toMatchObject({ stage: 'pr', pr: { number: 12, state: 'MERGED', reviewState: 'approved' } });
+  });
+
+  it('keeps a worked-on ticket when a board floods the list with ones only seen', () => {
+    const work = [ev('git:commit', { commitLine: 'abc fix(BOX-526): accents', branch: 'feature/BOX-526' }, day(0))];
+    const board = Array.from({ length: MAX_TICKETS + 5 }, (_, i) => ev('window:changed', { windowTitle: `ZZ-${i + 1}` }, day(1, 10 + (i % 10))));
+    const s = fold([...work, ...board]);
+    expect(Object.keys(s.tickets ?? {})).toHaveLength(MAX_TICKETS);
+    expect(s.tickets?.['BOX-526']).toMatchObject({ stage: 'commit', commits: 1 });
   });
 
   it('a branch sampled again the same day is not a new sighting', () => {

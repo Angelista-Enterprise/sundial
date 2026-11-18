@@ -59,5 +59,17 @@ export function coerceValue(schema, value) {
 
 /** A call's whole argument object against its tool's parameter schema. */
 export function coerceArgs(parameters, args) {
-  return coerceValue(parameters ?? null, args);
+  return coerceValue(parameters ?? null, listAlias(parameters, args));
+}
+
+/** A list given as its one-item name (`query` for `queries`) becomes the list: real use on 2026-11-13 lost six web searches to it. */
+function listAlias(parameters, args) {
+  const props = parameters?.properties;
+  if (!props || !args || typeof args !== 'object' || Array.isArray(args)) return args;
+  return Object.entries(props).reduce((out, [key, p]) => {
+    const one = key.endsWith('ies') ? `${key.slice(0, -3)}y` : key.replace(/s$/, '');
+    if (p?.type !== 'array' || one === key || props[one] || out[key] !== undefined || out[one] === undefined) return out;
+    const { [one]: value, ...rest } = out;
+    return { ...rest, [key]: [value].flat() };
+  }, args);
 }

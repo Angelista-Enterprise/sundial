@@ -14,6 +14,8 @@ export interface BrowserSnapshot {
   /** J3.4: the page's visible text, whitespace-collapsed and clipped, when the helper was started with `--page-text` and the browser allowed it. */
   text?: string | null;
   textError?: string | null;
+  /** S4: a Firefox-family window's own title beside its page's (Fable M2), when the helper read the page's words. */
+  windowTitle?: string | null;
 }
 
 /** A heartbeat lands every 30 s; twice that with nothing means the helper is gone. */
@@ -45,6 +47,7 @@ export function parseBrowserSnapshot(text: string): BrowserSnapshot | null {
       // J3.4: the page's own words, only when the helper was asked for them and got them.
       text: typeof parsed.text === 'string' && parsed.text.trim() !== '' ? parsed.text : null,
       textError: typeof parsed.textError === 'string' ? parsed.textError : null,
+      windowTitle: typeof parsed.windowTitle === 'string' ? parsed.windowTitle : null,
     };
   } catch {
     return null;

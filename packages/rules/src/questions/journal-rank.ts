@@ -23,7 +23,7 @@ export const JOURNAL_RANK_QUESTIONS = keyed('journal-rank', {
 export const journalRank: QuestionSet<[MomentFanoutInput]> = {
   id: 'journal-rank',
   build: (input) => ({
-    state: { ...momentFanoutState({ ...input, openGoals: [], openPromises: [] }), day_so_far_note: "One session out of a whole day. The journal for the day will be one page." },
+    state: { ...momentFanoutState({ ...input, openGoals: [] }), day_so_far_note: "One session out of a whole day. The journal for the day will be one page." },
     questions: JOURNAL_RANK_QUESTIONS,
   }),
   samples: () => momentFanout.samples().map(([moment]) => [moment]),

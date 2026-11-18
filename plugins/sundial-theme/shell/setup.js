@@ -74,12 +74,20 @@ function drawPerms(list) {
 const PRESETS = [
   { name: 'Ollama on this Mac', baseUrl: 'http://127.0.0.1:11434/v1', local: true },
   { name: 'OpenAI', baseUrl: 'https://api.openai.com/v1' },
+  // An Anthropic-messages client adds `/v1/messages` itself: the address is the API root.
+  { name: 'Anthropic', baseUrl: 'https://api.anthropic.com', protocol: 'anthropic-messages' },
   { name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1' },
   { name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1' },
   { name: 'Other', baseUrl: '' },
 ]
+/** How an endpoint is spoken to. Gnomon's own route (the default) is always OpenAI chat completions. */
+const PROTOCOLS = [
+  ['openai-chat', 'OpenAI chat completions (most services, Ollama)'],
+  ['anthropic-messages', 'Anthropic messages (Anthropic, and gateways that speak it)'],
+  ['openai-responses', 'OpenAI responses'],
+]
 
-let models = { default: null, providers: [], use: {}, restartNeeded: false }
+let models = { default: null, providers: [], use: {}, roles: {}, restartNeeded: false }
 /** The chat's default model (/gnomon/api/models), or null until read. */
 let chat = null
 
@@ -135,10 +143,14 @@ function form({ target, row }) {
   const node = el('form', { class: 'model-form', novalidate: '' })
   const presetRow = el('div', { class: 'model-presets', role: 'group', 'aria-label': 'Provider' })
   const base = el('input', { class: 'model-input', type: 'url', id: 'm-base', spellcheck: 'false', autocomplete: 'off', placeholder: 'https://…/v1' })
+  const syncPlaceholder = () => { base.placeholder = protocol.value === 'anthropic-messages' ? 'https://… (the API root, without /v1)' : 'https://…/v1' }
   const key = el('input', { class: 'model-input', type: 'password', id: 'm-key', spellcheck: 'false', autocomplete: 'off' })
   const model = el('input', { class: 'model-input', type: 'text', id: 'm-model', spellcheck: 'false', autocomplete: 'off', list: 'm-models', placeholder: 'Press Check to list the models' })
   const list = el('datalist', { id: 'm-models' })
   const label = el('input', { class: 'model-input model-text', type: 'text', id: 'm-label', spellcheck: 'false', autocomplete: 'off' })
+  const protocol = el('select', { class: 'model-input', id: 'm-protocol' }, ...PROTOCOLS.map(([value, text]) => el('option', { value, text })))
+  protocol.value = row?.protocol ?? 'openai-chat'
+  protocol.addEventListener('change', syncPlaceholder)
   const keyHint = el('p', { class: 'fill-hint' })
   const out = el('p', { class: 'fill-note model-out', role: 'status', 'aria-live': 'polite' })
   base.value = row?.baseUrl ?? ''
@@ -155,6 +167,7 @@ function form({ target, row }) {
     const chip = el('button', { type: 'button', class: 'model-chip', 'data-url': preset.baseUrl, 'aria-pressed': 'false', text: preset.name })
     chip.addEventListener('click', () => {
       base.value = preset.baseUrl
+      if (!isDefault) protocol.value = preset.protocol ?? 'openai-chat'
       if (!isDefault && preset.baseUrl !== '') label.value = preset.name
       list.replaceChildren()
       syncKey()
@@ -170,7 +183,7 @@ function form({ target, row }) {
     out.dataset.state = ''
     out.textContent = 'Asking the provider…'
     try {
-      const answer = await providersPost({ op: 'check', baseUrl: base.value, apiKey: key.value, target })
+      const answer = await providersPost({ op: 'check', baseUrl: base.value, apiKey: key.value, target, protocol: protocol.value })
       if (!answer.ok) throw new Error(answer.error)
       list.replaceChildren(...answer.models.map((id) => el('option', { value: id })))
       out.dataset.state = 'ok'
@@ -196,7 +209,7 @@ function form({ target, row }) {
     event.preventDefault()
     save.disabled = true
     try {
-      models = await providersPost({ op: 'save', target, baseUrl: base.value, model: model.value, apiKey: key.value, label: label.value })
+      models = await providersPost({ op: 'save', target, baseUrl: base.value, model: model.value, apiKey: key.value, label: label.value, protocol: protocol.value })
       editing = null
       drawModels()
     } catch (error) {
@@ -211,11 +224,12 @@ function form({ target, row }) {
     field('Address', base),
     field('API key', key, keyHint),
     el('div', { class: 'model-field' }, el('label', { class: 'fill-label', for: 'm-model', text: 'Model' }), el('div', { class: 'model-pair' }, model, check), list),
-    ...(isDefault ? [] : [field('Name in the model picker', label)]),
+    ...(isDefault ? [] : [field('Speaks', protocol), field('Name in the model picker', label)]),
     out,
     el('div', { class: 'fill-acts' }, save, cancel),
   )
   syncKey()
+  syncPlaceholder()
   return node
 }
 
@@ -252,7 +266,7 @@ function drawModels() {
     const ul = el('ul', { class: 'model-list' })
     for (const p of models.providers) {
       ul.append(el('li', { class: 'model-row' },
-        el('div', {}, el('p', { class: 'model-name', text: p.label }), el('p', { class: 'fill-note' }, el('code', { text: p.model }), ` · ${p.local ? 'on this Mac' : new URL(p.baseUrl).host}`)),
+        el('div', {}, el('p', { class: 'model-name', text: p.label }), el('p', { class: 'fill-note' }, el('code', { text: p.model }), ` · ${p.local ? 'on this Mac' : new URL(p.baseUrl).host}${p.protocol && p.protocol !== 'openai-chat' ? ` · ${PROTOCOLS.find(([v]) => v === p.protocol)?.[1].split(' (')[0] ?? p.protocol}` : ''}`)),
         rowActs(p.id, p)))
       if (editing?.target === p.id) ul.append(el('li', { class: 'model-edit' }, form(editing)))
     }
@@ -348,7 +362,51 @@ function whoDoesWhat() {
     el('h3', { class: 'model-sub', text: 'Who does what' }),
     el('p', { class: 'fill-note use-intro', text: remote.length > 0 ? `Work you give to ${remote.join(' or ')} sends sanitized text there. Every call is listed in the Ledger, with its price.` : 'Every model here runs on this Mac, so nothing leaves it.' }),
     ul,
+    sourcesInOrder(routes, note),
     note)
+}
+
+/** Each role's sources, first and then: a limit on the first (a 429, a spent quota) moves the call to the next. Sets `llm.roles`. */
+const ROLES = [
+  ['chat', 'The chat', []],
+  ['background', 'Summaries, facts, the journal', [['claude', 'Claude Code, on your plan'], ['copilot', 'GitHub Copilot, on your plan']]],
+  ['judge', 'Quick judgements', [['jev', 'Jev, the hosted judge'], ['claude', 'Claude Code, on your plan'], ['copilot', 'GitHub Copilot, on your plan']]],
+  ['jobs', 'Background jobs', [['claude', 'Claude Code, on your plan'], ['copilot', 'GitHub Copilot, on your plan']]],
+]
+function sourcesInOrder(routes, note) {
+  const ul = el('ul', { class: 'model-list use-list' })
+  const options = (extras, blank) => [el('option', { value: '', text: blank }), ...routes.map((r) => el('option', { value: r.id, text: `${r.label} · ${r.model}` })), ...extras.map(([v, t]) => el('option', { value: v, text: t }))]
+  for (const [role, label, extras] of ROLES) {
+    const list = models.roles?.[role] ?? []
+    const head = (entry) => (entry ?? '').split(':')[0]
+    const first = el('select', { class: 'model-input use-select', id: `role-${role}-1` }, ...options(extras, role === 'chat' ? 'As chosen above' : 'As set above'))
+    const then = el('select', { class: 'model-input use-select', id: `role-${role}-2` }, ...options(extras, 'Nothing: stop on a limit'))
+    first.value = head(list[0])
+    then.value = head(list[1])
+    const save = async () => {
+      for (const s of [first, then]) s.disabled = true
+      try {
+        const chosen = [first.value, then.value].filter((v) => v !== '')
+        // The chat's first source is the chat default chosen above: a fallback alone still needs the head.
+        const entries = role === 'chat' && first.value === '' && then.value !== '' && chat ? [`${chat.provider}:${chat.model}`, ...chosen] : chosen
+        models = await providersPost({ op: 'role', role, list: entries })
+        note.dataset.state = 'ok'
+        note.textContent = entries.length > 1 ? `${label}: ${entries.map((e) => e.split(':')[0]).join(', then ')}.${role === 'jobs' ? ' After a restart.' : ''}` : entries.length === 1 ? `${label}: ${entries[0].split(':')[0]}, with nothing to fall back to.` : `${label}: as set above.`
+        drawModels()
+      } catch (error) {
+        note.dataset.state = 'error'
+        note.textContent = error.message
+        for (const s of [first, then]) s.disabled = false
+      }
+    }
+    first.addEventListener('change', save)
+    then.addEventListener('change', save)
+    ul.append(el('li', { class: 'use-row' }, el('label', { class: 'use-label', for: first.id, text: label }), el('div', { class: 'model-pair' }, first, el('span', { class: 'fill-note', text: 'then' }), then)))
+  }
+  return el('div', {},
+    el('h3', { class: 'model-sub', text: 'Sources in order' }),
+    el('p', { class: 'fill-note use-intro', text: 'A list here wins over the rows above. When the first source hits a limit, the call moves to the next; the Ledger shows which one answered. Claude Code and GitHub Copilot run your own signed-in binary on your own plan and count against its limits; Jev against its own.' }),
+    ul)
 }
 
 fetch('/gnomon/api/models', { headers: { accept: 'application/json' } })
@@ -515,10 +573,40 @@ fetch('/gnomon/api/backfill', { headers: { accept: 'application/json' } })
   })
   .catch(() => {})
 
+// ── One question first ─────────────────────────────────────────────────
+// The packaged app's first run writes `memory.embeddings: "ask"`, and nothing
+// downloads the search model while it says so. Asked here, Enter is yes (the
+// primary button has the focus); the answer is the Settings switch's own write.
+
+async function askSearchModel() {
+  const q = $
+  const services = await fetch('/gnomon/api/services', { headers: { accept: 'application/json' } })
+    .then((r) => (r.ok ? r.json() : null))
+    .catch(() => null)
+  if (services?.services?.find((s) => s.id === 'embeddings')?.value !== 'ask') return
+  q('search-ask').hidden = false
+  const answer = (value) => async () => {
+    for (const id of ['search-yes', 'search-no']) q(id).disabled = true
+    const ok = await fetch('/gnomon/api/services', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'embeddings', value }) })
+      .then((r) => r.ok)
+      .catch(() => false)
+    for (const id of ['search-yes', 'search-no']) q(id).disabled = false
+    if (!ok) return (q('search-said').textContent = 'Sundial did not answer. Try again in a moment.')
+    q('search-acts').hidden = true
+    q('search-said').textContent = value
+      ? 'Saved. The search model downloads when the first moment closes. Settings, under What may leave this Mac, can turn it off.'
+      : 'Saved. Nothing is downloaded, and search matches words. Settings, under What may leave this Mac, can turn it on.'
+  }
+  q('search-yes').addEventListener('click', answer(true))
+  q('search-no').addEventListener('click', answer(false))
+  q('search-yes').focus()
+}
+
 // Inside the app, a grant needs no restart by hand and no path to paste.
 if (inApp()) for (const node of document.querySelectorAll('[data-browser-only]')) node.hidden = true
 for (const node of document.querySelectorAll('[data-app-only]')) node.hidden = !inApp()
 
+askSearchModel()
 read()
 setInterval(() => {
   if (document.visibilityState === 'visible') read()

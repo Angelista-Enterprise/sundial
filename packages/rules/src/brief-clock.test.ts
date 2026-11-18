@@ -52,32 +52,44 @@ describe('briefClock folds what a standup reads back', () => {
 });
 
 describe('briefClock speaks before meetings (lane B #22, #13)', () => {
-  it('ten minutes before a standup: the three-line draft, once a day, as a plain interruption', () => {
+  it('a standup is not said ten minutes out any more: its draft goes to Today on the first touch, said by no notice of its own', () => {
     const s = fold(base(), TUESDAY);
-    expect(noticesOf(briefClock(s, ev('clock:tick', '2026-09-30T06:45:00.000Z')).effects), 'fifteen minutes out: not yet').toEqual([]);
-    const out = briefClock(s, ev('clock:tick', '2026-09-30T06:51:00.000Z'));
-    const [draft] = noticesOf(out.effects);
-    expect(draft).toMatchObject({ kind: 'standup-draft', key: 'standup-draft:2026-09-30', plain: true, surprise: 1.7, valueHalfLifeMs: 600_000 });
-    expect(draft!.observation).toBe(
-      'Standup at 09:00 with Mira Bakker, Bob Jansen. Yesterday: 2 commits on puzzlebox-studio (feat/box-484), 1 on sundial (main); PR #12 merged; BOX-484. Agent sessions: 1 on puzzlebox-studio. Today: BOX-484 review 14:00.',
-    );
-    expect(out.state.briefs!.latest).toMatchObject({ kind: 'standup-draft', title: 'Standup' });
-    expect(noticesOf(briefClock(out.state, ev('clock:tick', '2026-09-30T06:54:00.000Z')).effects), 'once').toEqual([]);
+    const tick = briefClock(s, ev('clock:tick', '2026-09-30T06:51:00.000Z'));
+    expect(noticesOf(tick.effects), 'ten minutes out: nothing').toEqual([]);
+    expect(tick.state.briefs!.latest ?? null).toBeNull();
+    const out = briefClock(s, ev('owner:first-touch', '2026-09-30T06:30:00.000Z', { day: '2026-09-30' }));
+    expect(out.effects).toEqual([]);
+    expect(out.state.briefs!.latest).toEqual({
+      kind: 'standup-draft',
+      title: 'Standup',
+      start: STANDUP.start,
+      end: STANDUP.end,
+      at: '2026-09-30T06:30:00.000Z',
+      lines: ['Yesterday: 2 commits on puzzlebox-studio (feat/box-484), 1 on sundial (main); PR #12 merged; BOX-484.', 'Agent sessions: 1 on puzzlebox-studio.', 'Today: BOX-484 review 14:00.'],
+    });
+    expect(out.state.briefs!.done['standup-draft:2026-09-30']).toBe('2026-09-30T06:30:00.000Z');
+    expect(briefClock(out.state, ev('owner:first-touch', '2026-09-30T06:40:00.000Z', { day: '2026-09-30' })).state, 'once a day').toBe(out.state);
   });
 
   it('just deployed, with no earlier day folded, it stays quiet instead of saying "no work"', () => {
-    expect(noticesOf(briefClock(base(), ev('clock:tick', '2026-09-30T06:51:00.000Z')).effects)).toEqual([]);
+    const s = base();
+    expect(briefClock(s, ev('owner:first-touch', '2026-09-30T06:30:00.000Z', { day: '2026-09-30' })).state).toBe(s);
   });
 
   it('a standup is told by its shape: a long or an afternoon series is not one', () => {
-    const s = base();
+    const touch = ev('owner:first-touch', '2026-09-30T06:30:00.000Z', { day: '2026-09-30' });
+    const s = fold(base(), TUESDAY);
     s.schedule.upcoming = [{ ...STANDUP, end: '2026-09-30T08:30:00.000Z' }];
-    expect(noticesOf(briefClock(s, ev('clock:tick', '2026-09-30T06:51:00.000Z')).effects)).toEqual([]);
-    s.schedule.upcoming = [{ ...STANDUP, recurring: false }];
-    expect(noticesOf(briefClock(s, ev('clock:tick', '2026-09-30T06:51:00.000Z')).effects), 'not a series, never met before, and nothing to prep').toEqual([]);
+    expect(briefClock(s, touch).state.briefs!.latest ?? null).toBeNull();
+    s.schedule.upcoming = [{ ...STANDUP, start: '2026-09-30T13:00:00.000Z', end: '2026-09-30T13:15:00.000Z' }];
+    expect(briefClock(s, touch).state.briefs!.latest ?? null).toBeNull();
+    const fresh = base();
+    fresh.briefs = { days: { '2026-09-29': { commits: {}, prs: {}, tickets: [], agents: {} } }, prState: {}, lastMet: {}, done: {} };
+    fresh.schedule.upcoming = [{ ...STANDUP, recurring: false }];
+    expect(briefClock(fresh, touch).state.briefs!.latest ?? null, 'not a series and never met before').toBeNull();
     const met = fold(base(), TUESDAY);
     met.schedule.upcoming = [{ ...STANDUP, recurring: false }];
-    expect(noticesOf(briefClock(met, ev('clock:tick', '2026-09-30T06:51:00.000Z')).effects)[0], 'the same title met yesterday is a series').toMatchObject({ kind: 'standup-draft' });
+    expect(briefClock(met, touch).state.briefs!.latest, 'the same title met yesterday is a series').toMatchObject({ kind: 'standup-draft' });
   });
 
   it('ten minutes before another meeting: a prep in passing, only when the record holds something on those people', () => {
@@ -87,14 +99,14 @@ describe('briefClock speaks before meetings (lane B #22, #13)', () => {
     s.tickets = { 'BOX-484': { id: 'BOX-484', firstSeen: '', lastSeen: '', days: [], sources: {}, stage: 'pr', commits: 2, pr: { number: 12, state: 'MERGED', reviewState: null } } };
     s.mail.recent = [{ from: 'Mira Bakker', subject: 'Border colours', at: '2026-09-29T16:00:00.000Z' }];
     const [prep] = noticesOf(briefClock(s, ev('clock:tick', '2026-09-30T11:51:00.000Z')).effects);
-    expect(prep).toMatchObject({ kind: 'meeting-prep', key: 'meeting-prep:BOX-484 review|2026-09-30T12:00:00.000Z', valueHalfLifeMs: null, plain: true });
+    expect(prep).toMatchObject({ kind: 'meeting-prep', key: 'meeting-prep:BOX-484 review|2026-09-30T12:00:00.000Z', valueHalfLifeMs: null, plain: true, shape: 'anticipatory', offer: { tool: 'gnomon_brief', args: { kind: 'meeting', title: 'BOX-484 review' }, label: 'Open the prep' } });
     expect(prep!.observation).toBe('BOX-484 review at 14:00 with Mira Bakker. Last met: Standup, Yesterday. In play: BOX-484 (PR #12 merged). Mail: Mira Bakker “Border colours” (Yesterday).');
   });
 
   it('a kind the owner called wrong twice running goes quiet', () => {
     const s = fold(base(), TUESDAY);
     s.feedback.recent = ['2026-09-28', '2026-09-29'].map((d) => ({ artifactKind: 'notice' as const, artifactId: `standup-draft:${d}`, verdict: 'wrong' as const, solicited: false, note: null, ts: `${d}T08:00:00.000Z` }));
-    expect(noticesOf(briefClock(s, ev('clock:tick', '2026-09-30T06:51:00.000Z')).effects)).toEqual([]);
+    expect(briefClock(s, ev('owner:first-touch', '2026-09-30T06:30:00.000Z', { day: '2026-09-30' })).state.briefs!.latest ?? null).toBeNull();
   });
 });
 

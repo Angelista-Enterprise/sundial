@@ -217,5 +217,7 @@ describe('gnomon_reminder_create (UC1 U1-F38)', () => {
     expect(sent).toEqual([{ type: 'action:performed', payload: { tool: 'reminder_create', reminderId: 'R1', title: 'Send Mira the draft', due: '2026-10-01T15:00:00.000Z', promiseId: 'commitment:promise:x' } }])
     const denied = reminderCreateTool(async () => {}, '/helper', (_p, _a, _o, cb) => cb(null, JSON.stringify({ created: null, accessGranted: false })))
     expect((await denied.execute({ title: 'x' })).error).toContain('Reminders access')
+    await expect(tool.execute({ title: 'x', when: '2026-10-01T09:00:00+02:00' })).rejects.toThrow(/nothing was added: unknown field when/)
+    expect(asked).toHaveLength(1)
   })
 })

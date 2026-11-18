@@ -7,7 +7,8 @@ touching your own install, and the rules every change follows. Read
 ## Prerequisites
 
 - macOS 14 or newer. The sensors are native Swift, so Sundial does not run
-  elsewhere.
+  elsewhere, and `apps/macos/ScreenLook.swift` uses ScreenCaptureKit calls that
+  macOS 13 lacks.
 - Node.js 22 or newer.
 - [pnpm](https://pnpm.io). CI uses pnpm 10.
 - Xcode Command Line Tools, for `swiftc`: `xcode-select --install`.
@@ -208,3 +209,23 @@ type(scope): what is true after this change
 One change per pull request, with a test when behaviour changes. Say what you
 ran. Report security problems privately as described in `SECURITY.md`, not in
 the issue tracker.
+
+## Branches from Orrery
+
+Orrery, the forecaster factory beside Sundial, audits the owner's record and
+proposes fixes to Sundial as *fix findings*: a claim, the evidence, a read-only
+measurement over the record with its value before the fix, and the patch
+location. Decided 2026-10-14:
+
+- Orrery keeps its own worktree of this repository. Before every run it fetches
+  `develop` and branches from it. It never merges and never touches the live
+  record or the daemon.
+- A branch is named `orrery/<finding-id>` and carries one fix, the tests, and
+  the measurement re-run on the test data. The owner reviews, merges into
+  `develop`, and `develop → main` stays the owner's.
+- After the merge, Orrery re-runs the measurement on the live record and scores
+  the fix by the gain achieved. A fix finding without a measurement is rejected
+  before any code is written.
+
+Development on this repository continues on the laptop as before; the Mac mini
+that runs Orrery pulls `develop` and only pushes `orrery/*` branches.

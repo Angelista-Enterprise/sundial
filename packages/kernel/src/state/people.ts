@@ -36,6 +36,17 @@ export interface PeopleSlices {
         extractAt?: string;
         /** UC1: what the pass found — the promise ids and one line each, for the question at the end (X3). Absent until it answers. */
         promised?: { ids: string[]; lines: string[] };
+        /** The calendar event carries a video link. */
+        online?: boolean;
+        /** Attendance evidence, sampled each minute inside the meeting (`attendanceOf`): samples, at the keys, a call app on the mic or camera, the laptop at home. */
+        ticks?: number;
+        active?: number;
+        called?: boolean;
+        home?: number;
+        /** When `meeting:attended` went out for it (the "met with" facts). */
+        metAt?: string;
+        /** The owner's own word on being there, when the signals could not say (`Were you in X?`). */
+        confirmed?: 'yes' | 'no';
       }
     >;
   };
@@ -173,6 +184,8 @@ export interface PeopleSlices {
     promises: Commitment[];
     /** UC1: the question about promises the owner has not answered yet, so the answer can be read after `ownerAsk` closes it. */
     promiseAsk: { askId: string; kind: 'meeting' | 'kept'; ids: string[]; attendees: string[]; meeting: { title: string; start: string } | null } | null;
+    /** Plan 15 4.1: the UTC day of the last outcome ask. One a day. */
+    outcomeAskDay?: string;
   };
   goals: {
     progress: Record<string, GoalProgressEntry[]>;
@@ -195,6 +208,10 @@ export interface UpcomingEvent {
   isAllDay: boolean;
   /** Lane B: the calendar marks it as one of a series. Absent when it does not, and on older snapshots. */
   recurring?: boolean;
+  /** The event carries a video link (calendar helper ≥ 2026-10-07). */
+  online?: boolean;
+  /** The owner's reply when it is not plain acceptance: tentative / pending. Declined events are never upcoming. */
+  status?: string;
 }
 
 /**
@@ -241,6 +258,8 @@ export interface Commitment {
    * can be mentioned again.
    */
   fadingNoticedAt?: string;
+  /** Plan 15 4.1: when the owner was asked how this thread ended. Once per silence, as `fadingNoticedAt`. */
+  outcomeAskedAt?: string;
   /** How many moments carried this branch. */
   touches: number;
   /**
@@ -343,8 +362,9 @@ export interface ClosedCommitment extends Commitment {
    * fan-out said the promise was kept AND the moment carried non-text evidence
    * (a commit, commands, a meeting). `owner`: the owner's tap. UC1: `kept` on
    * evidence or the owner's word, `broken` and `dropped` on the owner's word.
+   * `merged`: the branch's pull request was merged.
    */
-  closedBecause: 'went-quiet' | 'seen-done' | 'owner' | 'kept' | 'broken' | 'dropped';
+  closedBecause: 'went-quiet' | 'seen-done' | 'owner' | 'kept' | 'broken' | 'dropped' | 'merged';
 }
 
 /** One step of a goal's weekly plan (J5.3). Internal steps run as jobs; outward ones are proposed to the owner and never run. */

@@ -66,8 +66,7 @@ export const SPEECH = {
  * `optIn` marks a sensor that does nothing unless the owner turned it on — the
  * card says which of those are ON, because a clipboard poller and a screen
  * reader running are exactly the facts a trust surface owes the owner.
- * `pushed` marks the phone family, which is not a sensor at all: those arrive
- * already formed at `POST /ingest/phone` from a paired iOS app.
+ * Presence, mail and the phone family left the roster on 2026-10-14 (sensor audit).
  */
 export const SENSORS = [
   { name: 'input activity', package: 'input-activity', events: ['input:activity'], speech: 'heartbeat', does: 'counts keys and clicks, never what was typed' },
@@ -93,22 +92,15 @@ export const SENSORS = [
   { name: 'shell', package: 'shell', events: ['shell:command'], speech: 'event', does: 'commands you ran in a focused terminal' },
   { name: 'files', package: 'file-watcher', events: ['file:changed', 'file-watcher:capacity'], speech: 'event', does: 'which files changed under a watched root' },
   { name: 'symbols', package: 'symbol-edit', events: ['symbol:edited'], speech: 'event', does: 'which functions a change touched' },
-  { name: 'pull requests', package: 'github-pr', events: ['git:pr-status'], speech: 'event', does: 'the state of a PR on a branch you are on' },
+  { name: 'pull requests', package: 'github-pr', events: ['git:pr-status'], speech: 'event', does: 'every open PR you authored, its branch, size, review and checks, and when it merges' },
   { name: 'calendar', package: 'calendar', events: ['calendar:upcoming', 'calendar:active', 'calendar:context-event', 'reminders:snapshot'], speech: 'event', does: 'meetings, and your reminders (title, due, done), from EventKit' },
   { name: 'sleep and wake', package: 'sleep-wake', events: ['system:sleep-wake'], speech: 'event', does: 'when the machine slept and woke' },
-  { name: 'presence', package: 'presence', events: ['presence:scan'], speech: 'event', does: 'other devices on a network you consented to', consent: true },
   { name: 'clipboard', package: 'clipboard-meta', events: ['clipboard:activity'], speech: 'event', does: 'that you copied something, and how big — never what', optIn: 'clipboardEnabled' },
   { name: 'screen text', package: 'screen-ocr', events: ['screen:ocr'], speech: 'state', does: 'text read off the screen', optIn: 'ocr' },
   { name: 'screen reading', package: 'screen-vision', events: ['screen:fact'], speech: 'state', does: 'what a local vision model makes of the screen, as a few short facts', optIn: 'vision' },
+  { name: 'screen pictures', package: 'screen-frame', events: ['screen:frame'], speech: 'event', does: 'a downscaled picture of the window in front, sent to TypeSafe\'s Jev at most 12 times an hour; only its answer is kept', optIn: 'jevFrames' },
   { name: 'arc', package: 'arc', events: ['browser:arc-space'], speech: 'state', does: "the tabs of the Arc space you are in, origin and path only, so a return can offer them again" },
   { name: 'vault', package: 'vault', events: ['vault:changed'], speech: 'event', does: 'which notes you edited in the vault you named — paths only, never contents', optIn: 'vault' },
-  // The one row on this card that most needs to exist. It reads subjects and
-  // senders from Mail and Messages, behind Full Disk Access, and no body text
-  // — which is exactly the claim a trust surface is for. It arrived in the
-  // codebase on 2026-09-22 and `sensors.test.js` failed the same hour.
-  { name: 'mail', package: 'mail', events: ['mail:received', 'mail:sent', 'mail:status'], speech: 'event', does: 'who wrote to you, who you wrote to, and the subject — never the body', optIn: 'mail' },
-  { name: 'messages', package: 'mail', events: ['message:received'], speech: 'event', does: 'who wrote in Messages, and in which chat — never the text', optIn: 'messages' },
-  { name: 'phone', package: null, events: ['phone:sleep', 'phone:place', 'phone:workout', 'phone:motion', 'phone:steps'], speech: 'event', does: 'sleep, places and workouts, pushed from your phone', pushed: true },
 ]
 
 /**

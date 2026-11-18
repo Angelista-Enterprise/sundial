@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { personAliasFor } from '@sundial/helpers/sanitize-at-ingest.js';
 import { displayNameFromAddress, looksLikePersonName } from '@sundial/helpers/person-name.js';
 import { getAllEntities, getCurrentEntityFacts, getAllProjects } from '@sundial/db/index.js';
-import { findEnvelopeIndex, runSqlite, type SqliteRunner } from '@sundial/sensors/mail/envelope-index.js';
+import { findEnvelopeIndex, runSqlite, type SqliteRunner } from '@sundial/sensors/envelope-index.js';
 
 const run = promisify(execFile);
 

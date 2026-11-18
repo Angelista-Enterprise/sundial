@@ -1,13 +1,11 @@
 import { withPersona } from '@sundial/kernel/persona.js';
-import type { Commitment, KernelState, MomentRollup, Rule } from '@sundial/kernel/types.js';
-import { namesDeliverable, samePerson } from './promise-terms.js';
+import type { MomentRollup, Rule } from '@sundial/kernel/types.js';
 import { isMarked } from './ingest-anomaly.js';
 import { notesEditedToday } from './vault-track.js';
-import { recentMailSubjects } from './mail-track.js';
 import { closingMomentRow, noIntentReason } from './moment-close.js';
 import { goalLabel, openGoals } from './goal-checkin.js';
-import { clip } from './questions/index.js';
-import { MAX_GOAL_SLOTS, MAX_PROMISE_SLOTS, momentFanout } from './questions/moment-fanout.js';
+import { describeScreenFacts } from './screen-facts.js';
+import { MAX_GOAL_SLOTS, momentFanout } from './questions/moment-fanout.js';
 
 interface WindowChangedPayload {
   processName?: string;
@@ -74,6 +72,9 @@ function buildActivityContext(rollup: MomentRollup, titles: string[], newProcess
   if (rollup.calendarActive) lines.push('A calendar event was active during this session.');
   if (rollup.lifeEvents.length > 0) lines.push(`Notable activity detected: ${rollup.lifeEvents.join(', ')}`);
   if (rollup.screenRefs && rollup.screenRefs.length > 0) lines.push(`Tickets / PRs on screen: ${rollup.screenRefs.join(', ')}`);
+  // Typed on this Mac from the screen (`screen-facts.ts`); refs are on the line above, so not twice.
+  const seen = describeScreenFacts((rollup.screenSeen ?? []).filter((f) => f.kind !== 'ticket' && f.kind !== 'pr'));
+  if (seen.length > 0) lines.push(`Read off the screen: ${seen.join(' · ')}`);
   if (rollup.symbolsEdited && rollup.symbolsEdited.length > 0) lines.push(`Code symbols edited: ${rollup.symbolsEdited.join(', ')}`);
   // Omitted, not filled with "unknown", when the moment did not end by moving
   // to another window — a moment closed by idle, sleep, or the thirty-minute
@@ -114,23 +115,6 @@ function buildActivityContext(rollup: MomentRollup, titles: string[], newProcess
  * bounce (each leg individually above `MIN_MOMENT_DURATION_MS`, so neither
  * gets dropped by B1) still schedules two separate calls today.
  */
-/** UC1 (U1-F23): the promises most worth a resolve slot in this moment. */
-export function slotPromises(promises: readonly Commitment[], rollup: Pick<MomentRollup, 'meetingAttendees' | 'windowTitles'>): Commitment[] {
-  const titles = rollup.windowTitles.join(' ');
-  const score = (c: Commitment): number => (rollup.meetingAttendees.some((a) => samePerson(a, c.promise?.counterparty)) ? 2 : 0) + (c.promise && namesDeliverable(c.promise.keys, titles) ? 1 : 0);
-  return promises
-    .map((c, i) => ({ c, i, s: score(c) }))
-    .sort((a, b) => b.s - a.s || a.i - b.i)
-    .slice(0, MAX_PROMISE_SLOTS)
-    .map(({ c }) => c);
-}
-
-/** A mail sent, or a message the owner wrote, inside the moment. */
-function sentDuring(state: KernelState, from: string, to: string): boolean {
-  const inside = (at: string) => at >= from && at <= to;
-  return (state.mail?.sent ?? []).some((m) => inside(m.at)) || (state.mail?.messages ?? []).some((m) => m.fromMe && inside(m.at));
-}
-
 export const momentAnalysisSchedule: Rule = (state, event) => {
   // D2-adjacent fix (see moment-close.ts's `closingMomentRow` doc comment) —
   // a same-process/same-project title change appends to the open moment (B1)
@@ -168,18 +152,10 @@ export const momentAnalysisSchedule: Rule = (state, event) => {
   // the metadata so `applyMomentJudgement` credits THE goal that was in the
   // slot, not whichever is open when the answer lands.
   const goals = openGoals(state.memory.factCursor).slice(0, MAX_GOAL_SLOTS);
-  // J4.4: the promises still open, so a kept one can be closed — the fallback
-  // to UC1's deterministic evidence. Four slots, filled by relevance rather
-  // than age (U1-F23): a promise to someone in this moment's meeting, or whose
-  // deliverable a title names, first; then the oldest. A fifth promise was
-  // never in a slot before, so it could never be closed this way.
-  const promises = slotPromises(state.commitments.promises, closing.rollup);
   const durationMs = typeof closed.durationMs === 'number' ? closed.durationMs : 0;
   const projectId = typeof closed.projectId === 'string' ? closed.projectId : null;
   const notes = notesEditedToday(state);
-  const fanout = momentFanout.build({ rollup: closing.rollup, projectId, durationMs, openGoals: goals.map(goalLabel), openPromises: promises.map((c) => c.promise?.quote ?? c.name), notesEditedToday: notes, mailSubjects: recentMailSubjects(state, event.ts) });
-  const r = closing.rollup;
-
+  const fanout = momentFanout.build({ rollup: closing.rollup, projectId, durationMs, openGoals: goals.map(goalLabel), notesEditedToday: notes, mailSubjects: [] }); // the mail reader was dropped on 2026-10-14; the fan-out keeps its slot
   return {
     state,
     effects: [
@@ -194,16 +170,8 @@ export const momentAnalysisSchedule: Rule = (state, event) => {
         metadata: {
           durationMs,
           goals: goals.map((g) => g.entityId),
-          promises: promises.map((c) => c.id),
           projectId,
           projectName: projectId ? (state.project.known[projectId]?.name ?? projectLabel(projectId)) : null,
-          // J4.4's second key (docs/jarvis/05): closing a promise needs evidence a
-          // third party could not have typed into a title — a commit, commands run,
-          // a meeting on the calendar, the mic open.
-          // U1-F25: a mail sent or a message written in the moment is such evidence too.
-          nonText: r.gitCommitCount > 0 || r.shellCommandCount > 0 || Boolean(r.calendarActive) || Boolean(r.micActive) || sentDuring(state, closing.startTime, event.ts),
-          // The words the promise would be quoted from, clipped; absent when nothing was heard.
-          ...(r.spokenExcerpt ? { spoken: clip(r.spokenExcerpt, 160) } : {}),
         },
       },
       {

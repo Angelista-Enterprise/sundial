@@ -7,6 +7,7 @@ import { getSundialConfigPath, withConfigLock, writeConfigAtomic } from '@sundia
 import { ruleForPlace, sanitizeProjectRule, unstableRuleReason } from '@sundial/helpers/sundial-config.js'
 import { readAssistantProposals } from './read-assistant-proposals.js'
 import { readAttributionProposals } from './read-attribution.js'
+import { proposalAnswer, readProposalsView } from './read-proposals.js'
 
 export function mountProposals(ctx) {
   const registerRoute = (route) => ctx.webServer.register(guard(ctx.connection, route))
@@ -30,6 +31,16 @@ export function mountProposals(ctx) {
     if (proposalId === '' || (verdict !== 'accepted' && verdict !== 'rejected')) return 'A verdict needs a proposalId and either "accepted" or "rejected".'
     await ctx.gnomonKernel.appendSignal('assistant:response', { proposalId, verdict })
     return { recorded: true, proposalId, verdict }
+  })
+
+  // ── What Gnomon's learners propose (Set 5 R3) ─────────────────────────────
+  // One list, each with its count and the two routes that answer it (`read-proposals.js`).
+  view(ctx, '/gnomon/proposals', 'The proposals could not be read.', () => readProposalsView({ state: ctx.gnomonKernel.getState(), now: Date.now() }))
+  post(ctx, '/gnomon/proposals/answer', { limit: 1024, method: 'An answer takes a POST.', tooLong: 'That answer is too long.' }, async (body) => {
+    const answer = proposalAnswer(ctx.gnomonKernel.getState(), Date.now(), body)
+    if (answer === null) return 'That is no proposal on the card: answered already, or gone.'
+    await ctx.gnomonKernel.appendSignal('proposal:answered', answer)
+    return { recorded: true, ...answer }
   })
 
   // ── Untracked time, and what to call it ──────────────────────────────────

@@ -1,6 +1,7 @@
-// GNOMON_PERSONA is authored twice on purpose — once in persona.js (built
-// from the real ASK_SYSTEM_PROMPT export) and once restated verbatim in
-// cordis.patch.yml (a patch row replaces config wholesale and YAML cannot
+// The Gnomon persona for dsh's system-prompt row is `renderPersona('api')` from
+// packages/kernel/src/persona.ts (the chat voice plus one harness paragraph;
+// {{model}} is a dsh placeholder). cordis.patch.yml restates it verbatim as the
+// row's personaPrefix (a patch row replaces config wholesale and YAML cannot
 // import JS). This test pins the two copies together so they cannot drift:
 // change one and this fails until the other matches.
 import { describe, it, expect } from 'vitest';
@@ -8,10 +9,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ASK_SYSTEM_PROMPT } from '@sundial/kernel/tools/ask-prompt.js';
-import { GNOMON_PERSONA, HARNESS_NOTE } from './persona.js';
+import { HARNESS_NOTE, renderPersona } from '@sundial/kernel/persona.js';
 import { renderResultText, MAX_RESULT_BYTES } from './render.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+const GNOMON_PERSONA = renderPersona('api');
 
 /**
  * Extract the `personaPrefix: |-` literal block from cordis.patch.yml without a

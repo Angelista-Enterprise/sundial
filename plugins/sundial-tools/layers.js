@@ -65,6 +65,17 @@ export const HOT_TOOL_NAMES = [
   'gnomon_entity_history',
   'gnomon_semantic_search',
   'gnomon_moment_detail',
+  // Nodus: hot because a figure is often the better answer whatever the words (plugins/sundial-nodus).
+  'gnomon_visualize',
+  // Hot so the model never fetches their schema first (gnomon_tools took 2 to 11 s) or sends them with empty args.
+  'gnomon_run_shell',
+  'gnomon_await',
+  'screen_look',
+  'screen_act',
+  // Set 2 Round 1: "pull it up" in one call (sundial-actions pull-up.js).
+  'gnomon_pull_up',
+  // Set 2 Round 3: "run <skill>", a kept skill in one call (sundial-actions skill.js).
+  'gnomon_skill',
   'todo_write',
   'ask_user_question',
   'skill',
@@ -74,6 +85,53 @@ export const HOT_TOOL_NAMES = [
 export const DISCOVER_TOOL_NAME = 'gnomon_tools';
 export const DISPATCH_TOOL_NAME = 'gnomon_call';
 
+/**
+ * The call the model meant, out of the envelope it sent.
+ *
+ * Run 12 lost five calls to the envelope alone: `gnomon_call` wrapped around itself, and a `name`
+ * left out while the tool's own arguments sat at the top level. Both say plainly which tool was
+ * wanted, so they are unwrapped instead of refused. Anything else still comes back with an example.
+ */
+export function unwrap(args, depth = 0) {
+  const name = typeof args?.name === 'string' ? args.name : '';
+  const inner = args?.args && typeof args.args === 'object' && !Array.isArray(args.args) ? args.args : {};
+  // gnomon_call inside gnomon_call: the one that names a real tool is the one meant.
+  if (name === DISPATCH_TOOL_NAME && depth < 3 && typeof inner.name === 'string') return unwrap(inner, depth + 1);
+  if (name) return { name, args: inner };
+  // No name, but the arguments carry one tool's own fields: take the name from the only key that is a tool's.
+  const { args: _nested, ...flat } = args ?? {};
+  return { name: typeof flat.tool === 'string' ? flat.tool : '', args: Object.keys(inner).length ? inner : flat };
+}
+
+/** Levenshtein distance between two names. */
+export function editDistance(a, b) {
+  const first = Array.from({ length: b.length + 1 }, (_, j) => j);
+  const last = [...a].reduce((row, ca, i) => {
+    const next = [i + 1];
+    for (let j = 1; j <= b.length; j++) next[j] = Math.min(row[j] + 1, next[j - 1] + 1, row[j - 1] + (ca === b[j - 1] ? 0 : 1));
+    return next;
+  }, first);
+  return last[b.length];
+}
+
+/**
+ * The tools nearest what the model sent, nearest first. With a name: by edit distance (the live
+ * record has `gnomondid_i` 4 times and `gnonon_what_if` once). With none: by how many of the
+ * argument keys each tool takes, so an empty name (7 on the record) is answered with a short list.
+ */
+export function closestTools(schemas, name, args = {}, n = 3) {
+  const keys = Object.keys(args ?? {});
+  const scored = schemas
+    .filter((t) => !isFixed(t.name))
+    .map((t) => ({ name: t.name, score: name ? editDistance(name, t.name) : -keys.filter((k) => k in (t.parameters?.properties ?? {})).length }))
+    .filter((t) => name || t.score < 0)
+    .sort((a, b) => a.score - b.score || a.name.localeCompare(b.name));
+  return scored.slice(0, n);
+}
+
+/** A misspelled name within this many edits runs as the one tool it is nearest. */
+export const NAME_SLACK = 2;
+
 /** The menu's runtime-context name. */
 export const MENU_CONTEXT_NAME = 'gnomon:deferred-tools';
 
@@ -82,12 +140,13 @@ export const MENU_CONTEXT_NAME = 'gnomon:deferred-tools';
  * which it needs before it reads a schema. A tool missing here lands in "More".
  */
 export const TOOL_GROUPS = [
-  ['Look up the record', 'did I…?, what happened when, a project, people, goals, tickets, habits, trends', ['gnomon_did_i', 'gnomon_timeline', 'gnomon_recent_activity', 'gnomon_project_status', 'gnomon_signals', 'gnomon_people', 'gnomon_goals', 'gnomon_tickets', 'gnomon_anomalies', 'gnomon_routines', 'gnomon_drift', 'gnomon_brief', 'gnomon_project_handoff', 'gnomon_current_context', 'gnomon_conversation_search', 'gnomon_agent_yield']],
+  ['Look up the record', 'did I…?, what happened when, a project, people, goals, tickets, my pull requests (open, review, CI), habits, trends', ['gnomon_pull_requests', 'gnomon_did_i', 'gnomon_timeline', 'gnomon_recent_activity', 'gnomon_project_status', 'gnomon_signals', 'gnomon_people', 'gnomon_goals', 'gnomon_tickets', 'gnomon_anomalies', 'gnomon_routines', 'gnomon_drift', 'gnomon_brief', 'gnomon_project_handoff', 'gnomon_current_context', 'gnomon_conversation_search', 'gnomon_agent_yield']],
   ['Show on the board', 'place, focus or walk cards; read a card; a grid or a figure', ['gnomon_board', 'gnomon_look', 'gnomon_lens', 'show_surface', 'gnomon_compose_figure']],
-  ['Remember and correct', 'a fact the owner told you, a promise, an outcome, feedback', ['gnomon_assert', 'gnomon_track_promise', 'gnomon_claim', 'gnomon_record_outcome', 'gnomon_notice_feedback', 'gnomon_owner_answer']],
+  ['Remember and correct', 'a fact the owner told you, a promise they tell you of ("I owe Mira the draft by Tuesday"), an outcome, feedback', ['gnomon_assert', 'gnomon_track_promise', 'gnomon_claim', 'gnomon_record_outcome', 'gnomon_notice_feedback', 'gnomon_owner_answer']],
   ['Act for the owner (needs their yes)', 'propose, draft, ask them, calendar, a web page, a file', ['gnomon_propose', 'gnomon_draft', 'gnomon_ask_owner', 'gnomon_calendar_create', 'web_page', 'present']],
-  ['Later and in the background', 'a job for the shelf, a wake-up, stop a repeat', ['gnomon_start_job', 'gnomon_schedule_wakeup', 'gnomon_cancel_wakeup', 'gnomon_shelve', 'gnomon_work_done', 'gnomon_stop_repeat']],
-  ['Watch rules', 'test, find, adopt or drop a rule that notices on its own; what if', ['gnomon_test_rule', 'gnomon_mine_rules', 'gnomon_what_if', 'gnomon_adopt_rule', 'gnomon_drop_rule', 'gnomon_export_rule']],
+  ["On the owner's screen, in their other apps", 'look first, then act or point on a ref: screen_look {app: "Notes"}, then screen_act {ref: "e7", action: "press", because: "Open the note"} or screen_mark {ref: "e7"}', ['screen_look', 'screen_act', 'screen_mark', 'screen_guide', 'screen_undo']],
+  ['Later and in the background', 'remind me or check back at a time (a wake-up), a job for the shelf, stop a repeat', ['gnomon_start_job', 'gnomon_schedule_wakeup', 'gnomon_cancel_wakeup', 'gnomon_shelve', 'gnomon_work_done', 'gnomon_stop_repeat']],
+  ['Watch rules', 'test, find, adopt, pause or drop a rule that notices on its own; what if', ['gnomon_test_rule', 'gnomon_mine_rules', 'gnomon_what_if', 'gnomon_adopt_rule', 'gnomon_drop_rule', 'gnomon_pause_rule', 'gnomon_resume_rule', 'gnomon_reach_revoke', 'gnomon_export_rule']],
   ['Web', 'search and read pages', ['web_search', 'web_fetch']],
   ['About Gnomon itself', 'its reliability, model spend, board traffic', ['gnomon_reliability', 'gnomon_llm_ledger', 'gnomon_board_traffic']],
 ];
@@ -128,9 +187,12 @@ export function menuOf(coldTools) {
 }
 
 /** The menu as the model reads it, once per prompt: names by purpose, no schemas. */
+/** The menu's first line. Exported for the lab bench, which shows the model the same words. */
+export const MENU_HEAD = `More tools, by what they are for. Their schemas are kept out of your tool list: run one with ${DISPATCH_TOOL_NAME} and your best arguments — a wrong argument comes back with that tool's schema — or read it first with ${DISCOVER_TOOL_NAME} if you cannot guess what it takes. Most questions need none of these: a day's totals — minutes per app and project, notes edited, agent repos, tickets opened — are one gnomon_today_summary call.`;
+
 export function menuText(coldTools) {
   return [
-    `More tools, by what they are for. Their schemas are kept out of your tool list: call ${DISCOVER_TOOL_NAME} with a name to read one (or with none for a line on each), then ${DISPATCH_TOOL_NAME} to run it. Most questions need none of these.`,
+    MENU_HEAD,
     ...menuOf(coldTools).map(({ group, hint, tools }) => `- ${group}${hint ? ` (${hint})` : ''}: ${tools.map((t) => t.name).join(', ')}`),
   ].join('\n');
 }
@@ -160,7 +222,7 @@ export function layerTools({ tools, defineTool, hot = HOT_TOOL_NAMES }) {
 
   const discover = defineTool({
     name: DISCOVER_TOOL_NAME,
-    description: `Read the full schema of one of the tools in the menu (listed in your context, not in your tool list). Pass a name to get that tool's description and parameters; omit it for the grouped menu. Read a tool before its first ${DISPATCH_TOOL_NAME}.`,
+    description: `Read the full schema of one of the tools in the menu (listed in your context, not in your tool list). Pass a name to get that tool's description and parameters; omit it for the grouped menu. Only when you cannot guess its arguments: ${DISPATCH_TOOL_NAME} returns the schema with any argument error anyway.`,
     parameters: {
       // dsh's schema compiler rejects `required: false` — an optional
       // parameter omits the key entirely.
@@ -186,9 +248,10 @@ export function layerTools({ tools, defineTool, hot = HOT_TOOL_NAMES }) {
 
   const dispatch = defineTool({
     name: DISPATCH_TOOL_NAME,
-    description: `Run one of the tools in the menu. Pass its name and its own arguments as an object in \`args\`; read it with ${DISCOVER_TOOL_NAME} first. It runs exactly as a direct call would, approvals included, and returns what the tool returns.`,
+    description: `Run one of the tools in the menu. Pass its name and its own arguments as an object in \`args\` — your best guess is fine: a wrong argument comes back with the tool's schema, so the next call can be right without a ${DISCOVER_TOOL_NAME} round. It runs exactly as a direct call would, approvals included, and returns what the tool returns.`,
     parameters: {
-      name: { type: 'string', description: 'Which tool from the menu to run.', required: true },
+      // Not required: run 12 lost five calls to dsh refusing the envelope before this tool could say how to fix it.
+      name: { type: 'string', description: 'Which tool from the menu to run.' },
       // `additionalProperties: true` is the point: the shape is the inner
       // tool's own schema, which dsh validates when the call re-enters the pipeline.
       args: {
@@ -200,24 +263,49 @@ export function layerTools({ tools, defineTool, hot = HOT_TOOL_NAMES }) {
     },
     output: {
       schema: { type: 'json' },
-      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+      render: (_args, value) => [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }],
     },
     // One flag covers the whole door, whatever tool comes through it next.
     isConcurrencySafe: () => false,
     async execute(args, exec) {
-      const name = String(args?.name ?? '');
-      if (isFixed(name)) return { error: `${name} is called directly, not through ${DISPATCH_TOOL_NAME}.` };
-      if (!tools.schemas(exec?.agent).some((t) => t.name === name)) return { error: `No tool named ${name}.`, available: coldOf(exec?.agent).map((t) => t.name).sort() };
+      const asked = unwrap(args);
+      const sent = String(asked?.name ?? '');
+      const example = `${DISPATCH_TOOL_NAME} {"name": "gnomon_today_summary", "args": {"date": "2026-11-13"}}`;
+      const schemas = tools.schemas(exec?.agent);
+      if (!sent) {
+        const near = closestTools(schemas, '', asked.args).map((t) => t.name);
+        const error = `Name the tool to run, like this: ${example}. The tool's own arguments go inside args, never beside it.`;
+        return near.length ? { error: `${error} The tools that take these arguments: ${near.join(', ')}.` } : { error, available: coldOf(exec?.agent).map((t) => t.name).sort() };
+      }
+      if (sent === DISPATCH_TOOL_NAME) return { error: `${sent} is called directly, with its own arguments at the top level, not through ${DISPATCH_TOOL_NAME}. Send ${sent} as the tool name of this call.` };
+      // A misspelled name runs as the one tool within NAME_SLACK edits of it; two as near is a guess, so it is refused.
+      const near = schemas.some((t) => t.name === sent) ? [] : closestTools(schemas, sent);
+      const fixed = near.length && near[0].score <= NAME_SLACK && near[1]?.score !== near[0].score ? near[0].name : null;
+      if (fixed) console.log(`[sundial-tools] ${DISPATCH_TOOL_NAME}: no tool named ${sent}, ran ${fixed}`);
+      const name = fixed ?? sent;
+      const found = schemas.find((t) => t.name === name);
+      if (!found) return { error: `No tool named ${name}. The nearest: ${near.map((t) => t.name).join(', ')}.`, available: coldOf(exec?.agent).map((t) => t.name).sort() };
       const result = await tools.execute({
         callId: `${exec.callId}:${name}`,
         rootCallId: exec.rootCallId ?? exec.callId,
         name,
-        arguments: args?.args ?? {},
+        arguments: asked.args,
         agent: exec.agent,
         parent: exec.token,
         signal: exec.signal,
       });
-      return result.isError ? { error: result.error?.message ?? String(result.error?.code ?? 'the tool failed') } : result.value;
+      // The tool's own text, as a direct call reads it; raw JSON only when it renders more than text.
+      const text = result.content?.length && result.content.every((b) => b.type === 'text') ? result.content.map((b) => b.text).join('\n') : null;
+      if (!result.isError) return text ?? result.value;
+      const error = result.error?.message ?? String(result.error?.code ?? 'the tool failed');
+      // An argument the model guessed wrong is answered with the schema: the menu loop the lab bench
+      // measured was the model reading schemas before every call (up to 11 reads in one turn).
+      const bad = /invalid|expected|required|unrecognized|validation|argument/i.test(error);
+      const schema = bad ? coldOf(exec?.agent).find((t) => t.name === name) : null;
+      // Run 36 T01: gnomon_run_shell came with empty args, and the refusal did not name the field it needed.
+      const needs = bad ? (Array.isArray(found.parameters?.required) ? found.parameters.required : []).filter((k) => !(k in asked.args)) : [];
+      const said = needs.length ? `${name} needs ${needs.join(' and ')} in args: nothing was run. Send ${DISPATCH_TOOL_NAME} {"name": "${name}", "args": {${needs.map((k) => `"${k}": ...`).join(', ')}}}.` : error;
+      return schema ? JSON.parse(JSON.stringify({ error: said, schema: { description: schema.description, parameters: schema.parameters } })) : { error: said };
     },
   });
 

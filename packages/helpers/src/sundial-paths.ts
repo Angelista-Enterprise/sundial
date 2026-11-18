@@ -9,7 +9,7 @@ export function getSundialRuntimeDir(): string {
 
 /**
  * The bearer token for the phone ingest listener: generated once by
- * `loadOrGenerateIngestToken` (`packages/harness-runtime/src/phone-ingest.ts`)
+ * the retired phone ingest listener (dropped 2026-10-14)
  * and read by `sundial-proactive` to sign a notice's verdict actions. It began
  * as the retired daemon's HTTP API token, read by the retired CLI. Lives in
  * `@sundial/helpers` so writer and readers share one path.

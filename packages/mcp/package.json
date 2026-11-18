@@ -15,14 +15,20 @@
     }
   },
   "scripts": {
-    "build": "tsc -b tsconfig.json",
+    "build": "tsc -b tsconfig.json && node apps/build.mjs",
     "clean": "rm -rf dist"
   },
   "dependencies": {
     "@sundial/db": "workspace:*",
     "@sundial/helpers": "workspace:*",
     "@sundial/kernel": "workspace:*",
+    "@sundial/rules": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "zod": "^4"
+    "zod": "^4",
+    "@modelcontextprotocol/ext-apps": "^1.7.5",
+    "@sundial/dsh-theme": "workspace:*"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
   }
 }

@@ -1,4 +1,4 @@
-// W5 step 9: the reliability scorecard, thirteen rows (13 is W6 P5), each with its n and its target. Rows that
+// W5 step 9: the reliability scorecard, fourteen rows (13 is W6 P5, 14 the retention prune), each with its n and its target. Rows that
 // gate a decision (1–4, 11) are folded (`reliability.llm`, `calibrated`) and read here as a pure
 // function of the state; the rest need history and are read from the log (W4's placement rule).
 // `gnomon_reliability` reads them all (`scorecard-history.ts` adds the log's rows), and the
@@ -43,17 +43,32 @@ export function kindPrecision(state: KernelState | null, kind: string): { value:
   return { value, n: s?.n ?? 0, meets: judged((value ?? 0) >= PHASIC_PRECISION, s?.n ?? 0, PHASIC_MIN_N) };
 }
 
-/** Row 11 over every tool: verified as done, and performed without failing or being refused. */
+/**
+ * The tools that can act outside Gnomon's record. Row 11's "did not fail" counts only these:
+ * over every tool it read 93% on 1,997 calls on the live record (2026-11-04), most of them reads
+ * like gnomon_today_summary, against 31% (n = 74) for the tools that act.
+ */
+// `run_shell` and `calendar_create` are the tools' own detail rows, with no outcome: never counted.
+const ACTING = new Set(['gnomon_run_shell', 'bash', 'gnomon_calendar_create', 'gnomon_reminder_create', 'web_act', 'screen_act', 'screen_undo']);
+const READ_VERB = /^(get|list|search|show|read|fetch|find|query|lookup|describe|count|view)(_|$)/i;
+export const isActingTool = (tool: string): boolean => ACTING.has(tool) || (tool.startsWith('mcp__') && !READ_VERB.test(tool.split('__').pop() ?? ''));
+
+/** Row 11 over the tools that act: verified as done, and performed without failing or being refused. */
 export function actionRates(state: KernelState | null): { verified: { value: number | null; n: number }; performed: { value: number | null; n: number }; meets: boolean | null } {
-  const sum = (prefix: string) => Object.entries(state?.calibrated?.params ?? {}).filter(([id]) => id.startsWith(prefix)).reduce((a, [, s]) => ({ n: a.n + s.n, hits: a.hits + s.hits }), { n: 0, hits: 0 });
+  const sum = (prefix: string, keep: (tool: string) => boolean = () => true) =>
+    Object.entries(state?.calibrated?.params ?? {})
+      .filter(([id]) => id.startsWith(prefix) && keep(id.slice(prefix.length)))
+      .reduce((a, [, s]) => ({ n: a.n + s.n, hits: a.hits + s.hits }), { n: 0, hits: 0 });
   const v = sum('action.outward:');
-  const p = sum('action.performed:');
+  // A tool the judge ever verified as outward acts, whatever its name.
+  const judged = new Set(Object.keys(state?.calibrated?.params ?? {}).filter((id) => id.startsWith('action.outward:')).map((id) => id.slice('action.outward:'.length)));
+  const p = sum('action.performed:', (tool) => judged.has(tool) || isActingTool(tool));
   const verified = { value: rate(v.hits, v.n), n: v.n };
   const performed = { value: rate(p.hits, p.n), n: p.n };
   return { verified, performed, meets: v.n === 0 ? null : v.n >= ACTION_MIN_N && p.n >= ACTION_MIN_N && (verified.value ?? 0) >= ACTION_TARGET && (performed.value ?? 0) >= ACTION_TARGET };
 }
 
-/** The rows a pure read of the state can answer: 1–5 and 11. */
+/** The rows a pure read of the state can answer: 1–5, 11 and 14. */
 export function foldedScorecard(state: KernelState | null, now: number): ScorecardRow[] {
   const routes = Object.entries(state?.reliability?.llm ?? {});
   const week = routes.map(([route, r]) => {
@@ -72,6 +87,9 @@ export function foldedScorecard(state: KernelState | null, now: number): Scoreca
   const base = state?.calibrated?.params?.['presence.baseline'];
   const lift = seen && base && seen.n > 0 && base.n > 0 ? seen.hits / seen.n - base.hits / base.n : null;
   const actions = actionRates(state);
+  // The privacy prune (rules retention-prune.ts) stamps `lastPrunedAt` at every day boundary; nothing else shows that it runs.
+  const pruned = state?.retention?.lastPrunedAt ?? null;
+  const sincePrune = pruned === null ? null : now - Date.parse(pruned);
   // R11: each outward tool's verified ratio. A tool with no verdict yet has no part, and `actions` stays `ask` for every tool until the row is met.
   const verifiedByTool = Object.entries(state?.calibrated?.params ?? {}).filter(([id]) => id.startsWith('action.outward:')).map(([id, s]) => ({ key: id.slice('action.outward:'.length), value: rate(s.hits, s.n), n: s.n, meets: judged(s.hits / Math.max(1, s.n) >= ACTION_TARGET, s.n, ACTION_MIN_N) }));
   return [
@@ -80,6 +98,7 @@ export function foldedScorecard(state: KernelState | null, now: number): Scoreca
     { id: 3, metric: 'Delivered notices with a verdict or an implicit label, 30 days', value: withN(pct(rate(notices.labelled, notices.delivered)), notices.delivered), n: notices.delivered, target: '≥ 80%', meets: judged(notices.labelled / Math.max(1, notices.delivered) >= 0.8, notices.delivered, TRUST_N), lives: 'folded', parts: kinds },
     { id: 4, metric: 'Notices judged worth hearing, per kind', value: withN(pct(all ? rate(all.hits, all.n) : null), all?.n ?? 0), n: all?.n ?? 0, target: `≥ ${PHASIC_PRECISION * 100}% at n ≥ ${PHASIC_MIN_N} before a kind may interrupt alone`, meets: precision.length === 0 ? null : precision.some((k) => k.meets === true), lives: 'folded', parts: precision },
     { id: 5, metric: 'At the Mac within 5 min of a notice, against a fixed time', value: lift === null ? 'not measured yet' : withN(`${lift >= 0 ? '+' : ''}${Math.round(lift * 100)} pts (${pct(seen!.hits / seen!.n)} vs ${pct(base!.hits / base!.n)})`, seen!.n), n: seen?.n ?? 0, target: '≥ +20 pts', meets: lift === null ? null : judged(lift >= 0.2, seen!.n, TRUST_N), lives: 'selector' },
-    { id: 11, metric: 'Actions verified as done; calls that did not fail or get refused', value: `${withN(pct(actions.verified.value), actions.verified.n)}; ${withN(pct(actions.performed.value), actions.performed.n)}`, n: actions.verified.n, target: '≥ 98% each', meets: actions.meets, lives: 'folded', parts: verifiedByTool },
+    { id: 11, metric: 'Actions verified as done; calls of an acting tool that did not fail or get refused', value: `${withN(pct(actions.verified.value), actions.verified.n)}; ${withN(pct(actions.performed.value), actions.performed.n)}`, n: actions.verified.n, target: '≥ 98% each', meets: actions.meets, lives: 'folded', parts: verifiedByTool },
+    { id: 14, metric: 'Retention prune last ran', value: pruned === null ? 'not yet' : `${pruned} (${Math.round(sincePrune! / 3_600_000)} h ago)`, n: pruned === null ? 0 : 1, target: 'within 2 days: it runs at every day boundary', meets: pruned === null ? null : sincePrune! <= 2 * 86_400_000, lives: 'folded' },
   ];
 }

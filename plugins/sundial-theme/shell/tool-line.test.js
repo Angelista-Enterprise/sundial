@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { elapsed, resultGist, toolLine } from './tool-line.js'
+import { argsText, callArgs, elapsed, resultGist, toolLine } from './tool-line.js'
 
 describe('toolLine', () => {
   it('says what a known tool is doing, with its argument', () => {
@@ -16,8 +16,33 @@ describe('toolLine', () => {
     expect(toolLine('gnomon_new_thing', {}).verb).toBe('New thing')
   })
 
+  it('says a screen step by its goal and its reason, so the slip shows the task while it works', () => {
+    expect(toolLine('gnomon_call', { name: 'screen_act', args: { goal: 'send a mail', because: 'Press Send', ref: 'e7@3c4d' } })).toEqual({ verb: 'Send a mail', detail: 'Press Send' })
+    expect(toolLine('screen_act', { app: 'Obsidian', window: 'puzzlebox', action: 'raise' })).toEqual({ verb: 'Working in Obsidian', detail: 'raise' })
+    expect(toolLine('screen_act', { action: 'raise' }).verb).toBe('Working on the screen')
+    // run200: "Await · job-0acb1c8e". What is waited for, in words, never the id.
+    expect(toolLine('gnomon_await', { job: 'job-0acb1c8e' })).toEqual({ verb: 'Waiting for the background job', detail: null })
+    expect(toolLine('gnomon_await', { app: 'Zen', gone: 'loading', seconds: 30 })).toEqual({ verb: 'Waiting for Zen', detail: 'until "loading" is gone' })
+    expect(toolLine('gnomon_await', { file: '/tmp/gnomon-job.log', seconds: 100 }).verb).toBe('Waiting for a file')
+    expect(toolLine('screen_act', { app: 'Notes', goal: 'new note', steps: [{}, {}, {}] })).toEqual({ verb: 'New note', detail: '3 steps' })
+    expect(toolLine('screen_look', { app: 'Obsidian', window: 'puzzlebox' })).toEqual({ verb: 'Looking at', detail: 'Obsidian, puzzlebox' })
+  })
+
   it('clips a long argument', () => {
     expect(toolLine('gnomon_run_shell', { command: 'x'.repeat(200) }).detail.length).toBeLessThanOrEqual(48)
+  })
+})
+
+describe('callArgs', () => {
+  it('finds a call\'s arguments by its own id, and one made through gnomon_call under the outer call', () => {
+    const act = { ref: 'e7@3c4d', action: 'press' }
+    const rows = new Map([['c1', { _args: { command: 'ls' } }], ['c2', { _args: { name: 'screen_act', args: act } }], ['c3', { _args: { name: 'screen_act', args: JSON.stringify(act) } }]])
+    expect(callArgs(rows, 'c1')).toEqual({ command: 'ls' })
+    expect(callArgs(rows, 'c2:screen_act')).toEqual(act)
+    expect(callArgs(rows, 'c3:screen_act')).toEqual(act)
+    expect(callArgs(rows, 'c9:screen_act')).toBeUndefined()
+    expect(argsText(act)).toContain('"ref": "e7@3c4d"')
+    expect(argsText({})).toBeNull()
   })
 })
 

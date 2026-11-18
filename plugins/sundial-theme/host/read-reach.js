@@ -35,7 +35,7 @@ export async function readReach({ state, tools, reach }) {
   // that exists to enumerate what Gnomon can do.
   const own = schemas
     // The web task tools (web_page, web_act) are Gnomon's own too, though not gnomon_-named.
-    .filter((t) => t.name.startsWith('gnomon_') || t.name === 'web_page' || t.name === 'web_act')
+    .filter((t) => t.name.startsWith('gnomon_') || t.name.startsWith('screen_') || t.name === 'web_page' || t.name === 'web_act')
     .map((t) => ({ name: t.name, tool: t.name.replace(/^gnomon_/, ''), description: t.description ?? '', verdicts: verdicts(t.name) }))
     .sort((a, b) => a.tool.localeCompare(b.tool))
 

@@ -9,16 +9,18 @@
  *   line   — one `Follow-up:` line drawn in the chat, no model turn (a plain notice addressed to a chat)
  *   push   — ntfy to the phone; at the Mac only while `pushAtMac`
  *   banner — the native banner (a no-op unless the owner enabled them); never when the route is `phone`
+ *   knock  — the app's knock sound; in `knock-wait` the turn waits for the owner's go (`voiceKnock` asks for it then)
  *
  * Moved unchanged from `delivery.js`: an interruption injects, wakes the agent
  * unless it is plain, and pushes and banners by its route; a tonic notice only
  * injects — or, plain and addressed to a chat, becomes that chat's line.
  */
-export type DeliveryAct = 'turn' | 'line' | 'inject' | 'push' | 'banner';
+export type DeliveryAct = 'turn' | 'line' | 'inject' | 'push' | 'banner' | 'knock';
 
-export function deliveryActs(channel: 'phasic' | 'tonic', route: string | null | undefined, plain: boolean, sessionId: string | null | undefined, notifications?: { pushAtMac?: boolean }): DeliveryAct[] {
+export function deliveryActs(channel: 'phasic' | 'tonic', route: string | null | undefined, plain: boolean, sessionId: string | null | undefined, notifications?: { pushAtMac?: boolean }, knock?: 'knock-wait' | 'knock-speak' | null): DeliveryAct[] {
   if (channel === 'tonic') return plain && typeof sessionId === 'string' && sessionId !== '' ? ['line'] : ['inject'];
-  const acts: DeliveryAct[] = plain ? ['inject'] : ['inject', 'turn'];
+  const acts: DeliveryAct[] = plain || knock === 'knock-wait' ? ['inject'] : ['inject', 'turn'];
+  if (knock) acts.push('knock');
   if (route !== 'mac' || notifications?.pushAtMac !== false) acts.push('push');
   if (route !== 'phone') acts.push('banner');
   return acts;

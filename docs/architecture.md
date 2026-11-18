@@ -207,7 +207,7 @@ is no bundler and no build step. The server side is `shell/server.js`; the API
 lives under `/gnomon/api`.
 
 Every route goes through `guard()` in
-[../plugins/sundial-theme/shell/guard.js](../plugins/sundial-theme/shell/guard.js),
+[../plugins/sundial-theme/host/guard.js](../plugins/sundial-theme/host/guard.js),
 which applies dsh's Host, Origin and `Sec-Fetch-Site` fence, requires the signed
 session cookie, and fails closed. An in-process caller adds
 `internalHeaders()`, a per-process secret accepted only over loopback.

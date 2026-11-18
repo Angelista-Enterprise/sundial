@@ -3,7 +3,8 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getSundialRuntimeDir } from '@sundial/helpers/sundial-paths.js';
-import { TOOL_REGISTRY, toolEnv } from '@sundial/kernel/tools/index.js';
+import { TOOL_REGISTRY, toolEnv, type ToolEnv } from '@sundial/kernel/tools/index.js';
+import { WRITE_TOOLS } from './mcp-writes.js';
 
 function textResult(value: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] };
@@ -29,12 +30,19 @@ function textResult(value: unknown) {
  * backing infrastructure this rewrite never built were dropped rather than
  * stubbed.
  */
-export function registerTools(server: McpServer): void {
-  for (const tool of TOOL_REGISTRY) {
-    server.tool(tool.name, tool.description, tool.schema, async (args: unknown) => {
+export function registerTools(server: McpServer, { skip = [] as readonly string[], ownerHost, env = () => toolEnv() }: { skip?: readonly string[]; ownerHost?: string; env?: () => ToolEnv } = {}): void {
+  // The registry's reads, then this server's writes (mcp-writes.ts), audited alike.
+  // `skip`: the reads mcp-apps.ts registers itself, with a page attached.
+  // `ownerHost`: a session opened with the owner token (http.ts); the rule writes read it off the env.
+  for (const tool of [...TOOL_REGISTRY, ...WRITE_TOOLS]) {
+    if (skip.includes(tool.name)) continue;
+    // Said out loud so a client in an auto-approve mode (Claude Code's auto mode) can skip
+    // its classifier for a read, and knows a write for one.
+    const annotations = { readOnlyHint: tool.readOnly, destructiveHint: false, openWorldHint: false };
+    server.tool(tool.name, tool.description, tool.schema, annotations, async (args: unknown) => {
       const started = Date.now();
       try {
-        const result = textResult(await tool.handler(args as never, toolEnv()));
+        const result = textResult(await tool.handler(args as never, { ...env(), ...(ownerHost === undefined ? {} : { ownerHost }) } as ToolEnv));
         recordMcpCall(tool.name, 'ok', started);
         return result;
       } catch (error) {

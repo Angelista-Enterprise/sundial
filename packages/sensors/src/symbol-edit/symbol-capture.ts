@@ -38,18 +38,30 @@ export function symbolFromHunkContext(context: string): string | null {
   return null;
 }
 
-export function extractSymbolsFromDiff(diffOutput: string): { symbols: string[]; hunkCount: number } {
+/**
+ * Symbols, hunks, and the lines the diff adds and removes, from the `@@ -a,b +c,d @@`
+ * headers of a `-U0` diff (a missing count is 1). The diff is the file's whole
+ * uncommitted change, so the counts are its size now, not the change since the last call.
+ */
+export function extractSymbolsFromDiff(diffOutput: string): { symbols: string[]; hunkCount: number; added: number; removed: number } {
   const symbols = new Set<string>();
   let hunkCount = 0;
+  let added = 0;
+  let removed = 0;
   for (const line of diffOutput.split('\n')) {
     if (!line.startsWith('@@')) continue;
     hunkCount++;
+    const counts = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line);
+    if (counts) {
+      removed += counts[1] === undefined ? 1 : Number(counts[1]);
+      added += counts[2] === undefined ? 1 : Number(counts[2]);
+    }
     const idx = line.indexOf('@@', 2);
     if (idx < 0) continue;
     const sym = symbolFromHunkContext(line.slice(idx + 2));
     if (sym) symbols.add(sym);
   }
-  return { symbols: Array.from(symbols), hunkCount };
+  return { symbols: Array.from(symbols), hunkCount, added, removed };
 }
 
 export function runGitDiff(cwd: string, relPath: string, timeoutMs = 5000): Promise<string | null> {

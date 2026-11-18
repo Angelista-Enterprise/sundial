@@ -46,6 +46,18 @@ export type KernelConfig = Pick<
   transcriptRetentionDays: number;
   /** `audio.autoMeetings`: meetings and calls open the microphone by themselves. Off: only Listen does. */
   autoHearMeetings: boolean;
+  /** `config.workdays`, 0 = Sunday. Absent (an older snapshot) means Monday to Friday. */
+  workdays?: number[];
+  /** `config.choreDays`: distinct days in four weeks before a chore earns an offer. Absent (an older snapshot): `DEFAULT_CHORE_DAYS`. */
+  choreDays?: number;
+  /** S6: `config.offerBar`, an offer of help's interrupting bar. Absent (an older snapshot): the gate's default (`DEFAULT_GATE_POLICY.offerThreshold`). */
+  offerBar?: number;
+  /** `privacy.privateHosts` over the web-mail defaults: hosts nothing may put to a model (`offerNow`). Absent (an older snapshot): the defaults. */
+  privateHosts?: string[];
+  /** `ocr.enabled && ocr.jev.text`: `screenRead` may put cleaned screen lines to Jev. Absent means no. */
+  screenJevText?: boolean;
+  /** `ocr.enabled` and `audio.enabled`: which sensors run, for `witnessPairs`. Absent means neither. */
+  sensorsOn?: { ocr: boolean; audio: boolean };
   // lane E (#12)
   /** `config.jobs` (the night shift). Optional: absent means off, and so does every snapshot from before it. */
   jobs?: NightJobsConfig;

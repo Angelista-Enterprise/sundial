@@ -1,0 +1,369 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:; style-src 'unsafe-inline'; img-src data: blob:; font-src data: blob:; connect-src 'none'; frame-src 'none'; worker-src 'none'; form-action 'none'">
+<title>Studio runtime</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:var(--page,transparent)}
+canvas{display:block;width:100%;height:100%}
+#labels,#leaders{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
+.nd-label3d{position:absolute;left:0;top:0;white-space:nowrap;font:500 10.5px/15px 'Inter Tight',system-ui,sans-serif;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);opacity:0;transition:color .2s,opacity .2s}
+.nd-label3d.nd-hot{color:var(--ochre-text)}
+.nd-label3d[data-explore]{pointer-events:auto;cursor:pointer}
+.nd-label3d[data-explore]:hover{color:var(--ink);text-decoration:underline}
+.nd-label3d::before{content:attr(data-ix);margin-right:7px;font:400 9px/15px ui-monospace,Menlo,monospace;letter-spacing:.04em;color:var(--faint)}
+.nd-label3d.nd-hot::before{color:var(--ochre-text)}
+.nd-leader{fill:none;stroke:var(--faint);stroke-width:.6}
+.nd-anchor{fill:var(--muted)}
+.nd-ring{fill:none;stroke:var(--faint);stroke-width:.5;opacity:.7}
+.nd-leader.nd-hot{stroke:var(--ochre);stroke-width:1}
+.nd-anchor.nd-hot{fill:var(--ochre)}
+.nd-ring.nd-hot{stroke:var(--ochre)}
+.nd-plate-tick{fill:none;stroke:var(--faint);stroke-width:.75;opacity:.55}
+.nd-micro{font:400 9px ui-monospace,Menlo,monospace;letter-spacing:.08em;fill:var(--faint);opacity:.8}
+</style>
+<svg id="leaders" aria-hidden="true"></svg>
+<div id="labels"></div>
+<script type="module">
+// The Studio runtime: a sandboxed room (an opaque origin, no network) where a
+// model-written scene program runs. The card talks to it only by postMessage:
+// init (three.js, the kit, labels.js and camera.js as text, the palette),
+// run, step, snapshot, clear, theme. It answers boot, ready, ran, error,
+// snapshot, settled and door. Labels stand in the margins with leaders, as on
+// the stage (labels.js `marginLabels`); the figure is drawn only inside them.
+let T, KIT, LBL, CAM
+const pal = {}
+const Q = { ready: false, initing: false, parts: new Map(), labels: [], updates: [], steps: [], hot: new Set(), view: null, glide: null, target: null, aimedAt: 0, told: true, born: 0, errors: [] }
+let renderer, scene, camera, kit, nudge
+let w = 1, h = 1, inner = { x0: 0, y0: 0, x1: 1, y1: 1 }
+// Where the camera stands and what it frames, for the browser check and nothing else.
+globalThis.studio = () => ({ target: Q.target, view: Q.view, inner, parts: nodesOf(null) })
+const labelsEl = document.getElementById('labels')
+const leadersEl = document.getElementById('leaders')
+const NS = 'http://www.w3.org/2000/svg'
+const DIM = 0.3
+const HIDDEN = 0.28
+const post = (m) => parent.postMessage({ nodus: 'studio', ...m }, '*')
+const blobUrl = (src) => URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))
+
+function setPalette(p) {
+  for (const [k, v] of Object.entries(p ?? {})) if (typeof v === 'string' && /^#[0-9a-f]{3,8}$/i.test(v)) {
+    if (pal[k]) pal[k].set(v); else pal[k] = new T.Color(v)
+    document.documentElement.style.setProperty(`--${k.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase())}`, v)
+  }
+  pal.ochreText ??= pal.ochre
+}
+
+async function init(m) {
+  if (Q.ready || Q.initing) return
+  Q.initing = true
+  if (m.font) try { const f = new FontFace('Inter Tight', m.font, { weight: '100 900' }); document.fonts.add(await f.load()) } catch {}
+  T = await import(blobUrl(m.three))
+  KIT = await import(blobUrl(m.kit))
+  LBL = await import(blobUrl(m.labels))
+  CAM = await import(blobUrl(m.camera))
+  setPalette(m.palette)
+  renderer = new T.WebGLRenderer({ alpha: true, antialias: true, preserveDrawingBuffer: true, powerPreference: 'low-power' })
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
+  document.body.prepend(renderer.domElement)
+  scene = new T.Scene()
+  camera = new T.PerspectiveCamera(36, 1, 0.05, 500)
+  resize()
+  addEventListener('resize', resize)
+  Q.ready = true
+  requestAnimationFrame(loop)
+  post({ type: 'ready' })
+}
+function resize() {
+  if (!renderer) return
+  w = Math.max(1, innerWidth); h = Math.max(1, innerHeight)
+  renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); aim()
+}
+
+// A seeded rng for the kit, so a program draws the same set every time.
+function rngOf(seed) { let a = seed >>> 0; return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296 } }
+
+// ── What a program may use ────────────────────────────────────────────────
+function api() {
+  const V = (x = 0, y = 0, z = 0) => new T.Vector3(x, y, z)
+  const vec = (p) => (p instanceof T.Vector3 ? p : V(...p))
+  const toneOf = (c) => (pal[c] ? c : null)
+  const colour = (c = 'ink') => (pal[c] ?? new T.Color(c))
+  const tag = (m, tone, base) => { m.userData = { tone, base, edge: tone === 'ink' }; return m }
+  const firm = (tone, o) => ((tone === 'ink' || tone === 'muted') && o >= 0.6 ? 1 : o)
+  const line = (c = 'ink', o = 0.9) => tag(new T.LineBasicMaterial({ color: colour(c).clone(), transparent: true, opacity: firm(c, o) }), toneOf(c), firm(c, o))
+  const wash = (c = 'ink', o = 0.05) => tag(new T.MeshBasicMaterial({ color: colour(c).clone(), transparent: true, opacity: o, depthWrite: false, side: T.DoubleSide }), toneOf(c), o)
+  const dashedMat = (c, o) => tag(new T.LineDashedMaterial({ color: colour(c).clone(), transparent: true, opacity: o, dashSize: 0.07, gapSize: 0.06 }), toneOf(c), o)
+  const occluder = new T.MeshBasicMaterial({ colorWrite: false, depthWrite: true, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1, side: T.DoubleSide })
+  // A primary outline twice (one device pixel right and down), and its hidden twin: dashed, faint, depth-blind, drawn under it.
+  const bold = (o) => {
+    const m = o.material.clone()
+    m.userData = { ...o.material.userData }
+    m.onBeforeCompile = (sh) => { sh.uniforms.nudge = nudge; sh.vertexShader = sh.vertexShader.replace('void main() {', 'uniform vec2 nudge;\nvoid main() {').replace('#include <project_vertex>', '#include <project_vertex>\n\tgl_Position.xy += nudge * gl_Position.w;') }
+    m.customProgramCacheKey = () => 'nodus-bold'
+    const twin = new o.constructor(o.geometry, m)
+    const hid = new o.constructor(o.geometry, dashedMat(o.material.userData.tone ?? 'ink', HIDDEN))
+    hid.material.depthTest = false
+    hid.computeLineDistances(); hid.renderOrder = -1
+    o.add(twin, hid)
+    return o
+  }
+  const edges = (geo, c = 'ink', o = 0.9) => new T.LineSegments(new T.EdgesGeometry(geo, 20), line(c, o))
+  const path = (pts, c = 'ink', o = 0.9) => new T.Line(new T.BufferGeometry().setFromPoints(pts.map(vec)), line(c, o))
+  let hatchTex = null
+  const hatchMap = () => {
+    if (hatchTex) return hatchTex
+    const cv = document.createElement('canvas'); cv.width = cv.height = 64
+    const g = cv.getContext('2d'); g.strokeStyle = '#fff'; g.lineWidth = 3
+    for (let k = -64; k <= 64; k += 32) { g.beginPath(); g.moveTo(k, 64); g.lineTo(k + 64, 0); g.stroke() }
+    hatchTex = new T.CanvasTexture(cv); hatchTex.wrapS = hatchTex.wrapT = T.RepeatWrapping; hatchTex.repeat.set(2.5, 2.5); hatchTex.generateMipmaps = false; hatchTex.minFilter = T.LinearFilter
+    return hatchTex
+  }
+  const ink = {
+    line, wash, path, edges,
+    loop: (pts, c = 'ink', o = 0.9) => new T.LineLoop(new T.BufferGeometry().setFromPoints(pts.map(vec)), line(c, o)),
+    // A body as drawn: a light wash that hides what stands behind it, a bold outline, the hidden outline dashed.
+    solid(geo, c = 'ink', fill = 0.05) { const g = new T.Group(); const body = new T.Mesh(geo, wash(c, fill)); body.add(new T.Mesh(geo, occluder)); g.add(body, bold(edges(geo, c))); return g },
+    // A line that is behind something: dashed and faint (geometry → its edges, or points → a polyline).
+    hidden(src, c = 'ink', o = 0.45) { const l = src?.isBufferGeometry ? new T.LineSegments(new T.EdgesGeometry(src, 20), dashedMat(c, o)) : new T.Line(new T.BufferGeometry().setFromPoints(src.map(vec)), dashedMat(c, o)); l.computeLineDistances(); return l },
+    dashed(pts, c = 'muted', o = 0.7) { const l = new T.Line(new T.BufferGeometry().setFromPoints(pts.map(vec)), dashedMat(c, o)); l.computeLineDistances(); return l },
+    // A cut face: thin diagonals in the token over an outline of [x, y] points (a section in the xy plane; rotate the result for another plane).
+    hatch(pts, c = 'ink', o = 0.55) { const s = new T.Shape(pts.map(([x, y]) => new T.Vector2(x, y))); const g = new T.Group(); g.add(new T.Mesh(new T.ShapeGeometry(s), tag(new T.MeshBasicMaterial({ map: hatchMap(), color: colour(c).clone(), transparent: true, opacity: o, depthWrite: false, side: T.DoubleSide }), toneOf(c), o)), new T.LineLoop(new T.BufferGeometry().setFromPoints(pts.map(([x, y]) => V(x, y, 0))), line(c, 0.9))); return g },
+    arrow(from, to, c = 'ochre') {
+      const a = vec(from), b = vec(to), dir = b.clone().sub(a).normalize(), g = new T.Group()
+      const cone = new T.Mesh(new T.ConeGeometry(0.055, 0.14, 10), tag(new T.MeshBasicMaterial({ color: colour(c).clone(), transparent: true, opacity: 0.95, depthWrite: false }), toneOf(c), 0.95))
+      cone.position.copy(b); cone.quaternion.setFromUnitVectors(V(0, 1, 0), dir)
+      g.add(path([a, b.clone().sub(dir.clone().multiplyScalar(0.12))], c, 0.85), cone)
+      return g
+    },
+    text(str, at) { const anchor = new T.Group(); anchor.position.copy(vec(at)); scene.add(anchor); register(`text:${Q.parts.size}`, anchor, { label: String(str) }, 0.05); return anchor },
+  }
+  const A = {
+    THREE: T, V, ink,
+    colors: Object.fromEntries(Object.entries(pal).map(([k, c]) => [k, k])),
+    add(id, obj, opts = {}) {
+      const node = obj?.node ?? obj
+      if (!(node instanceof T.Object3D)) throw new Error(`add(${id}): not an Object3D`)
+      if (Q.parts.has(String(id))) throw new Error(`add(${id}): that id is already used`)
+      if (obj?.update) Q.updates.push(obj.update)
+      if (node.userData.update) Q.updates.push(node.userData.update)
+      // Ink discipline: a solid the program made itself becomes a wash with its edges, in its own hue.
+      const fix = []
+      node.traverse((o) => { if (o.isMesh && o.material && !o.material.userData?.base && !o.material.userData?.tone && o.material.colorWrite !== false) fix.push(o) })
+      for (const o of fix) { const c = o.material.color?.clone() ?? pal.ink.clone(); o.material = wash(c.getHexString() === pal.ink.getHexString() ? 'ink' : '#' + c.getHexString(), 0.08); o.add(edges(o.geometry, '#' + c.getHexString(), 0.9)) }
+      scene.add(node)
+      register(String(id), node, opts)
+      return node
+    },
+    part(kind, p = {}) {
+      const make = kit.parts[kind]
+      if (!make || !PARTS.includes(kind)) throw new Error(`unknown part ${kind}; have ${PARTS.join(', ')}`)
+      const at = vec(p.at ?? [0, 0, 0])
+      const n = { id: kind, kind, r: 1, teeth: 12, phase: 0, spin: 1, speed: 0.3, ...p, x: at.x, y: at.y, z: at.z }
+      const made = make(n, { toward: V().sub(at), center: () => V() })
+      made.node.position.copy(at)
+      made.node.userData.r = n.r
+      if (made.update) made.node.userData.update = made.update
+      return made.node
+    },
+    pipe(points, { width = 0.12, back = false } = {}) { return kit.joint({ kind: back ? 'return' : 'flow', points: points.map((q) => [...vec(q).toArray()]), width }, new Map()).node },
+    door(id, ref) { if (!/^search:.{1,80}$/.test(String(ref))) throw new Error('door: only search:<term>'); const p = Q.parts.get(String(id)); if (!p?.el) throw new Error(`door(${id}): no labelled part with that id`); p.el.dataset.explore = String(ref); p.el.setAttribute('role', 'link') },
+    onFrame(fn) { Q.updates.push((t, dt, cam) => fn(t, dt, cam)) },
+    cam: {
+      view(name) { if (!VIEWS[name]) throw new Error(`cam.view: one of ${Object.keys(VIEWS).join(', ')}`); Q.view = VIEWS[name] },
+    },
+    spectrum: ['#c9412d', '#d98a2b', '#d4b520', '#4f8a3c', '#2f6f9f', '#3d4a9a', '#6a3f8f'],
+  }
+  return A
+}
+const PARTS = ['sun', 'light', 'cloud', 'rain', 'droplet', 'rainbow', 'ray', 'ground', 'observer', 'prism', 'sphere', 'box', 'cylinder', 'cone', 'torus', 'field', 'contour', 'stack', 'source', 'tank', 'reservoir', 'pump', 'valve', 'sink', 'gear', 'shaft', 'crank', 'lever', 'piston', 'belt', 'center', 'body', 'moon']
+let VIEWS = {}
+
+const STOP = new Set(['the', 'and', 'that', 'this', 'with', 'from', 'into', 'then', 'than', 'your', 'each', 'when', 'what', 'they', 'them', 'have', 'part', 'parts'])
+const tok = (s) => String(s).toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}-]{2,}/gu)?.filter((x) => !STOP.has(x)) ?? []
+
+function register(id, node, opts, r = null) {
+  const part = { id, node, tokens: tok(`${opts.label ?? ''} ${id}`), focus: 1, aim: 1, r: r ?? node.userData.r ?? null, el: null }
+  node.traverse((o) => [o.material].flat().forEach((m) => { if (m && m.userData && m.userData.base == null && m.colorWrite !== false) m.userData.base = m.opacity }))
+  Q.parts.set(id, part)
+  if (opts.label) {
+    const el = document.createElement('span')
+    el.className = 'nd-label3d'
+    el.dataset.id = id
+    el.dataset.ix = String(Q.labels.length + 1).padStart(2, '0')
+    el.textContent = String(opts.label).slice(0, 40)
+    el.addEventListener('click', () => el.dataset.explore && post({ type: 'door', ref: el.dataset.explore }))
+    labelsEl.append(el)
+    const lead = document.createElementNS(NS, 'path'); lead.setAttribute('class', 'nd-leader')
+    const dot = document.createElementNS(NS, 'circle'); dot.setAttribute('class', 'nd-anchor'); dot.setAttribute('r', '2')
+    const ring = document.createElementNS(NS, 'circle'); ring.setAttribute('class', 'nd-ring'); ring.setAttribute('r', '6')
+    leadersEl.append(lead, ring, dot)
+    part.el = el
+    Q.labels.push({ part, el, lead, dot, ring, size: null })
+  }
+}
+
+function reset() {
+  scene?.traverse((o) => { o.geometry?.dispose?.(); [o.material].flat().forEach((m) => m?.dispose?.()) })
+  scene?.clear()
+  labelsEl.replaceChildren(); leadersEl.replaceChildren(); marked = ''
+  Object.assign(Q, { parts: new Map(), labels: [], updates: [], steps: [], hot: new Set(), view: VIEWS.system, glide: null, target: null, told: true, errors: [] })
+}
+
+function run(code, steps, seed = 1) {
+  reset()
+  VIEWS = { ...CAM.VIEWS, front: { az: 0, el: 0.1, turn: 0 }, top: { az: 0, el: 1.2, turn: 0 } }
+  Q.view = VIEWS.system
+  kit = KIT.createKit(T, pal, rngOf(seed))
+  nudge = kit.nudge
+  const fn = new Function('api', `"use strict";\n${code}\n;return (typeof scene === 'function') ? scene(api) : undefined;`)
+  const out = fn(api())
+  if (!Q.parts.size) throw new Error('scene() added no parts: call api.add(id, object, { label }) for each part')
+  Q.steps = Array.isArray(out?.steps) ? out.steps : Array.isArray(steps) ? steps : []
+  Q.born = performance.now()
+  aim()
+  frame(performance.now())
+  if (Q.errors.length) throw Q.errors[0]
+  return { parts: [...Q.parts.keys()].filter((k) => !k.startsWith('text:')), labels: Q.labels.map((l) => l.el.textContent), steps: Q.steps.length }
+}
+
+// ── The camera: framed on the parts, never turning on its own ─────────────
+function nodesOf(only) {
+  const out = []
+  for (const p of Q.parts.values()) {
+    if (only && !only.has(p.id)) continue
+    const b = new T.Box3().expandByObject(p.node)
+    if (b.isEmpty()) { const c = p.node.getWorldPosition(new T.Vector3()); out.push({ id: p.id, x: c.x, y: c.y, z: c.z, r: p.r ?? 0.2 }); continue }
+    if (p.r != null) { const c = p.node.getWorldPosition(new T.Vector3()); out.push({ id: p.id, x: c.x, y: c.y, z: c.z, r: p.r }); continue }
+    // A drawn part frames by its box's corners: a long thin strip must not count as a ball as tall as it is long.
+    for (const x of [b.min.x, b.max.x]) for (const y of [b.min.y, b.max.y]) for (const z of [b.min.z, b.max.z]) out.push({ id: p.id, x, y, z, r: 0.05 })
+  }
+  return out
+}
+function aim() {
+  if (!Q.parts.size || !CAM) return
+  Q.target = CAM.frameFor(Q.hot.size ? nodesOf(Q.hot) : [], nodesOf(null), Q.view)
+  if (!Q.glide) Q.glide = { ...Q.target, center: [...Q.target.center] }
+  Q.aimedAt = performance.now(); Q.told = false
+  for (const p of Q.parts.values()) p.aim = Q.hot.size === 0 || Q.hot.has(p.id) ? 1 : DIM
+}
+function focus(ids, sentence) {
+  const known = (ids ?? []).map(String).filter((i) => Q.parts.has(i))
+  const words = new Set(tok(sentence ?? ''))
+  Q.hot = new Set(known.length ? known : [...Q.parts.values()].filter((p) => p.tokens.some((t) => words.has(t) || words.has(t.replace(/s$/, '')))).map((p) => p.id))
+  aim()
+}
+
+const measure = (l) => [l.el.offsetWidth || l.el.textContent.length * 7.5 + 8, l.el.offsetHeight || 15]
+function frame(now) {
+  const t = Math.max(0, now - Q.born) / 1000
+  const dt = 1 / 60
+  const m = LBL.marginsFor(Q.labels.map((l) => (l.size = measure(l))), { w, h }, false)
+  inner = { x0: m.x, y0: m.y, x1: w - m.x, y1: h - m.y }
+  renderer.setScissorTest(true)
+  renderer.setScissor(inner.x0, h - inner.y1, inner.x1 - inner.x0, inner.y1 - inner.y0)
+  camera.fov = Q.view?.fov ?? 36
+  camera.updateProjectionMatrix()
+  if (Q.glide && Q.target) {
+    Q.glide.center = Q.glide.center.map((v, i) => v + (Q.target.center[i] - v) * 0.06)
+    for (const k of ['radius', 'rx', 'ry', 'rz']) Q.glide[k] += (Q.target[k] - Q.glide[k]) * 0.06
+    camera.position.set(...CAM.eyeFor(Q.glide, Q.view, 0, w / h, [(inner.x1 - inner.x0) / w, (inner.y1 - inner.y0) / h]))
+    camera.lookAt(...Q.glide.center)
+  }
+  for (const u of Q.updates) try { u(t, dt, camera) } catch (e) { if (Q.errors.length < 3) Q.errors.push(e) }
+  for (const p of Q.parts.values()) {
+    p.focus += (p.aim - p.focus) * 0.1
+    const heat = Q.hot.has(p.id) ? Math.min(1, (p.focus - DIM) / (1 - DIM)) : 0
+    p.node.traverse((o) => [o.material].flat().forEach((mt) => { if (!mt || mt.userData?.base == null) return; mt.opacity = mt.userData.base * p.focus; if (mt.userData.edge && pal.ochre) mt.color.lerpColors(pal.ink, pal.ochre, heat) }))
+  }
+  if (nudge) { const b = renderer.getDrawingBufferSize(new T.Vector2()); nudge.value.set(2 / b.x, -2 / b.y) }
+  renderer.render(scene, camera)
+  placeLabels()
+  const g = Q.glide, tg = Q.target
+  const rest = g && tg && Math.hypot(...g.center.map((v, i) => v - tg.center[i])) < 0.01 * tg.radius && Math.abs(g.radius - tg.radius) < 0.01 * tg.radius
+  if (!Q.told && rest && now - Q.aimedAt > 400) { Q.told = true; post({ type: 'settled', step: Q.step ?? -1 }) }
+}
+function placeLabels() {
+  const items = []
+  const discs = []
+  const v = new T.Vector3()
+  for (const l of Q.labels) {
+    // The leader runs to the middle of what the part draws (a kit part: its own place).
+    const box = new T.Box3().expandByObject(l.part.node)
+    if (l.part.r != null || box.isEmpty()) l.part.node.getWorldPosition(v); else box.getCenter(v)
+    const r = l.part.r ?? (box.isEmpty() ? 0.2 : box.getBoundingSphere(new T.Sphere()).radius)
+    const d = camera.position.distanceTo(v)
+    v.project(camera)
+    const x = ((v.x + 1) / 2) * w, y = ((1 - v.y) / 2) * h
+    l.out = v.z > 1 || x < inner.x0 - 1 || x > inner.x1 + 1 || y < inner.y0 - 1 || y > inner.y1 + 1
+    if (l.out) continue
+    discs.push({ x, y, r: Math.min((r * h) / (2 * Math.max(0.01, d) * Math.tan((camera.fov * Math.PI) / 360)), w) })
+    items.push({ id: l.part.id, x, y, w: l.size[0], h: l.size[1], hot: Q.hot.has(l.part.id), l })
+  }
+  LBL.marginLabels(items, { inner, w, h }, { wide: false, discs }).forEach((at, i) => {
+    const { l } = items[i]
+    Object.assign(l, { x: at.x, y: at.y, side: at.side, leader: at.leader })
+    l.el.style.translate = `${at.x.toFixed(1)}px ${at.y.toFixed(1)}px`
+    l.lead.setAttribute('d', LBL.leaderPath(at))
+    for (const el of [l.dot, l.ring]) { el.setAttribute('cx', at.leader[1][0].toFixed(1)); el.setAttribute('cy', at.leader[1][1].toFixed(1)) }
+  })
+  for (const l of Q.labels) {
+    const o = l.out ? '0' : String(l.part.focus < 1 ? Math.max(0.35, l.part.focus) : 1)
+    for (const el of [l.el, l.lead, l.dot, l.ring]) { el.style.opacity = o; el.classList.toggle('nd-hot', Q.hot.has(l.part.id)) }
+  }
+  plateMarks()
+}
+// The plate's quiet furniture, as on the stage: crop marks at the figure's corners, a ruler along its foot, a line of what it holds.
+let marked = ''
+function plateMarks() {
+  const key = `${inner.x0}|${inner.y0}|${inner.x1}|${inner.y1}|${Q.labels.length}`
+  if (key === marked) return
+  marked = key
+  leadersEl.querySelector('.nd-marks')?.remove()
+  const { x0, y0, x1, y1 } = inner
+  const c = 9
+  let d = `M${x0},${y0 + c}V${y0}H${x0 + c}M${x1 - c},${y0}H${x1}V${y0 + c}M${x1},${y1 - c}V${y1}H${x1 - c}M${x0 + c},${y1}H${x0}V${y1 - c}`
+  for (let x = x0 + 20, k = 0; x < x1 - 20; x += 8, k++) d += `M${x},${y1}v${k % 5 ? -2.5 : -5}`
+  const g = document.createElementNS(NS, 'g'); g.setAttribute('class', 'nd-marks')
+  const ticks = document.createElementNS(NS, 'path'); ticks.setAttribute('class', 'nd-plate-tick'); ticks.setAttribute('d', d)
+  const cap = document.createElementNS(NS, 'text'); cap.setAttribute('class', 'nd-micro'); cap.setAttribute('x', String(x0 + 20)); cap.setAttribute('y', String(y1 - 9))
+  cap.textContent = 'FIG'
+  g.append(ticks, cap)
+  leadersEl.prepend(g)
+}
+function loop(now) { requestAnimationFrame(loop); if (Q.ready && Q.parts.size) frame(now) }
+
+// A JPEG of the frame with labels and leaders burnt in, for the critic.
+function snapshot(maxW = 1280) {
+  const k = Math.min(1, maxW / w), c = document.createElement('canvas')
+  c.width = Math.round(w * k); c.height = Math.round(h * k)
+  const g = c.getContext('2d')
+  g.fillStyle = '#' + (pal.page ?? new T.Color('#f0e9e3')).getHexString(); g.fillRect(0, 0, c.width, c.height)
+  g.drawImage(renderer.domElement, 0, 0, c.width, c.height)
+  g.textBaseline = 'top'; g.font = `500 ${11 * k}px 'Inter Tight', system-ui, sans-serif`; g.lineWidth = 1
+  for (const l of Q.labels) {
+    if (l.out || !l.leader) continue
+    const tone = '#' + (Q.hot.has(l.part.id) ? pal.ochre : pal.muted).getHexString()
+    g.fillStyle = g.strokeStyle = tone
+    g.stroke(new Path2D(LBL.leaderPath(l, k)))
+    g.fillText(`${l.el.dataset.ix}  ${l.el.textContent.toUpperCase()}`, l.x * k, l.y * k)
+  }
+  return c.toDataURL('image/jpeg', 0.85)
+}
+
+addEventListener('message', async (e) => {
+  const m = e.data
+  if (e.source !== parent || m?.nodus !== 'studio') return
+  try {
+    if (m.type === 'init') await init(m)
+    else if (!Q.ready) throw new Error('the runtime is not ready')
+    else if (m.type === 'run') post({ type: 'ran', id: m.id, ...run(String(m.code ?? ''), m.steps, m.seed) })
+    else if (m.type === 'step') { Q.step = m.index; focus(m.ids ?? Q.steps[m.index]?.focus, m.sentence ?? Q.steps[m.index]?.say) }
+    else if (m.type === 'snapshot') { if (Q.parts.size) frame(performance.now()); post({ type: 'snapshot', id: m.id, data: snapshot(m.maxW) }) }
+    else if (m.type === 'clear') reset()
+    else if (m.type === 'theme') { setPalette(m.palette); scene.traverse((o) => [o.material].flat().forEach((mt) => mt?.userData?.tone && pal[mt.userData.tone] && mt.color.copy(pal[mt.userData.tone]))) }
+  } catch (err) {
+    post({ type: 'error', id: m.id, message: String(err?.message || err).slice(0, 400), stack: String(err?.stack || '').split('\n').slice(0, 4).join('\n') })
+  }
+})
+post({ type: 'boot' })
+</script>

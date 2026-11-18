@@ -2,7 +2,7 @@ import { deriveId } from '@sundial/helpers/derive-id.js';
 import type { Effect, JudgementResultPayload, Rule } from '@sundial/kernel/types.js';
 import { THRESHOLD_MIN_N } from './judgement-track.js';
 import { questionId } from './questions/index.js';
-import { GOAL_ADVANCE_QUESTIONS, goalAdvanceSlot, MAX_GOAL_SLOTS, MAX_PROMISE_SLOTS, momentFanout, PROMISE_RESOLVE_QUESTIONS, promiseSlot } from './questions/moment-fanout.js';
+import { GOAL_ADVANCE_QUESTIONS, goalAdvanceSlot, MAX_GOAL_SLOTS, momentFanout } from './questions/moment-fanout.js';
 
 /**
  * J2.7's operating point for "this session advanced that goal" until the
@@ -20,8 +20,6 @@ export const GOAL_ADVANCE_DEFAULT_THRESHOLD = 0.6;
  */
 const FOREIGN = /[^\p{Script=Latin}\p{Script=Common}\p{Script=Inherited}]|[¿¡ñÑ]/u;
 export const inTheOwnersLanguage = (text: string): boolean => !FOREIGN.test(text);
-
-export const PROMISE_RESOLVE_DEFAULT_THRESHOLD = 0.7;
 
 /**
  * J1.2 (option A, O6): the fan-out rides every close. One text render per
@@ -100,26 +98,8 @@ export const applyMomentJudgement: Rule = (state, event) => {
   }
 
   // J4.4 opened a promise here from the moment's 160-character clip of
-  // speech. UC1 replaced it with one pass over the whole meeting
-  // (`promise-extract.ts`): the clip rarely held the due date, and a moment's
-  // speech outside a meeting was the room's.
-
-  // J4.4: a promise slot over θ closes that promise — with the second key: the
-  // moment must carry non-text evidence (commit, commands, calendar, mic). A
-  // sentence alone, however sure the judge, closes nothing (docs/jarvis/05).
-  const promises = Array.isArray(payload.metadata?.promises) ? (payload.metadata.promises as unknown[]).filter((c): c is string => typeof c === 'string') : [];
-  if (payload.metadata?.nonText === true) {
-    for (let i = 0; i < Math.min(promises.length, MAX_PROMISE_SLOTS); i += 1) {
-      const p = noul(payload.answers[promiseSlot(i)]);
-      if (p === null) continue;
-      const record = state.judgement.questions[questionId(PROMISE_RESOLVE_QUESTIONS[promiseSlot(i)])];
-      const threshold = record && record.n >= THRESHOLD_MIN_N ? record.threshold : PROMISE_RESOLVE_DEFAULT_THRESHOLD;
-      if (p < threshold) continue;
-      effects.push({
-        type: 'EmitEvent',
-        event: { id: deriveId(event.ts, event.id, 'commitment-resolved', promises[i]), type: 'commitment:resolved', ts: event.ts, payload: { id: promises[i], momentId: payload.momentId, p } },
-      });
-    }
-  }
+  // speech, then closed one on a resolve slot. UC1 moved the opening to one
+  // pass over the whole meeting (`promise-extract.ts`); the resolve slot was
+  // dropped on 2026-11-16 (`moment-fanout.ts` says why).
   return { state, effects };
 };

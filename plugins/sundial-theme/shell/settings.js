@@ -8,6 +8,7 @@
 // settings that were in force when a decision was made.
 import { el } from './surfaces.js'
 import { PERMS, grantAction } from './permissions.js'
+import { verdictActs } from './verdicts.js'
 
 const post = (patch) =>
   fetch('/gnomon/api/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) })
@@ -228,6 +229,13 @@ function troubleName(key) {
   return key
 }
 
+/** A sensor checked against a second one that must agree with it (`witnessPairs`): the row's name, and what is compared. */
+const CROSS_CHECK = {
+  browser: ['Browser pages', 'Checked against the window in front: 30 minutes in a browser must give a page.'],
+  screen: ['Screen reader', 'Checked against your typing: 30 minutes of use must give screen text.'],
+  audio: ['Hearing in calls', 'Checked against the microphone: 30 minutes of a call must give speech.'],
+}
+
 /**
  * Sundial's own health, under the permissions it depends on: what stands
  * broken now (each said once, through the gate), whether the last push
@@ -241,7 +249,8 @@ export function healthRows(h) {
       el('div', { class: 'set-name' }, [el('span', { class: 'set-label', text: label }), hint ? el('span', { class: 'set-hint', text: hint }) : null]),
       el('div', { class: 'set-perm' }, [el('span', { class: 'grant-state', 'data-state': state, text })]),
     ])
-  const troubles = h.troubles ?? []
+  // A blind sensor shows on its own cross-check row below, not twice.
+  const troubles = (h.troubles ?? []).filter((t) => !t.key.startsWith('blind:'))
   const pushOk = h.push?.lastOkAt ? Date.parse(h.push.lastOkAt) : null
   const pushFailed = h.push?.lastFailedAt ? Date.parse(h.push.lastFailedAt) : null
   const today = new Date().toLocaleDateString('en-CA')
@@ -256,6 +265,11 @@ export function healthRows(h) {
     ...(troubles.length === 0
       ? [row('Sensors and keys', null, 'on', 'All reporting')]
       : troubles.map((t) => row(troubleName(t.key), t.observation, 'off', `Since ${since(t.since)}`))),
+    ...(h.pairs ?? []).map((p) =>
+      p.state === 'blind'
+        ? row(CROSS_CHECK[p.id][0], p.observation ?? CROSS_CHECK[p.id][1], 'off', p.since ? `Blind since ${since(p.since)}` : 'Blind')
+        : row(CROSS_CHECK[p.id][0], CROSS_CHECK[p.id][1], p.state === 'ok' ? 'on' : 'unknown', p.state === 'ok' ? 'Seeing' : 'Not checked'),
+    ),
     h.push?.configured
       ? pushFailed !== null && (pushOk === null || pushFailed > pushOk)
         ? row('Phone push', `The last one did not reach the phone (${h.push.lastError ?? 'unknown'}); the banner stood in.`, 'off', `Failed ${since(h.push.lastFailedAt)}`)
@@ -277,6 +291,8 @@ function since(iso, now = Date.now()) {
 
 /** A service's health from its own last signal: live, quiet, or never seen. */
 function health(s) {
+  // A question still open (the search model on a packaged first run) is said before any health.
+  if (s.ask) return el('span', { class: 'grant-state', 'data-state': 'unknown', text: 'Not answered' })
   // A service with no signal of its own has no health to show; one that is off is quiet by choice.
   if (!s.watched || s.value === false || s.value === 'off') return null
   if (s.lastSignal === null) return el('span', { class: 'grant-state', 'data-state': 'unknown', text: 'No signal yet' })
@@ -299,7 +315,7 @@ const call = (url, body) =>
  * back — the page stays; only the host process goes. A Claude Code hook is
  * live at the next Claude session and never waits.
  */
-function servicesBlock() {
+export function servicesBlock() {
   const rows = el('div', {})
   const wait = el('div', { class: 'set-wait', 'aria-live': 'polite' })
   const node = el('div', {}, [
@@ -385,8 +401,8 @@ function servicesBlock() {
     rows.replaceChildren(
       ...data.services.map((s) => {
         if (s.sep) return s.title ? el('h4', { class: 'set-title', text: s.title }) : el('div', { class: 'set-sep' })
-        const when = s.live ? 'Applies to the next Claude session.' : s.changed ? 'Waits for the restart.' : null
-        const hint = [s.what, s.needs ? `Needs: ${s.needs}` : null, s.blocked, when].filter(Boolean).join(' ')
+        const when = s.live ? 'Applies to the next Claude session.' : s.changed ? 'Waits for the restart.' : s.now === true ? 'Applies at once.' : s.now === false ? 'Applies after a restart.' : null
+        const hint = [s.what, s.needs ? `Needs: ${s.needs}` : null, s.blocked, s.ask, when].filter(Boolean).join(' ')
         const right = s.choices
           ? el(
               'div',
@@ -407,6 +423,75 @@ function servicesBlock() {
   wait.hidden = true
   read()
   setInterval(() => node.isConnected && restarting === null && read(), 30000)
+  return node
+}
+
+/**
+ * Private apps and sites (shell/privacy.js): the owner's own, each with Remove;
+ * suggestions from what the record saw, each with Add; the built-in lists,
+ * read-only. A change writes config.json and is live at once. Names only.
+ */
+export function privacyBlock() {
+  const body = el('div', {}, [el('p', { class: 'set-hint set-note', text: 'Reading the private lists…' })])
+  const node = el('div', {}, [
+    el('h4', { class: 'set-title', text: 'Private apps and sites' }),
+    el('p', { class: 'set-said', text: 'Gnomon never looks at, reads or acts in these. Their names can still show in your record; nothing from inside them is kept. A change applies at once, no restart.' }),
+    body,
+  ])
+  let last = null
+  const said = { app: null, host: null } // the last outcome beside each field: [text, state]
+  const typed = { app: '', host: '' } // kept through a refusal, so the fix starts from what was typed
+  let refocus = null
+  const edit = (kind, op, value, fromField = false) => async () => {
+    const got = await call('/gnomon/api/privacy/edit', { op, kind, value })
+    const ok = got && !got.failed
+    said[kind] = !got ? ['Sundial did not answer. Try again in a moment.', 'off'] : got.failed ? [got.failed, 'off'] : [`${op === 'add' ? 'Added' : 'Removed'} ${got.saved}. Live now.`, 'on']
+    if (fromField) typed[kind] = ok ? '' : value
+    refocus = fromField ? kind : null
+    draw(ok ? got : last)
+  }
+  const entry = (kind, item, op, suggested = false) =>
+    el('div', { class: 'set-row', 'data-under': '', 'data-suggested': suggested ? '' : null }, [
+      el('div', { class: 'set-name' }, [
+        el('span', { class: 'set-label', text: item.name }),
+        item.bundleId ? el('span', { class: 'set-id', text: item.bundleId }) : null,
+        item.says ? el('span', { class: 'set-hint', text: item.says }) : null,
+      ]),
+      el('div', { class: 'set-opts' }, [el('button', { type: 'button', class: 'set-opt', text: op === 'add' ? 'Add' : 'Remove', 'aria-label': `${op === 'add' ? 'Add' : 'Remove'} ${item.name}`, onclick: edit(kind, op, item.name) })]),
+    ])
+  const group = (kind, d, label, hint, placeholder, noun) => {
+    const input = el('input', { class: 'set-input', type: 'text', placeholder, 'aria-label': `Add a private ${noun}`, spellcheck: 'false', autocomplete: 'off', 'data-kind': kind })
+    input.value = typed[kind]
+    const add = el('button', { type: 'button', class: 'set-opt', text: 'Add', onclick: () => edit(kind, 'add', input.value, true)() })
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') add.click()
+      e.stopPropagation() // the board's own keys stay out of a field
+    })
+    const note = said[kind]
+    return [
+      el('div', { class: 'set-row' }, [el('div', { class: 'set-name' }, [el('span', { class: 'set-label', text: label }), el('span', { class: 'set-hint', text: hint })]), el('div', { class: 'set-opts set-text' }, [input, add])]),
+      note ? el('div', { class: 'set-row', 'data-under': '', role: note[1] === 'off' ? 'alert' : 'status' }, [el('span', { class: 'grant-state', 'data-state': note[1], text: note[0] })]) : null,
+      ...(d.yours.length ? d.yours.map((y) => entry(kind, y, 'remove')) : [el('p', { class: 'set-hint set-note', text: `No ${noun}s of your own yet.` })]),
+      d.suggested.length ? el('p', { class: 'set-hint set-note', text: `Suggested: ${noun}s that look private and are on no list yet.` }) : null,
+      ...d.suggested.map((s) => entry(kind, s, 'add', true)),
+      el('details', { class: 'rel-history set-built' }, [el('summary', { text: `Built in, always private: ${d.builtIn.length} ${noun}${d.builtIn.length === 1 ? '' : 's'}` }), el('p', { class: 'set-hint', text: d.builtIn.join(', ') })]),
+    ]
+  }
+  const draw = (data) => {
+    if (!data || data.failed) return body.replaceChildren(el('p', { class: 'set-hint set-note', role: 'alert', text: data?.failed ?? 'The private lists could not be read. Sundial may be restarting.' }))
+    last = data
+    // Through el(), which drops the absent rows: replaceChildren would print a null as "null".
+    body.replaceChildren(
+      el('div', {}, [
+        group('app', data.apps, 'Apps', 'Matched inside an app’s name or bundle id.', 'An app’s name, like Signal', 'app'),
+        data.apps.hidden.length ? el('p', { class: 'set-hint set-note', text: `Also hidden entirely, set in config.json: ${data.apps.hidden.join(', ')}.` }) : null,
+        group('host', data.hosts, 'Sites', 'A site and its subdomains. Its page text is never kept.', 'mail.example.com', 'site'),
+      ]),
+    )
+    if (refocus) body.querySelector(`input[data-kind="${refocus}"]`)?.focus()
+    refocus = null
+  }
+  call('/gnomon/api/privacy').then(draw)
   return node
 }
 
@@ -448,11 +533,21 @@ const LEVELS = [
 ]
 const verdict = (meets) => el('span', { class: 'grant-state', 'data-state': meets === true ? 'on' : meets === false ? 'off' : 'unknown', text: meets === true ? 'Meets target' : meets === false ? 'Below target' : 'Not measured' })
 
+/** A row whose verdicts stopped this long cannot move, and says so. */
+const QUIET_DAYS = 14
+const kindLabel = (capability) => CAPABILITY[capability] ?? `Interrupt: ${capability.replace(/^notice:/, '')}`
+const ago = (iso) => {
+  const h = Math.max(0, (Date.now() - Date.parse(iso)) / 3_600_000)
+  return h < 1 ? 'within the hour' : h < 36 ? `${Math.round(h)} h ago` : `${Math.round(h / 24)} days ago`
+}
+
 export function autonomyBlock() {
+  const judge = el('div', {})
   const rows = el('div', {})
   const card = el('div', {})
   const node = el('div', {}, [
     el('h4', { class: 'set-title', text: 'What Gnomon may do alone' }),
+    judge,
     rows,
     el('p', { class: 'set-hint set-note', text: 'Act goes back to Ask by itself when the numbers fall below their target. Your own reminders, adopted rules and Sundial’s health are always said.' }),
     el('h4', { class: 'set-title', text: 'Scorecard' }),
@@ -460,23 +555,46 @@ export function autonomyBlock() {
   ])
   const draw = (data) => {
     if (!data || data.failed) return rows.replaceChildren(el('p', { class: 'set-hint set-note', text: data?.failed ?? 'The levels could not be read.' }))
-    rows.replaceChildren(
-      ...data.capabilities.map((c) => {
-        const pick = (level) => (level === 'act' ? post({ capability: c.capability, level: 'act' }).then(() => post({ capability: c.capability, grant: true })) : post({ capability: c.capability, level })).then(read)
-        const buttons = LEVELS.map(([value, text, note]) =>
-          el('button', { type: 'button', class: 'set-opt', role: 'radio', 'aria-checked': String(value === c.level), disabled: value === 'act' && !c.earned ? '' : null, title: value === 'act' && !c.earned ? `Not earned yet: ${c.rows}` : note, text, onclick: () => pick(value) }),
-        )
-        const label = CAPABILITY[c.capability] ?? `Interrupt: ${c.capability.replace(/^notice:/, '')}`
-        return el('div', { class: 'set-row' }, [
-          el('div', { class: 'set-name' }, [
-            el('span', { class: 'set-label', text: label }),
-            el('span', { class: 'set-hint', text: c.granted && c.level !== 'act' ? `${c.rows}. You said yes; it acts once the numbers meet the target.` : c.rows }),
-            // The owner's Ask/Auto chip is their yes for what they ask for: below target warns there, never blocks.
-            c.capability === 'actions' && !c.earned ? el('span', { class: 'set-hint set-warn', text: 'Below target, a warning only: what you ask for runs as your Ask/Auto chip says. Only what Gnomon starts alone waits for your nod.' }) : null,
+    // Only your verdicts move a row: the latest things Gnomon said that you have not judged, in its words.
+    const waiting = data.toJudge ?? []
+    judge.replaceChildren(
+      ...(waiting.length === 0
+        ? []
+        : [
+            el('p', { class: 'set-said', text: `Your verdicts are what earn a kind the right to interrupt. ${waiting.length === 1 ? 'One thing Gnomon said waits' : `${waiting.length} things Gnomon said wait`} for yours.` }),
+            ...waiting.map((w) =>
+              el('div', { class: 'set-row' }, [
+                el('div', { class: 'set-name' }, [el('span', { class: 'set-label', text: w.text }), el('span', { class: 'set-hint', text: `${kindLabel(`notice:${w.kind}`).replace(/^Interrupt: /, '')}, ${ago(w.at)}` })]),
+                verdictActs('notice', w.key, { onSettled: (v) => v && read() }),
+              ]),
+            ),
           ]),
-          el('div', { class: 'set-opts', role: 'radiogroup', 'aria-label': label }, buttons),
-        ])
-      }),
+    )
+    const row = (c) => {
+      const pick = (level) => (level === 'act' ? post({ capability: c.capability, level: 'act' }).then(() => post({ capability: c.capability, grant: true })) : post({ capability: c.capability, level })).then(read)
+      const buttons = LEVELS.map(([value, text, note]) =>
+        el('button', { type: 'button', class: 'set-opt', role: 'radio', 'aria-checked': String(value === c.level), disabled: value === 'act' && !c.earned ? '' : null, title: value === 'act' && !c.earned ? `Not earned yet: ${c.rows}` : note, text, onclick: () => pick(value) }),
+      )
+      const label = kindLabel(c.capability)
+      const quiet = c.evidence?.quietDays ?? null
+      return el('div', { class: 'set-row' }, [
+        el('div', { class: 'set-name' }, [
+          el('span', { class: 'set-label', text: label }),
+          el('span', { class: 'set-hint', text: c.granted && c.level !== 'act' ? `${c.rows}. You said yes; it acts once the numbers meet the target.` : c.rows }),
+          c.evidence?.line ? el('span', { class: 'set-hint', text: `Beside the verdicts: ${c.evidence.line}.` }) : null,
+          // A source that stopped is the reason a row stands still, not the row's own failing.
+          quiet !== null && quiet >= QUIET_DAYS && !c.earned ? el('span', { class: 'set-hint set-warn', text: `No verdict in ${quiet} days: this row cannot move until one comes.` }) : null,
+          // The owner's Ask/Auto chip is their yes for what they ask for: below target warns there, never blocks.
+          c.capability === 'actions' && !c.earned ? el('span', { class: 'set-hint set-warn', text: 'Below target, a warning only: what you ask for runs as your Ask/Auto chip says. Only what Gnomon starts alone waits for your nod.' }) : null,
+        ]),
+        el('div', { class: 'set-opts', role: 'radiogroup', 'aria-label': label }, buttons),
+      ])
+    }
+    // A kind with no verdict at all has nothing to read yet: one fold, not a wall of n = 0.
+    const unjudged = data.capabilities.filter((c) => c.capability.startsWith('notice:') && c.n === 0)
+    rows.replaceChildren(
+      ...data.capabilities.filter((c) => !unjudged.includes(c)).map(row),
+      unjudged.length === 0 ? null : el('details', { class: 'rel-history' }, [el('summary', { class: 'set-hint', text: `${unjudged.length} more kind${unjudged.length === 1 ? '' : 's'} with no verdict yet, each at Ask` }), ...unjudged.map(row)]),
     )
     card.replaceChildren(
       ...data.scorecard.map((r) =>
@@ -502,6 +620,7 @@ export function settingsNode() {
   // Outside `draw`: a settings sync must not throw away the permission rows and their poll.
   const perms = permissionsBlock()
   const services = servicesBlock()
+  const privacy = privacyBlock()
   const autonomy = autonomyBlock()
   const node = el('div', { class: 'settings' }, [body])
   let groups = null
@@ -529,6 +648,7 @@ export function settingsNode() {
       perms,
       el('div', { class: 'set-sep' }),
       services,
+      privacy,
       el('p', { class: 'set-foot', text: SETTINGS.updatedAt ? `Changed ${new Date(SETTINGS.updatedAt).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}` : 'Never changed — these are the defaults.' }),
     )
   }

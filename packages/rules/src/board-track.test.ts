@@ -7,7 +7,7 @@ const createInitialState = (id: string) => {
   return { ...s, board: { ...s.board, cards: {}, sections: {} } };
 };
 import type { KernelState, SanitizedEvent } from '@sundial/kernel/types.js';
-import { GAP, ROW_PAD, boardTrack, defaultSize, liveSpan, resolveSpan, DEFAULT_SIZE } from './board-track.js';
+import { GAP, ROW_PAD, boardTrack, defaultSize, liveSpan, nodusRecipe, resolveSpan, DEFAULT_SIZE } from './board-track.js';
 
 const ev = (type: string, payload: Record<string, unknown>, ts = '2026-09-12T10:00:00.000Z'): SanitizedEvent => ({ id: type + ts, type, ts, payload, sanitized: true });
 const fold = (state: KernelState, ...events: SanitizedEvent[]) => events.reduce((s, e) => boardTrack(s, e).state, state);
@@ -70,6 +70,37 @@ describe('boardTrack', () => {
     s = fold(s, ev('board:place', { id: 'note:n', kind: 'note', text: 'hello' }), ev('board:place', { id: 'lens:bad', kind: 'lens', text: 'not json' }));
     expect(Object.keys(s.board.lenses).sort()).toEqual(['lens:a1', 'lens:bad']);
     expect(s.board.lenses['lens:bad']!.title).toBe('lens:bad');
+  });
+
+  // A Nodus figure is shelved as its recipe: the walk and the binding, never the rows it drew.
+  it('keeps a Nodus figure on the shelf as its recipe, so it can come back and read the record again', () => {
+    const figure = { v: 1, form: 'bars', view: 'where', title: 'Where the time went', source: { view: 'where', args: { date: '2026-03-09' } }, lanes: [{ id: 'p:a', label: 'a', role: 'project', value: 3 }], parts: [], steps: [{ focus: ['p:a'], say: 'a took it.' }], by: { storyboard: 'model', critic: { fits: 2.5 } } };
+    let s = fold(createInitialState('d1'), ev('board:place', { id: 'nodus:x1', kind: 'nodus', text: JSON.stringify(figure), by: 'gnomon' }));
+    s = fold(s, ev('board:remove', { id: 'nodus:x1' }));
+    const recipe = JSON.parse(s.board.lenses['nodus:x1']!.spec);
+    expect(recipe).toMatchObject({ view: 'where', source: figure.source, steps: figure.steps, by: figure.by });
+    expect(recipe.lanes).toBeUndefined();
+    expect(s.board.lenses['nodus:x1']!.title).toBe('Where the time went');
+  });
+
+  // A free scene reads nothing: its blueprint is what comes back, capped, and a figure with neither is not shelved.
+  it('keeps a free scene on the shelf as its blueprint, so a removed one comes back drawn', () => {
+    const lanes = Array.from({ length: 30 }, (_, i) => ({ id: `n${i}`, label: `Part ${i}`, kind: 'tank' }));
+    const links = Array.from({ length: 60 }, (_, i) => ({ from: `n${i % 30}`, to: `n${(i + 1) % 30}`, kind: 'flow', rate: 1 }));
+    const scene = { v: 1, form: 'scene', view: 'free', archetype: 'fluid', title: 'How a heat pump works', lanes, links, parts: [], steps: [{ focus: ['n0'], say: 'Heat comes in.' }], by: { storyboard: 'model' } };
+    let s = fold(createInitialState('d1'), ev('board:place', { id: 'nodus:free1', kind: 'nodus', text: JSON.stringify(scene), by: 'gnomon' }));
+    s = fold(s, ev('board:remove', { id: 'nodus:free1' }));
+    const kept = JSON.parse(s.board.lenses['nodus:free1']!.spec);
+    expect(kept).toMatchObject({ form: 'scene', view: 'free', archetype: 'fluid', steps: scene.steps });
+    expect(kept.lanes).toHaveLength(24);
+    expect(kept.links).toHaveLength(48);
+    expect(kept.parts).toBeUndefined();
+    expect(s.board.lenses['nodus:free1']!.title).toBe('How a heat pump works');
+    // Placed again from the shelf (what a `board:` link does), it is the same blueprint, and the shelf does not change.
+    const again = fold(s, ev('board:place', { id: 'nodus:free1', kind: 'nodus', text: s.board.lenses['nodus:free1']!.spec }));
+    expect(JSON.parse(again.board.cards['nodus:free1']!.text!).lanes).toHaveLength(24);
+    expect(again.board.lenses['nodus:free1']!.spec).toBe(s.board.lenses['nodus:free1']!.spec);
+    expect(nodusRecipe(JSON.stringify({ form: 'bars', title: 'No source', lanes: [] }))).toBeNull();
   });
 
   it('tiles every card into one row when there are no sections, left to right by x, one shared height', () => {

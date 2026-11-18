@@ -13,6 +13,10 @@ export interface CalendarEvent {
   isAllDay: boolean;
   organizer?: string;
   isSelfAttendee?: boolean;
+  /** The owner's reply: accepted / declined / tentative / pending / unknown (helper ≥ 2026-10-07). */
+  selfStatus?: string | null;
+  /** The event carries a video-call link. */
+  isOnline?: boolean;
 }
 
 export interface CalendarOutput {

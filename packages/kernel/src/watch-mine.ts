@@ -1,3 +1,4 @@
+import { localDate, localWeekday } from '@sundial/helpers/local-day.js';
 import { backtestTypes, backtestWatch, NATURAL_KEY, validateWatchRule, type WatchRule } from './watch.js';
 
 /**
@@ -15,12 +16,16 @@ import { backtestTypes, backtestWatch, NATURAL_KEY, validateWatchRule, type Watc
  *   3. the owner's repeated asks: an app or site they asked about on three
  *      days, held a while;
  *   4. useful-rated notices: candidates on the types behind a notice kind the
- *      owner marked useful rank first.
+ *      owner marked useful rank first;
+ *   5. every workday morning (Round 5, FORESIGHT 4e): a site the chore learner
+ *      knows as a morning chore, once a workday morning.
  *
  * Each candidate is replayed over the older half (tune) and the recent half
  * (holdout) of the window. It stays only with 1–10 fires in each half and the
  * two within 3× of each other, and it drops when half its fires land within
- * ten minutes of a notice a built-in rule already raised: that was said.
+ * ten minutes of a notice a built-in rule already raised: that was said. A
+ * workday template is a daily habit, which that bar forbids by design: it
+ * stays instead when it fires on at least 70% of the workdays in each half.
  */
 
 type Ev = { id?: string; type: string; ts: string; payload: unknown };
@@ -44,10 +49,17 @@ export interface MineInput {
   useful: { kind: string; type?: string; n: number }[];
   /** Notices built-in rules raised, for the overlap drop. */
   builtins: string[];
+  /** Round 5: the morning sites `choreLearn` knows (`knownHostChores`), each with its usual first minute. */
+  chores?: { host: string; days: number; minute: number }[];
+  /** The owner's workdays, 0 = Sunday (`config.workdays`). Absent: Monday to Friday. */
+  workdays?: number[];
 }
 
+/** Share of a half's workdays a workday template must fire on, in both halves. */
+export const WEEKDAY_SHARE = 0.7;
+
 export interface MinedRule {
-  source: 'pattern' | 'routine' | 'ask' | 'useful';
+  source: 'pattern' | 'routine' | 'ask' | 'useful' | 'weekday';
   spec: WatchRule;
   older: number;
   recent: number;
@@ -126,6 +138,13 @@ export function enumerateCandidates(input: MineInput): { source: MinedRule['sour
     const real = (byType.get(at.type) ?? []).map((e) => (e.payload as Record<string, unknown>)[at.field]).find((x) => typeof x === 'string' && x.toLowerCase() === v) as string;
     out.push({ source: 'ask', spec: { title: `${real} for a while`, when: { type: at.type, where: [{ field: at.field, op: 'eq', value: real }] }, dwell: { atLeastMin: 30, clock: 'active' }, say: `${real} for {minutes} min` } });
   }
+
+  // 5. A morning chore, once a workday morning: from an hour before its usual first visit to noon.
+  const iso = (input.workdays ?? [1, 2, 3, 4, 5]).map((d) => (d === 0 ? 7 : d));
+  const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  for (const c of input.chores ?? []) {
+    out.push({ source: 'weekday', spec: { title: `${c.host} on workday mornings`, when: { type: 'browser:tab', where: [{ field: 'host', op: 'eq', value: c.host }] }, by: [], during: { days: iso, from: hhmm(Math.max(0, c.minute - 60)), to: '12:00' }, cooldownMin: 12 * 60, say: `${c.host}, as on most workday mornings` } });
+  }
   return out;
 }
 
@@ -140,6 +159,10 @@ export function mineRules(input: MineInput, limit = 5): MinedRule[] {
     if (type) usefulTypes.set(type, (usefulTypes.get(type) ?? 0) + u.n);
   }
   const hour = (ts: string) => new Date(ts).getUTCHours();
+  const workdays = input.workdays ?? [1, 2, 3, 4, 5];
+  // Workdays in each half: the days a workday template could have fired on.
+  const halfDays = { older: 0, recent: 0 };
+  for (let t = Date.parse(input.now) - input.days * 86_400_000; t < Date.parse(input.now); t += 86_400_000) if (workdays.includes(localWeekday(new Date(t).toISOString(), input.zone))) halfDays[new Date(t).toISOString() < mid ? 'older' : 'recent'] += 1;
   const seen = new Set<string>();
   const kept: (MinedRule & { sig: string })[] = [];
   for (const c of enumerateCandidates(input)) {
@@ -150,11 +173,16 @@ export function mineRules(input: MineInput, limit = 5): MinedRule[] {
     const { fires } = backtestWatch(checked.rule, input.events.filter((e) => types.has(e.type)), { daytime: (ts) => hour(ts) >= 6 && hour(ts) < 18, timeZone: input.zone });
     const older = fires.filter((f) => f.at < mid).length;
     const recent = fires.length - older;
+    if (c.source === 'weekday') {
+      // A daily habit: fired on 70% of each half's workdays, counted once a day.
+      const days = (half: 'older' | 'recent') => new Set(fires.filter((f) => (f.at < mid) === (half === 'older')).map((f) => localDate(f.at, input.zone))).size;
+      if (halfDays.older === 0 || halfDays.recent === 0 || days('older') < WEEKDAY_SHARE * halfDays.older || days('recent') < WEEKDAY_SHARE * halfDays.recent) continue;
+    }
     // 1–10 in each half, and the halves within 3× of each other: a rate that holds out of sample.
-    if (older < 1 || recent < 1 || older > 10 || recent > 10 || Math.max(older, recent) > 3 * Math.min(older, recent)) continue;
+    else if (older < 1 || recent < 1 || older > 10 || recent > 10 || Math.max(older, recent) > 3 * Math.min(older, recent)) continue;
     const overlap = fires.filter((f) => nearBuiltin(f.at)).length / fires.length;
     if (overlap >= 0.5) continue;
-    const boost = (c.source === 'ask' ? 2 : 0) + ((usefulTypes.get(checked.rule.when.type) ?? 0) > 0 ? 1 : 0);
+    const boost = (c.source === 'ask' || c.source === 'weekday' ? 2 : 0) + ((usefulTypes.get(checked.rule.when.type) ?? 0) > 0 ? 1 : 0);
     // Closest to a few a week reads best; a boosted source ranks first.
     const score = boost * 10 - Math.abs(recent - 4) - Math.abs(older - recent) / 2;
     kept.push({ source: boost > 0 && c.source === 'pattern' ? 'useful' : c.source, spec: checked.rule, older, recent, overlap: Math.round(overlap * 100) / 100, score, sig: fires.map((f) => f.at).join() });

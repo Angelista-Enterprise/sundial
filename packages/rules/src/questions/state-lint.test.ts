@@ -10,9 +10,9 @@ describe('the ten laws of state, over every registry set (J0.6)', () => {
       for (const input of samples) {
         const { state, questions } = set.build(...input);
         expect(lintState(state)).toEqual([]);
-        // Law 5/6 hygiene: every question is one of the three primitives with an instruction.
+        // Law 5/6 hygiene: every question is one of the primitives with an instruction; `box` only beside an image (`screen-frame`).
         for (const [id, q] of Object.entries(questions)) {
-          expect(['choice', 'score', 'noul'], id).toContain(q.type);
+          expect(['choice', 'score', 'noul', ...('frame' in state ? ['box'] : [])], id).toContain(q.type);
           expect(q.instructions.length, id).toBeGreaterThan(10);
         }
       }

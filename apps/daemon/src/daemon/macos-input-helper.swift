@@ -2,6 +2,9 @@
 // Counts keyboard / mouse / scroll events globally and writes a 1-second
 // rolling-window summary to a JSON file. We never read keycodes,
 // characters, button identities, or coordinates — only counts.
+// Set 3: a hardware key or click also rewrites the file at once (at most every 100 ms) with the newer
+// lastKeyAt/lastClickAt and the last window's counts and timestamp unchanged, so the owner's hand is seen
+// within ~100 ms (owner-hand.js reads this file before each screen step) and no count is read twice.
 //
 // Uses CGEventTap (.listenOnly) so keyboard counts honor the Input Monitoring
 // TCC grant (ListenEvent). NSEvent global monitors require Accessibility for
@@ -27,6 +30,24 @@ struct InputActivity: Codable {
     let listenAccessGranted: Bool
     /// CGEventTap is installed and enabled.
     let tapActive: Bool
+    /// Set 2 R5: the owner's hand alone. Keys and clicks that came from the hardware (see `isHardware`), this second.
+    let ownerKeyDownCount: Int
+    let ownerClickCount: Int
+    /// The last hardware key and click since the helper started (nil until one), kept across seconds.
+    let lastKeyAt: String?
+    let lastClickAt: String?
+    /// The four fields above are written: a reader may trust them as the owner's hand, with no by-Gnomon filtering.
+    let ownerOnly: Bool
+}
+
+/// Set 2 R5: an event the hardware made, not one a process posted. The HID system posts real keys and clicks with
+/// the HID system state (1); Gnomon's own acts post from a private state (ScreenLook `aim` and `keys`), and a
+/// tool posting with a NULL or combined-session source carries 0. The same split the app already trusts for "the
+/// owner moved" (AppChannel `secondsSinceLastEventType(.hidSystemState, ...)`). Not the poster's pid: a hardware
+/// event's pid field is not documented, the state id is. Known limit: a process that posts from a
+/// `.hidSystemState` source reads as the owner.
+func isHardware(_ event: CGEvent) -> Bool {
+    event.getIntegerValueField(.eventSourceStateID) == Int64(CGEventSourceStateID.hidSystemState.rawValue)
 }
 
 final class Counter {
@@ -36,16 +57,24 @@ final class Counter {
     var moves = 0
     var scrolls = 0
     var lastEventAt: Date?
+    var ownerKeyDown = 0
+    var ownerClicks = 0
+    /// Never reset: the file always says when the owner last pressed a key or clicked.
+    var lastKeyAt: Date?
+    var lastClickAt: Date?
 
-    func record(type: CGEventType) {
+    func record(type: CGEventType, hardware: Bool) {
         lock.lock()
         defer { lock.unlock() }
-        lastEventAt = Date()
+        let now = Date()
+        lastEventAt = now
         switch type {
         case .keyDown:
             keyDown += 1
+            if hardware { ownerKeyDown += 1; lastKeyAt = now }
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
             clicks += 1
+            if hardware { ownerClicks += 1; lastClickAt = now }
         case .mouseMoved, .leftMouseDragged, .rightMouseDragged:
             moves += 1
         case .scrollWheel:
@@ -55,15 +84,24 @@ final class Counter {
         }
     }
 
-    func snapshotAndReset() -> (keyDown: Int, clicks: Int, moves: Int, scrolls: Int, lastEventAt: Date?) {
+    /// The owner's last hardware key and click, read without touching the counts.
+    func hand() -> (lastKeyAt: Date?, lastClickAt: Date?) {
         lock.lock()
         defer { lock.unlock() }
-        let snap = (keyDown, clicks, moves, scrolls, lastEventAt)
+        return (lastKeyAt, lastClickAt)
+    }
+
+    func snapshotAndReset() -> (keyDown: Int, clicks: Int, moves: Int, scrolls: Int, lastEventAt: Date?, ownerKeyDown: Int, ownerClicks: Int, lastKeyAt: Date?, lastClickAt: Date?) {
+        lock.lock()
+        defer { lock.unlock() }
+        let snap = (keyDown, clicks, moves, scrolls, lastEventAt, ownerKeyDown, ownerClicks, lastKeyAt, lastClickAt)
         keyDown = 0
         clicks = 0
         moves = 0
         scrolls = 0
         lastEventAt = nil
+        ownerKeyDown = 0
+        ownerClicks = 0
         return snap
     }
 }
@@ -101,8 +139,51 @@ private func eventCallback(
         }
         return Unmanaged.passUnretained(event)
     }
-    counter.record(type: type)
+    let hardware = isHardware(event)
+    counter.record(type: type, hardware: hardware)
+    if hardware, type == .keyDown || type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown { handNow() }
     return Unmanaged.passUnretained(event)
+}
+
+/// The output path and the last window written, for the hand's rewrite between windows.
+var outputPath = ""
+var lastWindow: InputActivity?
+/// At most one hand rewrite per 100 ms; a key inside that gap is written when it ends.
+let handGap: TimeInterval = 0.1
+var lastHandWrite = Date.distantPast
+var handPending = false
+
+/// A hardware key or click: rewrite the file now (or when the 100 ms gap ends) with the newer hand times. The counts and
+/// the timestamp stay the last window's, so a reader that adds each new timestamp once (the input-activity sensor) adds nothing.
+func handNow() {
+    guard !handPending, !outputPath.isEmpty else { return }
+    let wait = handGap - Date().timeIntervalSince(lastHandWrite)
+    if wait <= 0 { return writeHand() }
+    handPending = true
+    DispatchQueue.main.asyncAfter(deadline: .now() + wait) { handPending = false; writeHand() }
+}
+
+func writeHand() {
+    guard let window = lastWindow else { return }
+    lastHandWrite = Date()
+    let hand = counter.hand()
+    save(InputActivity(
+        timestamp: window.timestamp, windowMs: window.windowMs, keyDownCount: window.keyDownCount, mouseClickCount: window.mouseClickCount,
+        mouseMoveCount: window.mouseMoveCount, scrollCount: window.scrollCount, lastEventAt: window.lastEventAt,
+        listenAccessGranted: window.listenAccessGranted, tapActive: window.tapActive, ownerKeyDownCount: window.ownerKeyDownCount,
+        ownerClickCount: window.ownerClickCount, lastKeyAt: hand.lastKeyAt.map { isoFormatter.string(from: $0) },
+        lastClickAt: hand.lastClickAt.map { isoFormatter.string(from: $0) }, ownerOnly: true
+    ), to: outputPath)
+}
+
+func save(_ payload: InputActivity, to path: String) {
+    do {
+        let data = try JSONEncoder().encode(payload)
+        try data.write(to: URL(fileURLWithPath: path), options: [.atomic])
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+    } catch {
+        // Silent failure: the consumer treats an absent or stale file as "no data".
+    }
 }
 
 func installTap() -> Bool {
@@ -155,15 +236,15 @@ func writeJSON(to path: String, windowMs: Int) {
         scrollCount: snap.scrolls,
         lastEventAt: snap.lastEventAt.map { isoFormatter.string(from: $0) },
         listenAccessGranted: listenGranted,
-        tapActive: tapActive
+        tapActive: tapActive,
+        ownerKeyDownCount: snap.ownerKeyDown,
+        ownerClickCount: snap.ownerClicks,
+        lastKeyAt: snap.lastKeyAt.map { isoFormatter.string(from: $0) },
+        lastClickAt: snap.lastClickAt.map { isoFormatter.string(from: $0) },
+        ownerOnly: true
     )
-    do {
-        let data = try JSONEncoder().encode(payload)
-        try data.write(to: URL(fileURLWithPath: path), options: [.atomic])
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
-    } catch {
-        // Silent failure — the consumer treats absent/stale file as "no data".
-    }
+    lastWindow = payload
+    save(payload, to: path)
 }
 
 func main() {
@@ -172,7 +253,7 @@ func main() {
         FileHandle.standardError.write(Data("usage: sundial-input-helper <output-path>\n".utf8))
         exit(2)
     }
-    let outputPath = args[1]
+    outputPath = args[1]
     let windowMs = 1000
 
     _ = installTap()

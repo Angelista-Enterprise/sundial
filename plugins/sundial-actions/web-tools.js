@@ -39,6 +39,12 @@ function render(value) {
   ]
 }
 
+/** Each page's last reading, so the gate reads a ref's element as the model saw it. */
+const readings = new Map()
+const kept = (value) => (value?.page && Array.isArray(value.elements) ? readings.set(value.page, value.elements) : null, value)
+/** The element a web_act ref names in its page's last reading, or null. */
+export const webElement = (page, ref) => readings.get(page)?.find((e) => e.ref === ref) ?? null
+
 const OUTPUT = { schema: { type: 'json' }, render: (_args, value) => render(value) }
 
 export function webTools(appendSignal) {
@@ -85,7 +91,8 @@ export function webTools(appendSignal) {
           await stage(value, 'Log in here — click the page and type')
         } else return { error: `unknown action ${action}` }
         await audit({ action, page: value.page ?? args.page ?? null, url: value.url ?? args.url ?? null, title: value.title ?? null })
-        return value
+        if (action === 'close') readings.delete(String(args.page ?? ''))
+        return kept(value)
       } catch (error) {
         await audit({ action, page: args.page ?? null, url: args.url ?? null, error: error.message })
         return { error: error.message, openPages: openPages() }
@@ -119,7 +126,7 @@ export function webTools(appendSignal) {
         const value = await actOnPage(pageId, { action: String(args.action), ref: Number(args.ref), text: args.text, submit: args.submit === true, value: args.value })
         await stage(value, step)
         await audit({ action: `act:${args.action}`, page: pageId, ref: Number(args.ref), because: step, url: value.url })
-        return value
+        return kept(value)
       } catch (error) {
         await audit({ action: `act:${args.action}`, page: pageId, ref: Number(args.ref), because: step, error: error.message })
         return { error: error.message, openPages: openPages() }

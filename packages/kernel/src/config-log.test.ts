@@ -15,6 +15,14 @@ describe('config-log (W3)', () => {
     expect(configDiff(next, next)).toEqual([]);
   });
 
+  it('carries offerBar (S6) onto state.config, and a change to it applies without a restart', () => {
+    expect(base.offerBar).toBe(DEFAULT_SUNDIAL_CONFIG.offerBar);
+    const next = kernelConfigOf(resolveSundialConfig({ offerBar: 0.7 } as never));
+    expect(next.offerBar).toBe(0.7);
+    expect(configDiff(base, next)).toEqual([{ path: 'offerBar', was: DEFAULT_SUNDIAL_CONFIG.offerBar, now: 0.7 }]);
+    expect(restartPaths({}, { offerBar: 0.7 })).toEqual([]);
+  });
+
   it('applies a diff back onto the config it came from', () => {
     const next = kernelConfigOf(resolveSundialConfig({ vault: '~/Documents/Notes', timezone: 'Europe/Amsterdam', notifications: { pushAtMac: false } } as never));
     expect(applyConfigDiff(base, configDiff(base, next))).toEqual(next);

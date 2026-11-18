@@ -14,8 +14,10 @@ import { COMPANION_SESSION_ID } from '@sundial/helpers/vocab.js'
 import { renderMarkdown, setCardLabel } from './markdown.js'
 import { figureStage, renderFigure } from './figures.js'
 import { el, liveFirst, renderSurface } from './surfaces.js'
-import { TODAY_PARTS, engineCard, hhmm, inPlayCard, rhythmCard, todayParts, voiceCard } from './views.js'
-import { elapsed, resultGist, toolLine } from './tool-line.js'
+import { mountThreadPill } from './thread-pill.js'
+import { mountLiveStrip } from './live-strip.js'
+import { TODAY_PARTS, beliefsCard, engineCard, hhmm, inPlayCard, rhythmCard, routesCard, todayParts, voiceCard } from './views.js'
+import { argsText, callArgs, elapsed, resultGist, toolLine } from './tool-line.js'
 import { jsonNode, jsonShape, parseResult } from './json-view.js'
 import { applyBoard, dismissPane, filtersOf, fitAll, focusPane, focused, has, lensShelf, mount, notice, onBoard, onChange, pane, pointAt, setResolver, titleOf, touchedSince, walkContinue } from './stage.js'
 import { openPalette } from './palette.js'
@@ -25,11 +27,15 @@ import { BLUR_LABEL, SETTINGS, applySettings, loadSettings, nextPaper, setSettin
 import { kanbanCard } from './sections.js'
 import { liveSpan } from './span.js'
 import { CARDS, MENU, cardOf, heirOf } from './cards.js'
-import { checkSignedIn, onReading, markStale, rereadAll } from './read.js'
+import { checkSignedIn, markStale, rereadAll } from './read.js'
+import { mountReadingLine } from './reading-line.js'
 import { status } from './status.js'
-import { postVerdict, verdictActs } from './verdicts.js'
+import { offerChip, postVerdict, verdictActs } from './verdicts.js'
 import { drawLogLine } from './log-line.js'
 import { deliverableCard } from './deliverable.js'
+import { catalogueEntry } from './catalogue.js'
+import { modeSwitch } from './mode-switch.js'
+import { turnPlace } from './pointing.js'
 
 const $ = (id) => document.getElementById(id)
 const canvas = $('canvas')
@@ -54,29 +60,8 @@ document.addEventListener('gnomon:signed-out', () => {
   $('signed-out').hidden = false
 })
 
-// ── What the page is reading ──────────────────────────────────────────────
-// The head's bottom rule turns ochre while a route is in flight and names the
-// routes. It is deliberately LATE: a read that lands inside 180ms never shows
-// a bar at all, because a bar that flickers on every beat is worse than no bar.
-// Hiding is immediate — the moment nothing is in flight, the rule is gone.
-const readingLine = $('reading-line')
-const readingWhat = $('reading-what')
-let readingTimer = 0
-onReading((names) => {
-  clearTimeout(readingTimer)
-  if (names.length === 0) {
-    readingLine.hidden = true
-    readingWhat.hidden = true
-    return
-  }
-  readingWhat.textContent = names.length > 3 ? `reading ${names.length} readings` : `reading ${names.join(' · ')}`
-  if (readingLine.hidden) {
-    readingTimer = setTimeout(() => {
-      readingLine.hidden = false
-      readingWhat.hidden = false
-    }, 180)
-  }
-})
+// What the page is reading (reading-line.js).
+mountReadingLine($)
 
 // ── The stage ─────────────────────────────────────────────────────────────
 // Everything the owner can look at is a pane; the conversation and the threads
@@ -104,6 +89,8 @@ const resolveCard = async (id, card = null) => {
   if (id === 'play') return { title: 'In play', node: await inPlayCard(loadQuestion, filters) }
   if (id === 'rhythm') return { title: 'Rhythm', node: await rhythmCard(filters) }
   if (id === 'voice') return { title: 'Voice', node: await voiceCard(filters) }
+  if (id === 'beliefs') return { title: 'About you', node: await beliefsCard() }
+  if (id === 'routes') return { title: 'Routes Gnomon learned', node: await routesCard() }
   if (id === 'settings') return { title: 'Settings', node: settingsNode() }
   if (id === 'work') return { title: 'Work', node: workNode(filters) }
   // An instrument keeps its own re-read: `whenVisible` registered it with the
@@ -165,12 +152,11 @@ document.addEventListener('gnomon:card', async (event) => {
   if (heir?.filters) await setFilters(heir.id, heir.filters)
   const id = sameCard(heir?.id ?? String(event.detail ?? ''))
   if (id === '') return fitAll()
-  // A lens whose card was thrown away is put back from the shelf, through the
-  // record, so it lands exactly as Gnomon's own placement did — and the board
-  // frame that comes back is what frames it.
-  const shelved = has(id) ? null : lensShelf()[id]
+  // A lens (or a Nodus figure, as its recipe) thrown away comes back from the shelf, through the record, as Gnomon placed it:
+  // off the board even with its pane parked here, since placed back without its text it would draw nothing.
+  const shelved = onBoard(id) ? null : lensShelf()[id]
   if (shelved) {
-    await fetch('/gnomon/api/board', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'place', id, kind: 'lens', text: shelved.spec }) }).catch(() => {})
+    await fetch('/gnomon/api/board', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'place', id, kind: id.startsWith('nodus:') ? 'nodus' : 'lens', text: shelved.spec }) }).catch(() => {})
     await fetch('/gnomon/api/board', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'focus', ids: [id], text: shelved.title }) }).catch(() => {})
     return
   }
@@ -189,6 +175,8 @@ mount({ board: $('board'), world: $('world'), tools: $('board-tools'), parked: $
 // The thread list lives in the conversation card now (it was its own Threads
 // card): the bar names the thread you are in, and its button opens the list.
 $('thread-picker').append($('rail'))
+// The catalogue (catalogue.js), in the conversation's place; its questions are turns here, with the item as their place.
+$('rail').insertBefore(catalogueEntry({ pick: () => openThreads(false), say: (text, place) => say(text, { place }), show: showConversation }), $('threads-label'))
 // A board saved while Threads was a card still names one; it has nothing to draw.
 onChange(({ cards }) => cards.includes('threads') && dismissPane('threads'))
 // The model lowercases a name: a link to `entity:mira bakker` opens the `entity:Mira Bakker` card already up.
@@ -245,7 +233,8 @@ document.querySelector('.shell')?.append(floatSeat)
 const chatAway = el('div', { class: 'chat-away', text: 'The conversation is floating over the board. ⌥C brings it back here.' })
 let floating = false
 function floatChat() {
-  if (floating || ghost.parentElement === null) return
+  // The overlay (overlay.js) reads the conversation where it is: it never floats there.
+  if (floating || ghost.parentElement === null || document.documentElement.dataset.overlay) return
   floating = true
   ghost.replaceWith(chatAway)
   floatSeat.append(ghost)
@@ -1038,8 +1027,8 @@ function drawApproval(frame) {
     // not an approval (a vault delete names its file only here).
     commandOf(frame.callId) !== null
       ? el('pre', { class: 'approval-cmd', text: `$ ${commandOf(frame.callId)}` })
-      : argsOf(frame.callId) !== null
-        ? el('pre', { class: 'approval-cmd', text: argsOf(frame.callId) })
+      : argsText(callArgs(state.tools, frame.callId)) !== null
+        ? el('pre', { class: 'approval-cmd', text: argsText(callArgs(state.tools, frame.callId)) })
         : null,
     frame.reason ? el('p', { class: 'approval-why', text: frame.reason }) : null,
     acts,
@@ -1051,7 +1040,7 @@ function drawApproval(frame) {
       await fetch('/gnomon/api/approve', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: frame.id, outcome }),
+        body: JSON.stringify({ id: frame.id, outcome, by: 'owner' }), // Round 3: an answer with no `by` is nobody's and never earns the ladder.
       })
     } catch {
       // The server will time the question out on its own. Re-enabling here
@@ -1063,38 +1052,27 @@ function drawApproval(frame) {
     el('button', { type: 'button', class: 'act', text: 'Allow once', onclick: () => answer('allowed-once') }),
     el('button', { type: 'button', class: 'act', text: 'No', onclick: () => answer('rejected') }),
   )
+  // The overlay's slip and ask tag read the question from here (overlay.js `askCard`); not an ask whose call died with a restart (`dead`).
+  card._ask = frame.dead ? undefined : { id: frame.id, tool: frame.toolName, args: callArgs(state.tools, frame.callId) ?? null, reason: frame.reason }
   state.approvals.set(frame.id, card)
   turn().append(card)
   follow(true)
 }
 
-const OUTCOME_WORDS = {
-  'allowed-once': 'Allowed, once.',
-  rejected: 'Refused.',
-  cancelled: 'Withdrawn — the turn ended first.',
-  unavailable: 'Nobody could answer, so it was refused.',
-}
+const OUTCOME_WORDS = { 'allowed-once': 'Allowed, once.', rejected: 'Refused.', cancelled: 'Withdrawn: the turn ended first.', unavailable: 'Nobody could answer, so it was refused.' }
 
 function settleApproval(frame) {
   const card = state.approvals.get(frame.id)
   if (card === undefined) return
   state.approvals.delete(frame.id)
   card.setAttribute('data-settled', '')
-  card.append(el('div', { class: 'approval-outcome', text: OUTCOME_WORDS[frame.outcome] ?? String(frame.outcome) }))
+  card.append(el('div', { class: 'approval-outcome', text: frame.ran === false ? 'Closed: Sundial restarted since the ask, so nothing ran.' : OUTCOME_WORDS[frame.outcome] ?? String(frame.outcome) }))
 }
 
 /** The shell command a call id carries, if the call was a shell command. */
 function commandOf(callId) {
-  const args = state.tools.get(callId ?? '')?._args
+  const args = callArgs(state.tools, callId)
   return typeof args?.command === 'string' && args.command !== '' ? args.command : null
-}
-
-/** A call's arguments as readable JSON, bounded, or null when it has none. */
-function argsOf(callId) {
-  const args = state.tools.get(callId ?? '')?._args
-  if (args === undefined || args === null || (typeof args === 'object' && Object.keys(args).length === 0)) return null
-  const text = JSON.stringify(args, null, 2)
-  return text.length > 1200 ? `${text.slice(0, 1200)}\n…` : text
 }
 
 /** The tool that runs a command. Its call draws as a block, not a chip: the command IS the content. */
@@ -1591,6 +1569,18 @@ function apply(frame) {
       break
     }
 
+    case 'step': {
+      // Set 2 R5: a screen step's words (the voice's line) on the screen_act call that runs it (one runs at a time), each stepId once; with no line, whether the owner's hand holds it.
+      const row = [...state.tools.values()].findLast((r) => r._result === undefined && [r.querySelector('.tool-main')?.title, r._args?.name].includes('screen_act'))
+      if (row) frame.line ? Object.assign(row.dataset, { step: frame.line, steps: String((row._steps ??= new Set()).add(frame.stepId).size) }) : row.toggleAttribute('data-hand', frame.hand === true)
+      break
+    }
+
+    case 'eye':
+      // Set 2 R5: the fold's key for the newest look; the slip's "What I see" pane reads the look when it differs from the one drawn.
+      document.documentElement.dataset.eye = frame.key
+      break
+
     case 'todo':
       drawPlan(frame.todos)
       // The plan is a new thought, like a tool call: prose after it starts fresh.
@@ -2075,9 +2065,9 @@ async function openSession(id, { quiet = false, all = false } = {}) {
   $('act-delete')?.removeAttribute('data-arm')
   state.aborter?.abort()
   state.sessionId = id
+  state.view = 'session'
   loadModels()
   loadPermission()
-  state.view = 'session'
   delete input.dataset.place
   markFoot()
   clearCanvas()
@@ -2185,6 +2175,7 @@ function openThreads(open) {
  * it landed.
  */
 function drawThreadBar() {
+  drawRuns()
   const bar = $('thread-bar')
   const id = state.sessionId
   const side = id !== null && id !== COMPANION_SESSION_ID
@@ -2196,7 +2187,7 @@ function drawThreadBar() {
     title: 'All threads',
     onclick: () => openThreads($('thread-picker').hidden),
   }, [el('span', { class: 'thread-bar-name', text: title }), el('span', { class: 'thread-pick-mark', text: 'Threads' })])
-  if (!side) return void bar.replaceChildren(pick, turnsButton(), companionMeter)
+  if (!side) return void bar.replaceChildren(pick, modeSwitch(id, () => state.sessionId === id), turnsButton(), companionMeter)
   const bring = el('button', {
     type: 'button',
     class: 'act',
@@ -2214,8 +2205,11 @@ function drawThreadBar() {
       }
     },
   })
-  bar.replaceChildren(pick, bring, el('button', { type: 'button', class: 'link', text: 'Back to Gnomon', onclick: () => openSession(COMPANION_SESSION_ID) }))
+  bar.replaceChildren(pick, modeSwitch(id, () => state.sessionId === id), bring, el('button', { type: 'button', class: 'link', text: 'Back to Gnomon', onclick: () => openSession(COMPANION_SESSION_ID) }))
 }
+
+// The live strip (live-strip.js): every other thread with a turn running.
+const { drawRuns, runFrame } = mountLiveStrip({ state, $, COMPANION_SESSION_ID, openSession, openThreads })
 
 /**
  * Turns nobody typed, as they happen: the companion woken by a notice, a job
@@ -2253,11 +2247,12 @@ async function newSession() {
     const body = await (await fetch('/gnomon/api/session/new', { method: 'POST' })).json()
     if (typeof body.id !== 'string') return
     state.sessionId = body.id
+    drawThreadBar()
     // Live from the first word: a helper's report can wake this thread too.
     watchSession(body.id)
+    state.view = 'session'
     loadModels()
     loadPermission()
-    state.view = 'session'
     delete input.dataset.place
     openThreads(false)
     markFoot()
@@ -2309,13 +2304,15 @@ function setRunning(running) {
 async function stopTurn() {
   if (state.sessionId === null) return
   const note = input.value.trim()
+  // Doc 29: who pressed, for the record (the slip's button or ⌥. say so; Sundial.app stamps the button's press: a hand's or a posted one).
+  const by = { by: bar.dataset.stopBy || 'bar', ...(bar.dataset.stopBy === 'slip-button' && document.documentElement.dataset.press ? { press: document.documentElement.dataset.press } : {}) }
   send.disabled = true
   send.textContent = 'Stopping…'
   try {
     const res = await fetch('/gnomon/api/stop', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sessionId: state.sessionId, ...(note === '' ? {} : { note }) }),
+      body: JSON.stringify({ sessionId: state.sessionId, ...by, ...(note === '' ? {} : { note }) }),
     })
     if (!res.ok) {
       apply({ type: 'error', message: 'That turn could not be stopped — it may have finished on its own.' })
@@ -2342,6 +2339,11 @@ async function stopTurn() {
 // A reply pressed on a notice row. The band raised it knowing only the words;
 // this is what makes them a turn — the owner's answer arrives exactly as if
 // they had typed it, so there is no second channel for Gnomon to read.
+// Set 2 R4: words from the slip while a turn runs correct that turn now (the host steers it), unless the host ran them in a side thread (Set 4 R2, `x-gnomon-aside`): the slip reads that stream.
+document.addEventListener('gnomon:correct', (event) => {
+  const text = String(event.detail?.text ?? '').trim()
+  if (text !== '' && state.sessionId !== null) fetch('/gnomon/api/turn', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId: state.sessionId, text }) }).then((r) => (r.headers.get('x-gnomon-aside') ? document.dispatchEvent(new CustomEvent('gnomon:aside', { detail: { text, response: r } })) : r.body?.cancel()), () => {})
+})
 document.addEventListener('gnomon:say', (event) => {
   const text = event.detail?.text
   if (typeof text === 'string' && text.trim() !== '') {
@@ -2370,7 +2372,7 @@ async function say(text, extra = {}) {
     const response = await fetch('/gnomon/api/turn', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sessionId: state.sessionId, text: withMentions(text), place: input.dataset.place ?? placeOfView(), ...extra }),
+      body: JSON.stringify({ sessionId: state.sessionId, text: withMentions(text), ...turnPlace(text, input.dataset, placeOfView), ...extra }),
       signal: controller.signal,
     })
     if (!response.ok || response.body === null) {
@@ -2952,10 +2954,16 @@ function renderModelMenu() {
   modelMenu.replaceChildren(...nodes)
 }
 
+/** The thread the next turn goes to, or null for the board's default. In the slip it is the one the thread pill holds. */
+const chipThread = () => (state.view === 'session' && state.sessionId !== null ? state.sessionId : document.documentElement.dataset.overlay ? state.sessionId ?? COMPANION_SESSION_ID : null)
+
+// The thread pill (thread-pill.js): which conversation the slip is talking to.
+const { joinPicked } = mountThreadPill({ state, el, $, COMPANION_SESSION_ID, loadModels: () => loadModels() })
+
 async function loadModels() {
   let body = null
   // With a thread open the chip shows THAT thread's model; on the board, the default.
-  const session = state.view === 'session' && state.sessionId !== null ? `?session=${encodeURIComponent(state.sessionId)}` : ''
+  const session = chipThread() ? `?session=${encodeURIComponent(chipThread())}` : ''
   try {
     body = await (await fetch(`/gnomon/api/models${session}`, { headers: { accept: 'application/json' } })).json()
   } catch {
@@ -2989,7 +2997,7 @@ async function chooseModel(m) {
   setModelButton(m)
   // A thread open → THIS thread switches, from its next answer (J1.10). The
   // board → the default for new threads. One chip; the message says which.
-  const thread = state.view === 'session' && state.sessionId !== null ? state.sessionId : null
+  const thread = chipThread()
   try {
     const res = await fetch('/gnomon/api/model', {
       method: 'POST',
@@ -3187,6 +3195,7 @@ function drawStrip() {
 
   // J2.1: three taps a day on how it is going. The filter's belief is graded
   // against them; nothing prices an interruption on it until that grade is in.
+  if (now.offer) parts.push(offerChip(now.offer)) // Round 4: a notice's one act, first on the asking side; its notice's own line rides on it for the slip.
   if (now.self?.due && !now.idle) parts.push(selfReportChips())
   else if (now.self?.lastTap && now.self.lastAt && Date.now() - Date.parse(now.self.lastAt) < 30 * 60_000) parts.push(el('span', { class: 'strip-day', title: 'Your last word on how it is going. Gnomon grades its own read against it.', text: `you said ${now.self.lastTap}` }))
   // A tendency, shown as one: faint, and honest about being a guess.
@@ -3423,9 +3432,22 @@ function openLive() {
       return
     }
     switch (frame.type) {
+      case 'approval-closed': // Settled while the stream it came on had closed (a stopped turn, a quiet one, a reconnect): every page hears it.
+        settleApproval(frame)
+        break
       case 'working':
         workingSteps = { jobId: frame.jobId, todos: Array.isArray(frame.todos) ? frame.todos : [] }
         drawJob()
+        break
+      case 'thread':
+        // Someone else picked the thread (the test runner starts every run in a clean one). The slip joins it, unless
+        // the owner chose one here after that pick (the feed sends the last pick again on every connect);
+        // the board keeps the owner's thread and follows the run in the live strip.
+        if (document.documentElement.dataset.overlay) joinPicked(frame)
+        break
+      case 'runs':
+      case 'run':
+        runFrame(frame)
         break
       case 'board':
         if (frame.board) applyBoard(frame.board)
@@ -3612,7 +3634,7 @@ function drawAsked(ask, answer) {
  * question changes.
  */
 function answeringNow() {
-  return openAsk !== null && input.dataset.answering !== '0'
+  return openAsk !== null && input.dataset.answering !== '0' && !document.documentElement.dataset.overlay // run 200: the slip shows no question, so its words never answer one (and never move to the companion)
 }
 
 function drawOpenAsk() {
@@ -3729,12 +3751,18 @@ loadPermission()
 // The settings first: the paper and whether anything may move are decided
 // before the first frame is drawn, so nothing flashes the wrong way.
 loadSettings()
+// The slip shows the companion's log, but its turns go to the thread the pill restored: opening must not take that away.
+const slipThread = document.documentElement.dataset.overlay ? state.sessionId : null
 openSession(COMPANION_SESSION_ID, { quiet: true })
   .then(showToday)
   .finally(() => {
     stripSited = true
     drawStrip()
   })
+if (slipThread) {
+  state.sessionId = slipThread
+  loadModels()
+}
 loadOpenAsk()
 setInterval(loadOpenAsk, ASK_POLL_MS * 6)
 openLive()

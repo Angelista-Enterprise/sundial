@@ -21,6 +21,15 @@ const BASE_CANDIDATE: FactCandidate = {
 };
 
 describe('contradictionCheck', () => {
+  it('a conversation fact is valid from the day it was said, never later than its event', () => {
+    const state = createInitialState('test');
+    const told = { ...BASE_CANDIDATE, entityId: 'topic:living-room', entityKind: 'topic' as const, canonicalName: 'living room', predicate: 'holds', object: 'a 55-inch Samsung TV', provenance: 'conversation' as const };
+    const upsertTs = (c: FactCandidate) => (contradictionCheck(state, candidateEvent(c, '2026-01-02T00:00:30.000Z')).effects.find((e) => e.type === 'UpsertEntityFact') as { ts: string }).ts;
+    expect(upsertTs({ ...told, at: '2026-01-01T14:05:00.000Z' })).toBe('2026-01-01T14:05:00.000Z');
+    expect(upsertTs({ ...told, at: '2026-03-01T00:00:00.000Z' }), 'a date after the event is not trusted').toBe('2026-01-02T00:00:30.000Z');
+    expect(upsertTs(told)).toBe('2026-01-02T00:00:30.000Z');
+  });
+
   it('does not insert on the very first observation — starts a pending streak instead (D3 promotion policy)', () => {
     const state = createInitialState('d1');
     const { state: next, effects } = contradictionCheck(state, candidateEvent(BASE_CANDIDATE));

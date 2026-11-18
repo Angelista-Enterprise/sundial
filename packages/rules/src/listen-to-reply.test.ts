@@ -94,6 +94,16 @@ describe('applyOwnerReply', () => {
     expect(applyOwnerReply(state, judged({ worth_remembering: { type: 'score', score: 0.1, probabilities: { '0': 0.9, '1': 0.1 } } }, decision)).effects).toEqual([]);
   });
 
+  it('work the reply hands the owner becomes an open promise; a request to Gnomon does not', () => {
+    const meta = { ...meetingMeta, answer: 'fine, Mira handed me BOX-484 and BOX-490' };
+    const { effects } = applyOwnerReply(state, judged({ contains_followup: { type: 'noul', noul: 0.89 }, asks_assistant_to_do_something: { type: 'noul', noul: 0.07 } }, meta));
+    const emitted = effects.find((e) => e.type === 'EmitEvent') as Extract<Effect, { type: 'EmitEvent' }>;
+    expect(emitted.event).toMatchObject({ type: 'commitment:heard', payload: { source: 'owner', id: 'commitment:reply:owner-ask:meeting-abc', deliverable: meta.answer, quote: meta.answer } });
+    const request = applyOwnerReply(state, judged({ contains_followup: { type: 'noul', noul: 0.81 }, asks_assistant_to_do_something: { type: 'noul', noul: 0.79 } }, { ...meta, answer: 'give me a prep for the standup' }));
+    expect(request.effects).toEqual([]);
+    expect(applyOwnerReply(state, judged({ contains_followup: { type: 'noul', noul: 0.65 } }, meta)).effects).toEqual([]);
+  });
+
   it('ignores another set and a payload without the exchange', () => {
     expect(applyOwnerReply(state, judged({}, { ...meetingMeta, answer: '' })).effects).toEqual([]);
     const other = judged({}, meetingMeta);

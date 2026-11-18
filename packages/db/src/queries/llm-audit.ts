@@ -1,4 +1,4 @@
-import { eq, desc, gte, inArray } from 'drizzle-orm';
+import { and, eq, desc, gte, inArray } from 'drizzle-orm';
 import { getDb } from '../db-client.js';
 import { llmAudit, moments } from '../schemas/db-schema.js';
 import { localDate } from '@sundial/helpers/local-day.js';
@@ -14,11 +14,17 @@ export interface RecordLlmAuditInput {
   /** 1 for a first try. A retry passes the try number and the id of the attempt it replaces, so a lost answer can be told from a recovered one. */
   attempt?: number;
   parentCallId?: string | null;
+  /** The route that serves the call (step 3 of the provider plan). */
+  source?: string;
+  /** `api` | `runtime` | `judge`. A `runtime` row is plan use, never dollars. */
+  access?: string;
 }
 
 export interface UpdateLlmAuditInput {
   respondedAt: string;
   latencyMs: number;
+  /** Plan 15 I16: the first streamed text, in ms from the request. */
+  firstTokenMs?: number;
   statusCode?: number;
   success: boolean;
   responseContent?: string;
@@ -32,6 +38,11 @@ export interface UpdateLlmAuditInput {
   billedPromptTokens?: number;
   /** The part of `promptTokens` served from the provider's prefix cache. A SUBSET of it, never an addition. */
   cacheReadTokens?: number;
+  /** Set 4 R1: the host the route says served the call (OpenRouter's `provider`). Unset: NULL. */
+  upstream?: string;
+  /** Set 2 R4: the route and model that answered, when not the ones the row was opened for (a fallback). Unset: left as recorded. */
+  source?: string;
+  model?: string;
 }
 
 /**
@@ -52,6 +63,8 @@ export async function recordLlmAudit(input: RecordLlmAuditInput): Promise<void> 
     success: false,
     attempt: input.attempt ?? 1,
     parentCallId: input.parentCallId ?? null,
+    source: input.source ?? null,
+    access: input.access ?? null,
   });
 }
 
@@ -62,6 +75,8 @@ export async function updateLlmAudit(id: string, patch: UpdateLlmAuditInput): Pr
     .set({
       respondedAt: patch.respondedAt,
       latencyMs: patch.latencyMs,
+      firstTokenMs: patch.firstTokenMs ?? null,
+      upstream: patch.upstream ?? null,
       statusCode: patch.statusCode ?? null,
       success: patch.success,
       responseContent: patch.responseContent ?? null,
@@ -75,8 +90,25 @@ export async function updateLlmAudit(id: string, patch: UpdateLlmAuditInput): Pr
       errorClass: patch.errorClass ?? null,
       billedPromptTokens: patch.billedPromptTokens ?? null,
       cacheReadTokens: patch.cacheReadTokens ?? null,
+      ...(patch.source ? { source: patch.source } : {}),
+      ...(patch.model ? { model: patch.model } : {}),
     })
     .where(eq(llmAudit.id, id));
+}
+
+/**
+ * Set 4 R1: one route and model's answered chat calls (purpose `ask`) since `sinceIso`, the newest `limit`, oldest
+ * first. The pace switch in sundial-llm-openai judges a slow hour from these (ms per 1k tokens in against the route's
+ * own usual pace, a mostly cached prompt against its own kind).
+ */
+export async function getRoutePace(source: string, model: string, sinceIso: string, limit = 300): Promise<{ requestedAt: string; latencyMs: number | null; promptTokens: number | null; cacheReadTokens: number | null }[]> {
+  const rows = await getDb()
+    .select({ requestedAt: llmAudit.requestedAt, latencyMs: llmAudit.latencyMs, promptTokens: llmAudit.promptTokens, cacheReadTokens: llmAudit.cacheReadTokens })
+    .from(llmAudit)
+    .where(and(eq(llmAudit.purpose, 'ask'), eq(llmAudit.success, true), eq(llmAudit.source, source), eq(llmAudit.model, model), gte(llmAudit.requestedAt, sinceIso)))
+    .orderBy(desc(llmAudit.requestedAt))
+    .limit(limit);
+  return rows.reverse();
 }
 
 export interface LlmAuditSummary {
@@ -158,6 +190,9 @@ export interface LlmAuditOverviewSummary {
   remoteTokens: number;
   /** Tokens through local models. Free, and kept separate so a big local run can't read as spend. */
   localTokens: number;
+  /** Calls on a vendor runtime on the owner's own plan (`access` = `runtime`): counted against the plan, never priced. Since 2026-10-05. */
+  planCalls: number;
+  planTokens: number;
   /** Estimated prompt tokens uploaded on calls that failed. Never part of `totalTokens` — one is measured, the other is not. */
   billedOnFailureTokens: number;
   /** What those uploads cost at the failed call's own model rate. The floor under "wasted money"; retry duplication is on top of it. */
@@ -292,6 +327,10 @@ export const LLM_PRICING: { match: string; inputPer1M: number; outputPer1M: numb
   // `intent` since 2026-09-06. List price from app.tensorx.ai on 2026-09-07.
   { match: 'qwen3.8-flash-next', inputPer1M: 0.2, outputPer1M: 0.5, cacheReadPer1M: 0.05 },
   { match: 'qwen3.8-2.4t-a95b', inputPer1M: 2.5, outputPer1M: 6, cacheReadPer1M: 0.63 },
+  // z-ai/glm-5.3-flash: the default since 2026-11-02, when TensorX withdrew
+  // qwen3.8-flash-next (the row above stays for the rows it priced). List price
+  // from tensorx.ai/pricing, 2026-10-12; no cache-read rate published there.
+  { match: 'glm-5.3-flash', inputPer1M: 0.2, outputPer1M: 0.5 },
   // Priced ahead of use: nothing routes to kimi yet (one `SUNDIAL_LLM_MODEL`, no per-purpose
   // routing), so this only takes effect if the configured model is switched to it.
   { match: 'kimi-k3', inputPer1M: 3, outputPer1M: 15 },
@@ -303,6 +342,11 @@ export const LLM_PRICING: { match: string; inputPer1M: number; outputPer1M: numb
   { match: 'claude-opus', inputPer1M: 15, outputPer1M: 75, cacheReadPer1M: 1.5 },
   { match: 'claude-sonnet', inputPer1M: 3, outputPer1M: 15, cacheReadPer1M: 0.3 },
   { match: 'claude-haiku', inputPer1M: 0.8, outputPer1M: 4, cacheReadPer1M: 0.08 },
+  // The `claude` runtime source records Claude Code's model aliases (`claude/sonnet`; `claude-code/sonnet`
+  // until 2026-10-05): the same list prices. Step 3 of the provider plan reports plan use instead.
+  { match: '/opus', inputPer1M: 15, outputPer1M: 75, cacheReadPer1M: 1.5 },
+  { match: '/sonnet', inputPer1M: 3, outputPer1M: 15, cacheReadPer1M: 0.3 },
+  { match: '/haiku', inputPer1M: 0.8, outputPer1M: 4, cacheReadPer1M: 0.08 },
   { match: 'gpt', inputPer1M: 2.5, outputPer1M: 10, cacheReadPer1M: 0.625 },
 ];
 
@@ -320,8 +364,9 @@ export const LLM_PRICING: { match: string; inputPer1M: number; outputPer1M: numb
  * row from before the column, or a model whose cache tier is not filled in, is
  * estimated high rather than silently cheap.
  */
-export function estimateCostUsd(model: string | null, promptTokens: number, completionTokens: number, cacheReadTokens = 0): number {
-  if (llmProvider(model) === 'local') return 0;
+export function estimateCostUsd(model: string | null, promptTokens: number, completionTokens: number, cacheReadTokens = 0, access: string | null = null): number {
+  // A vendor runtime on the owner's plan (Claude Code) is counted, not priced: the plan's limits are the cost.
+  if (access === 'runtime' || llmProvider(model) === 'local') return 0;
   const rate = model ? LLM_PRICING.find((p) => model.toLowerCase().includes(p.match)) : undefined;
   if (!rate) return 0;
   // Clamped: a provider that reports more cached than billed input must not
@@ -397,6 +442,7 @@ export async function getLlmAuditOverview(sinceIso?: string): Promise<LlmAuditOv
       errorClass: llmAudit.errorClass,
       billedPromptTokens: llmAudit.billedPromptTokens,
       cacheReadTokens: llmAudit.cacheReadTokens,
+      access: llmAudit.access,
     })
     .from(llmAudit);
   const rows = await (sinceIso ? base.where(gte(llmAudit.requestedAt, sinceIso)) : base);
@@ -409,6 +455,8 @@ export async function getLlmAuditOverview(sinceIso?: string): Promise<LlmAuditOv
   let localCalls = 0;
   let remoteTokens = 0;
   let localTokens = 0;
+  let planCalls = 0;
+  let planTokens = 0;
   let calls = 0;
   let failedCount = 0;
   let latencySum = 0;
@@ -450,9 +498,12 @@ export async function getLlmAuditOverview(sinceIso?: string): Promise<LlmAuditOv
     }
     const rowPrompt = row.promptTokens ?? 0;
     const rowCompletion = row.completionTokens ?? 0;
-    const rowCost = estimateCostUsd(row.model, rowPrompt, rowCompletion, row.cacheReadTokens ?? 0);
+    const rowCost = estimateCostUsd(row.model, rowPrompt, rowCompletion, row.cacheReadTokens ?? 0, row.access);
     const rowTokens = row.totalTokens ?? 0;
-    if (llmProvider(row.model) === 'remote') {
+    if (row.access === 'runtime') {
+      planCalls += 1;
+      planTokens += rowTokens;
+    } else if (llmProvider(row.model) === 'remote') {
       remoteCalls += 1;
       remoteTokens += rowTokens;
       if (isUnpricedRemote(row.model)) unpriced.set(row.model, (unpriced.get(row.model) ?? 0) + rowTokens);
@@ -508,6 +559,8 @@ export async function getLlmAuditOverview(sinceIso?: string): Promise<LlmAuditOv
       localCalls,
       remoteTokens,
       localTokens,
+      planCalls,
+      planTokens,
       billedOnFailureTokens,
       billedOnFailureUsd,
       retrySpendUsd,
@@ -803,6 +856,7 @@ export async function getLlmLedgerRows(groupBy: LlmLedgerGroupBy, timeZone: stri
       totalTokens: llmAudit.totalTokens,
       billedPromptTokens: llmAudit.billedPromptTokens,
       cacheReadTokens: llmAudit.cacheReadTokens,
+      access: llmAudit.access,
     })
     .from(llmAudit);
   const rows = await (sinceIso ? base.where(gte(llmAudit.requestedAt, sinceIso)) : base);

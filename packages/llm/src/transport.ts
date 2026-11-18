@@ -1,5 +1,8 @@
-import { getLlmConfig } from './config.js';
+import { callRuntime } from './claude-code.js';
+import { CLAUDE_SOURCE, getLlmConfig } from './config.js';
+import { getModelPort } from './model-port.js';
 import type { ChatCompletionMessage, ChatCompletionResult, LlmPurpose, ToolCall, ToolDefinition } from './types.js';
+import type { LlmConfig } from './config.js';
 
 /**
  * Fine for a moment-intent call on a five-line prompt. Not fine for the journal,
@@ -73,13 +76,24 @@ function toWireMessage(message: ChatCompletionMessage): Record<string, unknown> 
  */
 export async function callChatCompletion(
   messages: ChatCompletionMessage[],
-  opts: { purpose?: LlmPurpose; model?: string; maxTokens?: number; temperature?: number; tools?: ToolDefinition[]; toolChoice?: 'auto' | 'none'; timeoutMs?: number } = {},
+  opts: { purpose?: LlmPurpose; model?: string; maxTokens?: number; temperature?: number; tools?: ToolDefinition[]; toolChoice?: 'auto' | 'none'; timeoutMs?: number; config?: LlmConfig; reasoning?: 'none' | 'low' } = {},
 ): Promise<ChatCompletionResult> {
-  const config = getLlmConfig(opts.purpose);
+  // `opts.config`: the router's candidate for this attempt (`runAuditedLlmCall` walks the list); else the first.
+  const config = opts.config ?? getLlmConfig(opts.purpose);
   if (!config) {
     throw new Error('No LLM endpoint configured — set SUNDIAL_LLM_BASE_URL, and SUNDIAL_LLM_MODEL for any endpoint other than TensorX.');
   }
+  if (config.access === 'runtime') {
+    return callRuntime(config.route === CLAUDE_SOURCE ? 'claude' : 'copilot', messages, { model: opts.model ?? config.model, withTools: Boolean(opts.tools?.length), timeoutMs: opts.timeoutMs ? Math.max(opts.timeoutMs, 120_000) : undefined });
+  }
+  // A protocol this fetch does not speak goes through the model port (dsh's adapters, in the harness).
+  if (config.protocol !== 'openai-chat') {
+    const port = getModelPort();
+    if (!port) throw new Error(`The ${config.route} provider speaks ${config.protocol}, which only the running Sundial can reach (no model port in this process).`);
+    return port.complete({ route: config.route, model: opts.model ?? config.model, messages, tools: opts.tools, maxTokens: opts.maxTokens, temperature: opts.temperature, timeoutMs: opts.timeoutMs });
+  }
 
+  const reasoning = opts.reasoning ?? 'none';
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), opts.timeoutMs ?? REQUEST_TIMEOUT_MS);
 
@@ -93,14 +107,15 @@ export async function callChatCompletion(
       body: JSON.stringify({
         model: opts.model ?? config.model,
         messages: messages.map(toWireMessage),
-        max_tokens: opts.maxTokens ?? 1024,
+        // Reasoning tokens count against max_tokens: a model that must reason gets room for it on top.
+        max_tokens: (opts.maxTokens ?? 1024) + (reasoning === 'none' ? 0 : 4096),
         temperature: opts.temperature ?? 0.3,
         // Every kernel purpose wants a short structured answer, not a think-aloud.
         // qwen/qwen3.8-flash-next reasons by default and, measured 2026-09-06,
         // spent all 1024 tokens reasoning and returned EMPTY content on a
         // five-line intent prompt. This is the OpenAI-standard switch; TensorX
         // honours it for qwen, and deepseek (which does not reason) ignores it.
-        reasoning_effort: 'none',
+        reasoning_effort: reasoning,
         ...(opts.tools && opts.tools.length > 0
           ? {
               tools: opts.tools.map((tool) => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } })),
@@ -114,6 +129,9 @@ export async function callChatCompletion(
     const statusCode = response.status;
     if (!response.ok) {
       const text = await response.text().catch(() => '');
+      // A model that cannot stop reasoning (minimax/minimax-m3.1-flash on OpenRouter, 2026-11-17: 400 "Reasoning is
+      // mandatory for this endpoint and cannot be disabled") refuses 'none': asked once more at 'low'.
+      if (statusCode === 400 && reasoning === 'none' && /reasoning is mandatory/i.test(text)) return callChatCompletion(messages, { ...opts, config, reasoning: 'low' });
       throw new LlmHttpError(statusCode, parseRetryAfterMs(response.headers.get('retry-after')), `LLM endpoint returned ${statusCode}: ${text.slice(0, 500)}`);
     }
 

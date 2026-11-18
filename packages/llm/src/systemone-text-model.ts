@@ -1,4 +1,4 @@
-import { getLlmConfig } from './config.js';
+import { getLlmConfig, roleSources, splitSourceModel } from './config.js';
 import { callChatCompletion } from './transport.js';
 import type { SystemOneAnswer, SystemOneQuestion, SystemOneResult } from './systemone.js';
 import type { JudgementPurpose } from './types.js';
@@ -22,6 +22,9 @@ export type SystemOneBackend = 'jev' | 'text-model' | 'off';
  * so an existing `.env` keeps working.
  */
 export function systemOneBackend(): SystemOneBackend {
+  // `llm.roles.judge`: Jev when it heads the list and has its key; any other head (a runtime, a provider) is the text-model path.
+  const head = roleSources('judge')[0];
+  if (head) return splitSourceModel(head).source === 'jev' && process.env.TYPESAFE_API_KEY ? 'jev' : 'text-model';
   const value = process.env.SUNDIAL_SYSTEMONE_BACKEND;
   if (value === 'local' || value === 'text-model') return 'text-model';
   if (value === 'off' || value === 'jev') return value;
@@ -39,7 +42,9 @@ const SYSTEM = [
   'Use only the evidence in STATE. A field that is null or empty is not evidence. Give honest probabilities, not certainties.',
 ].join(' ');
 
+// GLM-4.7 Flash sometimes answers a noul question with a bare 0 or 1 instead of {"noul": p}.
 function normalise(type: SystemOneQuestion['type'], raw: unknown): SystemOneAnswer | null {
+  if (type === 'noul' && typeof raw === 'number' && raw >= 0 && raw <= 1) return { type, noul: raw };
   if (typeof raw !== 'object' || raw === null) return null;
   const r = raw as { noul?: unknown; probabilities?: unknown };
   if (type === 'noul') {
@@ -56,6 +61,27 @@ function normalise(type: SystemOneQuestion['type'], raw: unknown): SystemOneAnsw
   const probabilities = Object.fromEntries(entries.map(([k, p]) => [k, p / total]));
   const [top, confidence] = entries.map(([k, p]) => [k, p / total] as const).reduce((a, b) => (b[1] > a[1] ? b : a));
   return type === 'choice' ? { type, choice: top, probabilities, confidence } : { type, score: Number(top), probabilities, confidence };
+}
+
+/**
+ * Local models (GLM-4.7 Flash, Qwen3 30B-A3B 2507) often drop the last `}` of
+ * the root object: 21-24% and 6% of 103 replayed judge calls, lab/local-bench.
+ * Closes every `{` or `[` still open at the end, skipping those inside strings.
+ */
+function closeOpenBrackets(text: string): string {
+  const open: string[] = [];
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (c === '\\') i++;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === '{') open.push('}');
+    else if (c === '[') open.push(']');
+    else if (c === '}' || c === ']') open.pop();
+  }
+  return text + open.reverse().join('');
 }
 
 export async function callSystemOneTextModel(
@@ -77,7 +103,11 @@ export async function callSystemOneTextModel(
   try {
     parsed = JSON.parse(stripped) as { answers?: Record<string, unknown> };
   } catch {
-    throw new Error(`text-model judgement returned no JSON: ${result.content.slice(0, 200)}`);
+    try {
+      parsed = JSON.parse(closeOpenBrackets(stripped)) as { answers?: Record<string, unknown> };
+    } catch {
+      throw new Error(`text-model judgement returned no JSON: ${result.content.slice(0, 200)}`);
+    }
   }
   const answers: Record<string, SystemOneAnswer> = {};
   for (const [id, q] of Object.entries(questions)) {

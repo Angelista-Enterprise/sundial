@@ -23,7 +23,9 @@ case "$APP" in "$SUNDIAL_HOME"/*) echo "refusing to build into the data folder $
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-swiftc -O -swift-version 5 -o "$APP/Contents/MacOS/Sundial" "$REPO/apps/macos/Sundial.swift" -framework AppKit -framework WebKit -framework ServiceManagement
+# The oldest macOS Sundial runs on (Sonoma): ScreenCaptureKit's screenshot call is 14.0. Without it a build targets this Mac's own version.
+SWIFT_TARGET="$(uname -m)-apple-macos14.0"
+swiftc -O -swift-version 5 -target "$SWIFT_TARGET" -o "$APP/Contents/MacOS/Sundial" "$REPO/apps/macos/Sundial.swift" "$REPO/apps/macos/AppChannel.swift" "$REPO/apps/macos/ScreenLook.swift" -framework AppKit -framework WebKit -framework ServiceManagement -framework AVFoundation -framework ScreenCaptureKit -framework Vision
 printf '%s\n' "$DSH_REPO" > "$APP/Contents/Resources/repo-path"
 printf '%s\n' "$NODE_BIN" > "$APP/Contents/Resources/node-path"
 

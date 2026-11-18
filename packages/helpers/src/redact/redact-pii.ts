@@ -72,6 +72,9 @@ export function isBsn(s: string): boolean {
 // could take a piece of them.
 const DETECTORS: Detector[] = [
   { label: 'private-key', re: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g },
+  // S4 (Fable H2): a key body whose BEGIN line scrolled away: two or more lines of 60+ base64 characters, its short last line
+  // when it ends in = or comes before the END line, through that END line.
+  { label: 'private-key', re: /^[A-Za-z0-9+/]{60,}={0,2}[ \t]*(?:\r?\n[A-Za-z0-9+/]{60,}={0,2}[ \t]*)+(?:\r?\n[A-Za-z0-9+/]{1,59}(?:={1,2}|(?=[ \t]*\r?\n-----END)))?(?:[ \t]*\r?\n-----END [A-Z ]*PRIVATE KEY-----)?/gm },
   // user:password in any scheme://user:password@host — the host stays.
   { label: 'credentials', re: /(?<=\b[a-z][a-z0-9+.-]*:\/\/)[^\s:@/]+:[^\s@/]+(?=@)/gi },
   // Not `icon@2x.png` (a file), not `git@github.com:org/repo` (a remote).

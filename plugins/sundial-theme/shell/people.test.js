@@ -91,7 +91,7 @@ describe('folding many rows into one human', () => {
 
   it('draws one trail mark per meeting, newest first', () => {
     const folded = foldPeople([
-      row('Marco Kuiper', 'Marco Kuiper', [
+      row('Marco Quill', 'Marco Quill', [
         ['a', { at: '2026-09-01T09:00:00.000Z' }],
         ['b', { at: '2026-09-16T09:00:00.000Z' }],
       ]),
@@ -122,17 +122,17 @@ describe('who else was in the room', () => {
   })
 
   it('gives each of them marks at the shared meetings, for the trail', () => {
-    const ruben = withWhom(isa, events)[0]
-    expect(ruben.life.map((e) => [e.at, e.kind])).toEqual([
+    const first = withWhom(isa, events)[0]
+    expect(first.life.map((e) => [e.at, e.kind])).toEqual([
       ['2026-09-16T11:30:00.000Z', 'with'],
       ['2026-08-10T09:00:00.000Z', 'with'],
     ])
   })
 
   it('resolves a co-attendee through the same fold the list uses', () => {
-    const named = withWhom(isa, events, (n) => (n === 'person-c0ffee0001' ? 'Julia' : n))
-    expect(named.map((w) => w.name)).toContain('Julia')
-    expect(named.find((w) => w.name === 'Julia').unnamed).toBe(false)
+    const named = withWhom(isa, events, (n) => (n === 'person-c0ffee0001' ? 'Wren' : n))
+    expect(named.map((w) => w.name)).toContain('Wren')
+    expect(named.find((w) => w.name === 'Wren').unnamed).toBe(false)
   })
 
   it('keeps an unresolved attendee, and marks it unnamed rather than showing a hash as a name', () => {
@@ -140,8 +140,8 @@ describe('who else was in the room', () => {
   })
 
   it('returns nothing for someone the owner only ever meets alone', () => {
-    const marco = { name: 'Marco Kuiper', met: [{ id: 'm1', at: '2026-09-16T09:00:00.000Z' }] }
-    expect(withWhom(marco, new Map([['m1', { at: '2026-09-16T09:00:00.000Z', attendees: ['Marco Kuiper'] }]]))).toEqual([])
+    const marco = { name: 'Marco Quill', met: [{ id: 'm1', at: '2026-09-16T09:00:00.000Z' }] }
+    expect(withWhom(marco, new Map([['m1', { at: '2026-09-16T09:00:00.000Z', attendees: ['Marco Quill'] }]]))).toEqual([])
   })
 })
 

@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { computeLocalEmbedding, cosineSimilarity, computeEmbedding, getEmbeddingConfig, LOCAL_EMBEDDING_MODEL } from './local-embedding.js';
 
 // Mock the in-process model so tests never load the real ~90MB ONNX model.
@@ -117,6 +120,32 @@ describe('computeEmbedding (PE — in-process model primary, server opt-in, hash
     const result = await computeEmbedding('x');
     expect(result.model).toBe('local-minilm-384-v1');
     expect(mockComputeModelEmbedding).toHaveBeenCalledOnce();
+  });
+
+  it('never loads the model when config.json says memory.embeddings: false (the installer\'s no)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'sundial-embeddings-'));
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ memory: { embeddings: false } }));
+    vi.stubEnv('SUNDIAL_HOME', home);
+    delete process.env.SUNDIAL_EMBEDDING_BASE_URL;
+    const result = await computeEmbedding('debugging the payment webhook');
+    expect(result.model).toBe(LOCAL_EMBEDDING_MODEL);
+    expect(mockComputeModelEmbedding).not.toHaveBeenCalled();
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ memory: { embeddings: true } }));
+    expect((await computeEmbedding('x')).model).toBe('local-minilm-384-v1');
+  });
+
+  it('never loads the model while the packaged first run\'s question is open (memory.embeddings: "ask"), and loads it after a yes', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'sundial-embeddings-'));
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ memory: { embeddings: 'ask' } }));
+    vi.stubEnv('SUNDIAL_HOME', home);
+    delete process.env.SUNDIAL_EMBEDDING_BASE_URL;
+    expect((await computeEmbedding('first moment')).model).toBe(LOCAL_EMBEDDING_MODEL);
+    expect(mockComputeModelEmbedding).not.toHaveBeenCalled();
+    // An install from before the question has no key and already has the model.
+    writeFileSync(join(home, 'config.json'), JSON.stringify({}));
+    expect((await computeEmbedding('x')).model).toBe('local-minilm-384-v1');
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ memory: { embeddings: true } }));
+    expect((await computeEmbedding('x')).model).toBe('local-minilm-384-v1');
   });
 
   it('falls back to the hashing trick only when the in-process model itself fails (offline first-run)', async () => {

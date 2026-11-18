@@ -28,20 +28,15 @@
 //
 // Named exports only — a default export drops `inject`.
 import { connectCdp, discoverBrowserSocket } from './cdp.js';
-import { assertFetchableUrl, loadPage, MAX_BODY_CHARS } from './browser-page.js';
+import { assertFetchableUrl, DEFAULT_LOAD_TIMEOUT_MS, loadPage, MAX_BODY_CHARS, within } from './browser-page.js';
 import { createWebAuditor } from './audit.js';
 import { createBrowserSupervisor, managedBrowser, resolveChromePath } from './launcher.js';
 import { createSearxngSearch, DEFAULT_SEARXNG_URL } from './searxng.js';
 import { fence } from './page-session.js';
-
-export { connectCdp, discoverBrowserSocket } from './cdp.js';
-export { assertFetchableUrl, capBody, loadPage, MAX_BODY_CHARS } from './browser-page.js';
-export { createWebAuditor, clip, MAX_RECORDED_SNIPPET } from './audit.js';
-export { createBrowserSupervisor, resolveChromePath, headlessArgs, probeEndpoint, MANAGED_PORT, MANAGED_PROFILE_DIR } from './launcher.js';
-export { createSearxngSearch, buildQueryUrl, toSearchResult, describeFailure, DEFAULT_SEARXNG_URL } from './searxng.js';
+import { webFetchTool } from './fetch-tool.js';
 
 export const name = 'sundial-web-browser';
-export const inject = ['web', 'gnomonKernel'];
+export const inject = ['web', 'tools', 'gnomonKernel'];
 
 export const PROVIDER_ID = 'gnomon-browser';
 const DEFAULT_ENDPOINT = 'http://127.0.0.1:9222';
@@ -96,46 +91,55 @@ export function apply(ctx, config = {}) {
   // reached surfaces as a clear error on first use instead.
   const available = () => enableFetch || enableSearch;
 
+  /** One guarded, audited page load: http(s) only, no private hosts, inside the load budget. */
+  async function fetchPage(rawUrl, signal) {
+    const startedAt = Date.now();
+    let url;
+    try {
+      url = assertFetchableUrl(rawUrl);
+    } catch (error) {
+      await audit.fetch({ url: String(rawUrl), durationMs: 0, error: error.message });
+      throw error;
+    }
+    try {
+      const page = await within(DEFAULT_LOAD_TIMEOUT_MS, url, withBrowser(supervisor, signal, (client) => loadPage(client, url, { maxBodyChars })));
+      await audit.fetch({
+        url,
+        finalUrl: page.url,
+        statusCode: page.statusCode,
+        title: page.title,
+        chars: page.text.length,
+        truncated: page.truncated,
+        durationMs: Date.now() - startedAt,
+      });
+      return page;
+    } catch (error) {
+      await audit.fetch({ url, durationMs: Date.now() - startedAt, error: error.message });
+      throw error;
+    }
+  }
+
   if (enableFetch) {
+    // The model's `web_fetch` is ours (fetch-tool.js): a capped extract, `find`, `offset`.
+    ctx.effect(() => ctx.tools.register(webFetchTool(fetchPage)));
+    // The seam's provider stays for any other caller of ctx.web.fetch: the whole page.
     ctx.effect(() =>
       ctx.web.registerFetchProvider({
         id: PROVIDER_ID,
         available,
         async fetch(request, signal) {
-          const startedAt = Date.now();
-          let url;
-          try {
-            url = assertFetchableUrl(request.url);
-          } catch (error) {
-            await audit.fetch({ url: String(request.url), durationMs: 0, error: error.message });
-            throw error;
-          }
-          try {
-            const page = await withBrowser(supervisor, signal, (client) => loadPage(client, url, { maxBodyChars }));
-            await audit.fetch({
-              url,
-              finalUrl: page.url,
-              statusCode: page.statusCode,
-              title: page.title,
-              chars: page.text.length,
-              truncated: page.truncated,
-              durationMs: Date.now() - startedAt,
-            });
-            return {
-              url: page.url,
-              statusCode: page.statusCode,
-              // `text`, not `html`: what comes back is the RENDERED page as the
-              // owner would see it, already stripped of markup by the browser.
-              // Declaring it html would invite a second, pointless strip.
-              // Fenced as the site's words (H1): a page is written by strangers,
-              // and an instruction inside it must read as its text, not as ours.
-              body: { kind: 'text', content: fence(page.url, page.text) },
-              truncated: page.truncated,
-            };
-          } catch (error) {
-            await audit.fetch({ url, durationMs: Date.now() - startedAt, error: error.message });
-            throw error;
-          }
+          const page = await fetchPage(request.url, signal);
+          return {
+            url: page.url,
+            statusCode: page.statusCode,
+            // `text`, not `html`: what comes back is the RENDERED page as the
+            // owner would see it, already stripped of markup by the browser.
+            // Declaring it html would invite a second, pointless strip.
+            // Fenced as the site's words (H1): a page is written by strangers,
+            // and an instruction inside it must read as its text, not as ours.
+            body: { kind: 'text', content: fence(page.url, page.text) },
+            truncated: page.truncated,
+          };
         },
       }),
     );

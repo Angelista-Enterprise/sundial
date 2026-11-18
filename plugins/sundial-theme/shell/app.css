@@ -2568,16 +2568,16 @@ button.link:hover { text-decoration: underline; }
 }
 .pane[data-pane='chat'] > .pane-body { padding: 0; overflow: hidden; }
 .ghost-toggle { display: none; }
-.ghost { grid-template-rows: auto minmax(0, 1fr) auto auto; }
-.thread-bar { display: flex; align-items: center; gap: 12px; padding: 6px 16px; border-bottom: 1px solid var(--border); font-size: 13px; }
-.thread-pick { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; border: 0; background: transparent; padding: 4px 0; font: inherit; color: var(--ink); text-align: left; cursor: pointer; }
+.ghost { grid-template-rows: auto auto minmax(0, 1fr) auto auto; }
+.thread-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; padding: 6px 16px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.thread-pick { flex: 1; min-width: 7rem; display: flex; align-items: baseline; gap: 10px; border: 0; background: transparent; padding: 4px 0; font: inherit; color: var(--ink); text-align: left; cursor: pointer; }
 .thread-bar-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .thread-pick-mark { flex: none; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); }
 .thread-pick-mark::after { content: ' ▾'; }
 .thread-pick[aria-expanded='true'] .thread-pick-mark::after { content: ' ▴'; }
 .thread-pick:hover .thread-pick-mark, .thread-pick[aria-expanded='true'] .thread-pick-mark { color: var(--ink); }
 /* The thread list, laid over the transcript's own row so the composer stays put. */
-.ghost > .thread-picker { grid-row: 2; grid-column: 1; z-index: 2; min-height: 0; overflow: auto; background: var(--card); border-bottom: 1px solid var(--border); }
+.ghost > .thread-picker { grid-row: 3; grid-column: 1; z-index: 2; min-height: 0; overflow: auto; background: var(--card); border-bottom: 1px solid var(--border); }
 .thread-picker > .rail { padding: 12px 16px 16px; }
 .thread-bar .act { height: 26px; padding: 0 10px; font-size: 12px; }
 /* Where a side thread joined the conversation. */
@@ -2588,9 +2588,22 @@ button.link:hover { text-decoration: underline; }
 /* The seat's old grid names would open a second column here; in the card they are plain rows. */
 .ghost > .canvas, .ghost > .ask, .ghost > .bar { grid-area: auto; grid-column: 1; }
 .ghost > .thread-bar { grid-row: 1; }
-.ghost > .canvas { grid-row: 2; }
-.ghost > .ask { grid-row: 3; }
-.ghost > .bar { grid-row: 4; }
+.ghost > .live-strip { grid-row: 2; }
+.ghost > .canvas { grid-row: 3; }
+.ghost > .ask { grid-row: 4; }
+.ghost > .bar { grid-row: 5; }
+/* The live strip: every other thread working now, one column each (name, time, newest step); a click opens it. */
+.live-strip { display: flex; flex-wrap: wrap; gap: 1px; background: var(--divider); border-bottom: 1px solid var(--border); font-size: 12px; }
+.live-run { flex: 1 1 12rem; min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; column-gap: 8px; padding: 6px 16px; border: 0; background: var(--card); font: inherit; color: var(--ink); text-align: left; cursor: pointer; }
+.live-run:hover { background: var(--wash); }
+.live-run:focus-visible, .live-more:focus-visible { outline: 1px solid var(--ink); outline-offset: -1px; }
+.live-run-name, .live-run-step { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-run-time { font-variant-numeric: tabular-nums; color: var(--ink-faint); }
+.live-run-step { grid-column: 2 / -1; color: var(--ink-subtle); }
+.live-run[data-done] { color: var(--ink-subtle); animation: settle-out 600ms var(--ease) 3400ms forwards; }
+.live-run[data-done] .dot { animation: none; background: var(--ink-faint); }
+.live-more { flex: none; padding: 0 14px; border: 0; background: var(--card); font: inherit; font-variant-numeric: tabular-nums; color: var(--ink-faint); cursor: pointer; }
+.live-more:hover { color: var(--ink); background: var(--wash); }
 .ghost > .canvas { height: auto; min-width: 0; padding: 14px 20px 12px; overflow-x: hidden; }
 .ghost .prose { overflow-wrap: anywhere; }
 .ghost .md-pre, .ghost .md-table { max-width: 100%; }
@@ -2849,6 +2862,179 @@ html, body { overflow: clip; }
 @media (max-width: 720px) {
   /* The notice needs nothing here: stage.js measures the viewport for it. */
   .walk { width: calc(100% - 28px); }
+}
+
+/* ── A Nodus figure (packages/nodus) ────────────────────────────────────
+   A day drawn from the record: lanes on an hour axis, flat because it is read, and a
+   walk under it on the ochre rule Gnomon's voice takes. Every fill is a token;
+   the step being spoken lights its parts in ochre and dims the rest. */
+.nodus { display: grid; grid-template-rows: auto auto minmax(0, max-content) auto auto 1fr auto; gap: 10px; padding: 14px 22px 14px; height: 100%; min-height: 0; outline: none; }
+.nodus-head { grid-row: 1; display: flex; align-items: baseline; gap: 16px; }
+.nodus-state { margin-left: auto; flex: none; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.nodus-state[data-kind='verified'] { color: var(--ink-muted); }
+.nodus-state[data-kind='offline'] { color: var(--ochre-text); }
+.nodus-state[data-kind='busy'] { animation: breath 1.6s ease-in-out infinite; }
+.nodus-since { grid-row: 2; margin: 0; font-size: 13px; color: var(--ochre-text); }
+.nodus-since:empty { display: none; }
+.nodus-headline { margin: 0; font-size: 26px; font-weight: 300; line-height: 1.1; letter-spacing: -0.03em; color: var(--ink); text-wrap: balance; }
+/* Flat, not leaned: its lanes and hours are read, and a lean softens every glyph (palette.test.js's roster). */
+.nodus-plate { grid-row: 3; min-height: 0; overflow: auto; }
+.nd-svg { display: block; width: 100%; height: auto; overflow: visible; font-family: inherit; }
+.nd-tick { stroke: var(--divider); stroke-width: 1; }
+.nd-tick-major { stroke: var(--border); }
+.nd-hour { font: 400 10px ui-monospace, 'SF Mono', Menlo, monospace; fill: var(--ink-faint); letter-spacing: 0.04em; }
+.nd-lane { fill: transparent; }
+.nd-lane-meeting { fill: var(--wash); }
+.nd-lane-label { font-size: 12px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; fill: var(--ink-muted); dominant-baseline: middle; transition: fill 160ms var(--ease); }
+.nd-lane-value { font: 400 10.5px ui-monospace, 'SF Mono', Menlo, monospace; fill: var(--ink-faint); dominant-baseline: middle; }
+.nd-bar { stroke-width: 0.75; transition: opacity 200ms var(--ease), fill 200ms var(--ease); }
+/* A bar is an outline over a light wash of its ink, like a section on a plate: the outline carries it, the wash only weights it. */
+.nd-session { fill: var(--ink-muted); fill-opacity: 0.42; stroke: var(--ink); stroke-width: 1; stroke-opacity: 0.7; }
+.nd-session.nd-mark-derived, .nd-session.nd-mark-inferred { fill: var(--ochre); fill-opacity: 0.14; stroke: var(--ochre); stroke-dasharray: 3 2; }
+.nd-session.nd-mark-absent { fill: var(--superseded); }
+.nd-session.nd-mark-verified { fill: var(--green); }
+.nd-session[data-explore] { cursor: pointer; }
+.nd-session[data-explore]:hover, .nd-session[data-explore]:focus-visible { fill: var(--ink); outline: none; }
+.nd-meeting { fill: var(--navy); fill-opacity: 0.18; stroke: var(--navy); }
+.nd-break { fill: var(--wash-strong); stroke: var(--border-strong); stroke-width: 1; stroke-dasharray: 2 3; }
+.nd-label { font-size: 12px; fill: var(--ink); dominant-baseline: middle; pointer-events: none; }
+.nd-tag { font-size: 12px; fill: var(--ochre-text); font-weight: 500; pointer-events: none; animation: rise 200ms var(--ease) both; }
+.nd-has-focus .nd-bar:not(.nd-hot) { opacity: 0.28; }
+.nd-has-focus .nd-label:not(.nd-hot) { opacity: 0.4; }
+.nd-bar.nd-hot { fill: var(--ochre); fill-opacity: 0.3; stroke: var(--ochre); stroke-width: 1; }
+.nd-lane-label.nd-hot, .nd-label.nd-hot { fill: var(--ochre-text); }
+.nodus-walk { grid-row: 5; display: grid; gap: 6px; margin-top: 6px; padding: 8px 0 0 12px; border-left: 2px solid var(--ochre); }
+.nodus-walk-head { display: flex; align-items: baseline; gap: 10px; }
+.nodus-eyebrow { font-size: 10px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ochre-text); }
+.nodus-count { margin-left: auto; font-size: 11px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.nodus-say { margin: 0; max-width: 68ch; min-height: 2.9em; font-size: 16px; line-height: 1.45; color: var(--ink); }
+.nodus-acts { display: flex; gap: 6px; justify-content: flex-end; }
+.nodus-next { color: var(--ink); }
+.nodus-foot { grid-row: 6; align-self: end; margin: 0; font-size: 11px; letter-spacing: 0.04em; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.nd-later { opacity: 0.12; }
+/* Studio and Atlas (card.js modeNode): the mode draws in the host; being built, a quiet line of seconds; failed, the walk as words. */
+.nodus-plate:has(> .nodus-mode-host) { display: flex; flex-direction: column; overflow: hidden; }
+/* Shrinks to the height the card has, like the stage host; the mode's own node (Studio's frame, 16:9) shrinks with it. */
+.nodus-mode-host { position: relative; display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; width: 100%; }
+.nodus-mode-host > * { flex: 0 1 auto; min-height: 160px; max-height: 100%; }
+.nodus-building { display: grid; place-content: center; gap: 4px; min-height: 240px; text-align: center; font-size: 15px; color: var(--ink-muted); }
+.nodus-progress { margin: 0; font-size: 12px; color: var(--ink-faint); font-variant-numeric: tabular-nums; animation: none; }
+.nodus-words ul { margin: 0 0 10px; padding-left: 1.2em; display: grid; gap: 6px; font-size: 15px; line-height: 1.45; color: var(--ink); }
+.nodus-tries, .nodus-mode > div:last-child:has(> .nodus-tries) { grid-row: 7; }
+.nodus-tries { justify-content: flex-start; align-items: center; flex-wrap: wrap; }
+.nodus-try-said { font-size: 12px; color: var(--ink-faint); }
+.nodus-mode > div:last-child:empty { display: none; }
+/* The thread bar's way of drawing: four plain words, the chosen one inked. */
+.mode-switch { flex: none; display: inline-flex; border: 1px solid var(--border); border-radius: 999px; padding: 2px; }
+.mode-switch:empty { display: none; }
+.mode-opt { border: 0; background: transparent; border-radius: 999px; padding: 2px 9px; font: inherit; font-size: 12px; color: var(--ink-faint); cursor: pointer; }
+.mode-opt:hover { color: var(--ink); }
+.mode-opt[aria-checked='true'] { background: var(--ink); color: var(--card); }
+.mode-opt[aria-disabled='true'] { opacity: 0.45; cursor: default; }
+.mode-opt[data-pending] { color: var(--ink); }
+.mode-opt:focus-visible { outline: 2px solid var(--ochre); outline-offset: 1px; }
+.nodus-scrub-row { grid-row: 4; display: flex; align-items: center; gap: 10px; }
+.nodus-scrub { flex: 1; max-width: 420px; accent-color: var(--ink-muted); }
+.nodus-scrub-at { min-width: 5ch; font-size: 12px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+/* Bars, a graph, a table: the same inks. A row is a door when it carries one. */
+.nd-row-bar { fill: var(--ink-muted); fill-opacity: 0.26; stroke: var(--ink-muted); stroke-width: 1; }
+.nd-row-bar.nd-meeting { fill: var(--navy); fill-opacity: 0.18; stroke: var(--navy); }
+.nd-row-bar.nd-break { fill: var(--wash-strong); stroke: var(--border-strong); stroke-dasharray: 2 3; }
+.nd-row-then { fill: none; stroke: var(--ink-faint); stroke-width: 0.75; stroke-dasharray: 2 2; }
+.nd-row[data-explore], .nd-node[data-explore] { cursor: pointer; outline: none; }
+.nd-row[data-explore]:hover .nd-lane-label, .nd-row[data-explore]:focus-visible .nd-lane-label, .nd-node[data-explore]:hover .nd-label, .nd-node[data-explore]:focus-visible .nd-label { fill: var(--ink); text-decoration: underline; }
+.nd-link { fill: none; stroke: var(--border-strong); stroke-width: 0.75; transition: opacity 200ms var(--ease), stroke 200ms var(--ease); }
+.nd-has-focus .nd-link:not(.nd-hot) { opacity: 0.25; }
+.nd-link.nd-hot { stroke: var(--ochre); }
+.nd-link-dot { fill: var(--ink-muted); }
+/* Stages: a dashed spine, each stage a ringed node with its number, name, note and tag pills to one side. */
+.nd-spine { stroke: var(--border-strong); stroke-width: 0.75; stroke-dasharray: 3 4; }
+.nd-stage-ring { fill: var(--card); stroke: var(--ink-muted); stroke-width: 0.75; }
+.nd-stage-dot { fill: var(--ink); }
+.nd-stage-arm { stroke: var(--border-strong); stroke-width: 0.75; }
+.nd-stage-ix { font: 400 10px ui-monospace, 'SF Mono', Menlo, monospace; letter-spacing: 0.06em; fill: var(--ochre-text); }
+.nd-stage-name { font-size: 15px; font-weight: 500; fill: var(--ink); dominant-baseline: middle; }
+.nd-stage-note { font-size: 12px; fill: var(--ink-muted); dominant-baseline: middle; }
+.nd-stage-tag { fill: none; stroke: var(--border-strong); stroke-width: 0.75; }
+.nd-stage-tag-text { font-size: 10.5px; fill: var(--ink-muted); }
+.nd-has-focus .nd-stage :not(.nd-hot) { opacity: 0.35; }
+.nd-stage-ring.nd-hot { stroke: var(--ochre); }
+.nd-stage-dot.nd-hot { fill: var(--ochre); }
+.nd-stage-arm.nd-hot, .nd-stage-tag.nd-hot { stroke: var(--ochre); }
+.nd-link-dot.nd-hot { fill: var(--ochre); }
+.nd-node-mark { fill: var(--ink-muted); }
+.nd-node-mark.nd-person { fill: var(--navy); }
+.nd-node-label { pointer-events: auto; }
+.nd-fit { overflow-x: auto; }
+.nd-table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+.nd-table th { text-align: left; font-size: 12px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint); padding: 6px 10px 6px 0; border-bottom: 1px solid var(--border); }
+.nd-table td { padding: 7px 10px 7px 0; border-bottom: 1px solid var(--divider); color: var(--ink-muted); transition: opacity 200ms var(--ease), color 200ms var(--ease); }
+.nd-table .nd-cell-name { color: var(--ink); }
+.nd-table .nd-cell-name[data-explore] { cursor: pointer; }
+.nd-table .nd-cell-name[data-explore]:hover { text-decoration: underline; }
+.nd-table.nd-has-focus tr:not(.nd-hot) td { opacity: 0.4; }
+.nd-table tr.nd-hot .nd-cell-name { color: var(--ochre-text); }
+.nd-table td:first-child { border-left: 2px solid transparent; padding-left: 8px; }
+.nd-table tr.nd-hot td:first-child { border-left-color: var(--ochre); }
+/* A scene: the stage's canvas on the plate, flat (it is read: no lean), its
+   labels DOM over it, a door a link. The flat drawing is its fallback. */
+.nd-stage-host { min-height: 0; display: flex; flex-direction: column; }
+.nd-stage { position: relative; width: 100%; aspect-ratio: 16 / 9; min-height: 160px; flex: 0 1 auto; overflow: hidden; }
+/* A scene with panels gives up height to them rather than scroll: the stage shrinks, the panels stay docked under it. */
+.nodus-plate:has(> .nd-stage-host) { display: flex; flex-direction: column; overflow: hidden; }
+.nodus-plate > .nd-stage-host { flex: 0 1 auto; }
+.nodus-plate > .nodus-panels { flex: none; }
+.nd-stage canvas, .nd-stage img { display: block; width: 100%; height: 100%; }
+.nd-stage .nd-backdrop { position: absolute; inset: 0; object-fit: contain; pointer-events: none; mix-blend-mode: lighten; }
+.nd-labels { position: absolute; inset: 0; pointer-events: none; }
+.nd-label3d { position: absolute; left: 0; top: 0; white-space: nowrap; font-size: 10.5px; font-weight: 500; line-height: 15px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-muted); transition: color 200ms var(--ease), opacity 200ms var(--ease); }
+/* The key in the margin: a hairline from each label to a dot on its part; the lit part's in ochre. */
+.nd-leaders { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.nd-leader { fill: none; stroke: var(--ink-faint); stroke-width: 0.6; transition: stroke 200ms var(--ease), opacity 200ms var(--ease); }
+.nd-anchor { fill: var(--ink-muted); stroke: none; transition: stroke 200ms var(--ease), opacity 200ms var(--ease); }
+.nd-leader.nd-hot { stroke: var(--ochre); stroke-width: 1; }
+.nd-anchor.nd-hot { fill: var(--ochre); }
+.nd-label3d[data-explore] { pointer-events: auto; cursor: pointer; outline: none; }
+.nd-label3d[data-explore]:hover, .nd-label3d[data-explore]:focus-visible { color: var(--ink); text-decoration: underline; }
+.nd-label3d.nd-hot { color: var(--ochre-text); }
+/* A callout as a plate draws it: the part's number in mono before the name, its state and amount in mono under it. */
+.nd-label3d::before { content: attr(data-ix); margin-right: 7px; font: 400 9px/15px ui-monospace, 'SF Mono', Menlo, monospace; letter-spacing: 0.04em; color: var(--ink-faint); }
+.nd-label3d[data-read]::after { content: attr(data-read); display: block; padding-left: 21px; font: 400 9px/12px ui-monospace, 'SF Mono', Menlo, monospace; letter-spacing: 0.06em; color: var(--ink-faint); }
+.nd-label3d.nd-hot::before { color: var(--ochre-text); }
+.nd-ring { fill: none; stroke: var(--ink-faint); stroke-width: 0.5; opacity: 0.7; }
+.nd-ring.nd-hot { stroke: var(--ochre); }
+.nd-plate-tick { fill: none; stroke: var(--ink-faint); stroke-width: 0.75; opacity: 0.55; }
+.nd-micro { font: 400 9px ui-monospace, 'SF Mono', Menlo, monospace; letter-spacing: 0.08em; fill: var(--ink-faint); opacity: 0.8; }
+.nd-scene .nd-glyph { fill: var(--wash); stroke: var(--ink-muted); stroke-width: 1.2; transition: opacity 200ms var(--ease), stroke 200ms var(--ease); }
+.nd-scene .nd-kind-ground, .nd-scene .nd-kind-rainbow { fill: none; }
+.nd-scene .nd-glyph.nd-hot { stroke: var(--ochre); stroke-width: 2; }
+.nd-has-focus .nd-glyph:not(.nd-hot) { opacity: 0.3; }
+.nd-label-scene { font-size: 11px; font-weight: 500; letter-spacing: 0.1em; fill: var(--ink-muted); }
+.nd-label-scene.nd-hot { fill: var(--ochre-text); }
+.nd-link-return { stroke-dasharray: 4 3; }
+.nd-scene .nd-leader.nd-hot { stroke: var(--ochre); }
+/* Data panels docked under a figure: a hairline above each, a label, then a sparkline, a number or a word. */
+.nodus-panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0 24px; margin-top: 10px; }
+.nd-panel { display: grid; gap: 4px; align-content: start; padding-top: 7px; border-top: 1px solid var(--border); min-width: 0; }
+.nd-panel-label { font-size: 10px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nd-panel-value { font-size: 22px; font-weight: 300; line-height: 1.1; letter-spacing: -0.02em; color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nd-panel-unit { margin-left: 4px; font-size: 12px; letter-spacing: 0.02em; color: var(--ink-muted); }
+.nd-panel-note { font-size: 11px; color: var(--ink-faint); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nd-spark { display: block; width: 100%; height: 26px; overflow: visible; }
+.nd-spark-line { fill: none; stroke: var(--ink-muted); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.nd-spark-base { stroke: var(--divider); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.nd-spark-dot { fill: var(--ochre); }
+/* The hand on the camera: grab to orbit; a part under the pointer says its number. */
+.nd-stage canvas { cursor: grab; touch-action: none; }
+.nd-stage canvas:active { cursor: grabbing; }
+.nd-tip { position: absolute; left: 0; top: 0; padding: 3px 7px; border: 1px solid var(--border-strong); background: var(--page); font-size: 12px; line-height: 1.3; color: var(--ink); white-space: nowrap; font-variant-numeric: tabular-nums; pointer-events: none; }
+/* Gnomon's walk replacing the one from the numbers: out, then in, the figure still. */
+.nodus-say, .nodus-count { transition: opacity 320ms var(--ease); }
+.nodus-swap .nodus-say, .nodus-swap .nodus-count { opacity: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .nodus-say, .nodus-count { transition: none; }
+  .nd-bar, .nd-lane-label, .nd-link, .nd-table td, .nd-label3d, .nd-glyph, .nd-leader, .nd-anchor { transition: none; }
+  .nd-tag, .nodus-state[data-kind='busy'] { animation: none; }
 }
 
 /* ── Kanban ──────────────────────────────────────────────────────────────*/
@@ -3169,6 +3355,11 @@ a.set-opt { text-decoration: none; }
 .set-input { width: min(300px, 60vw); padding: 4px 8px; font: inherit; font-size: 13px; color: var(--ink); background: var(--page); border: 1px solid var(--border-strong); }
 .set-input::placeholder { color: var(--ink-faint); }
 .set-input:focus-visible { outline: 1px solid var(--ink); outline-offset: 1px; }
+/* Private apps and sites: a bundle id is an identifier, so it is set as one; a suggestion is quieter than an entry until it is added. */
+.set-id { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 11px; color: var(--ink-faint); overflow-wrap: anywhere; }
+.set-row[data-suggested] .set-label { color: var(--ink-muted); }
+.set-built { margin: 8px 0 4px; }
+.set-built > p { margin: 6px 0 0; line-height: 1.6; }
 .set-foot { margin: 10px 0 0; font-size: 11px; letter-spacing: 0.04em; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
 
 /* The owner asked for stillness. Same stop the machine's own setting makes,
@@ -4445,3 +4636,38 @@ a.set-opt { text-decoration: none; }
    in the accent — the card stays whole, because it is live. */
 .work-seat[data-focused] > .work-seat-title { color: var(--ochre-text); }
 .work-job[data-focused] { background: var(--wash); box-shadow: -8px 0 0 var(--wash), 8px 0 0 var(--wash); }
+/* What passes along a link, numbered in the order it happens, on the link's middle. */
+.nd-linkword { position: absolute; left: 0; top: 0; transform: translate(-50%, -50%); white-space: nowrap; pointer-events: none; padding: 1px 5px; background: color-mix(in oklab, var(--page) 92%, transparent); font: 500 9.5px/14px ui-monospace, 'SF Mono', Menlo, monospace; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink); transition: color 200ms var(--ease), opacity 200ms var(--ease); }
+.nd-linkword::before { content: attr(data-ix); margin-right: 6px; color: var(--ochre-text); }
+.nd-linkword.nd-hot { color: var(--ochre-text); }
+.nd-label3d:not([data-ix])::before { display: none; }
+.nd-label3d:not([data-ix])[data-read]::after { padding-left: 0; }
+/* A plate's names, notes and step words are read at the card's size: larger and darker than the stage's, which stand beside a 3D set. */
+.nd-plate3d .nd-label3d { font-size: 13px; line-height: 17px; color: var(--ink); white-space: normal; }
+.nd-plate3d .nd-label3d[data-read]::after { font-size: 11px; line-height: 14px; color: var(--ink-muted); }
+.nd-plate3d .nd-linkword { font-size: 11px; line-height: 16px; padding: 1px 6px; color: var(--ink); }
+
+/* Plan 15 step 5: About you. A belief, its two acts, and its source under it; the acts drop under the line in a narrow pane. */
+.beliefs { container-type: inline-size; }
+.belief { align-items: center; }
+.belief-text { white-space: normal; }
+.belief-acts { flex: none; display: inline-flex; gap: 6px; }
+.belief-acts .act { color: var(--ink-subtle); border-color: var(--divider); }
+.belief:hover .belief-acts .act, .belief:focus-within .belief-acts .act { color: var(--ink); border-color: var(--border-strong); }
+.belief-source { flex: 0 0 100%; font-size: 12px; color: var(--ink-faint); }
+.belief-field { flex: 1; min-width: 0; border: 0; border-bottom: 1px solid var(--ink); background: transparent; padding: 2px 0; font: inherit; font-size: 15px; color: var(--ink); outline: 0; }
+.belief-settled .row-name { color: var(--ink-subtle); }
+@container (max-width: 360px) { .belief-acts { flex: 0 0 100%; } }
+/* Routes Gnomon learned: the goal, then how often and when last as two right-aligned tracks, then the quiet Drop. */
+.routes { container-type: inline-size; container-name: routes; }
+.route { align-items: baseline; }
+.route-n { flex: none; width: 7ch; text-align: right; }
+.route-when { flex: none; width: 6ch; text-align: right; }
+.route-acts { flex: none; }
+.route-acts .act { color: var(--ink-subtle); border-color: var(--divider); }
+.route:hover .route-acts .act, .route:focus-within .route-acts .act { color: var(--ink); border-color: var(--border-strong); }
+.route-dropping .route-goal, .route-dropping .row-value { color: var(--ink-faint); text-decoration: line-through; }
+.route-dropping .route-acts .act { color: var(--ink); border-color: var(--border-strong); }
+.routes .col + .col { margin-top: 20px; }
+.route-dead { margin: 6px 0 0; font-size: 12px; color: var(--ink-faint); }
+@container routes (max-width: 360px) { .route-when { display: none; } }

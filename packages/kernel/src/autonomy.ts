@@ -77,3 +77,41 @@ export function computeLevels(state: KernelState, ts: string): AutonomyState['le
   }
   return out;
 }
+
+const DAY_MS = 86_400_000;
+type Stat = { n: number; hits: number; at: string | null };
+const later = (a: string | null, b: string | null | undefined) => (b && (!a || b > a) ? b : a);
+
+/**
+ * What the record holds about a capability beside its verdicts: the silent labels the
+ * calibrator already keeps (seen at the Mac, acted on) and when the last verdict came. A row
+ * whose verdicts stopped cannot move, and the owner should see that rather than a frozen n.
+ */
+export function evidenceOf(state: KernelState | null, capability: string, now: number): { line: string; lastVerdict: string | null; quietDays: number | null } {
+  const params = state?.calibrated?.params ?? {};
+  const sum = (prefix: string, exact = false): Stat =>
+    Object.entries(params)
+      .filter(([id]) => (exact ? id === prefix : id.startsWith(prefix)))
+      .reduce<Stat>((a, [, s]) => ({ n: a.n + s.n, hits: a.hits + s.hits, at: later(a.at, s.updatedAt) }), { n: 0, hits: 0, at: null });
+  const quiet = (at: string | null) => (at === null ? null : Math.floor((now - Date.parse(at)) / DAY_MS));
+  if (capability === 'actions') {
+    const v = sum('action.outward:');
+    return { line: v.at ? `last outward call verified ${v.at.slice(0, 10)}` : 'no outward call verified yet', lastVerdict: v.at, quietDays: quiet(v.at) };
+  }
+  if (!capability.startsWith('notice:') && capability !== 'followups') return { line: '', lastVerdict: null, quietDays: null };
+  const of = (base: string) => (capability === 'followups' ? sum(`${base}:followup:`) : sum(`${base}:${capability.slice('notice:'.length)}`, true));
+  const seen = of('notice.seen');
+  const acted = of('notice.acted');
+  const verdict = of('notice.precision');
+  const parts = [seen.n > 0 ? `you were at the Mac after ${seen.hits} of ${seen.n}` : null, acted.n > 0 ? `did what it named after ${acted.hits} of ${acted.n}` : null, `last verdict ${verdict.at ? verdict.at.slice(0, 10) : 'never'}`];
+  return { line: parts.filter(Boolean).join('; '), lastVerdict: verdict.at, quietDays: quiet(verdict.at) };
+}
+
+/** The latest deliveries of a governed kind with no verdict yet, newest first: what the owner can judge to move a row. */
+export function awaitingVerdict(state: KernelState | null, limit = 5): { key: string; kind: string; at: string }[] {
+  return (state?.calibrated?.watch ?? [])
+    .filter((w) => !w.verdict && capabilityOf(w.kind) !== null)
+    .slice(-limit)
+    .reverse()
+    .map((w) => ({ key: w.key, kind: w.kind, at: w.at }));
+}

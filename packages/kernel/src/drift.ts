@@ -26,6 +26,9 @@ export interface DriftDay {
   late: number;
   /** Scheduled minutes of timed meetings that ran (`calendar:active`), each meeting once. */
   meetingMin: number;
+  /** Lines added and removed by the day's commits (`git:commit` insertions and deletions, stored since July and read by no rule until 2026-10-14). Absent on older snapshots. */
+  added?: number;
+  removed?: number;
 }
 
 export interface DriftState {
@@ -71,7 +74,7 @@ export const DRIFT_THRESHOLDS: Record<DriftMetric, { abs: number; rel?: number }
   lateCommits: { abs: 3 },
 };
 
-export const EMPTY_DRIFT_DAY: DriftDay = { first: null, last: null, active: 0, switches: 0, late: 0, meetingMin: 0 };
+export const EMPTY_DRIFT_DAY: DriftDay = { first: null, last: null, active: 0, switches: 0, late: 0, meetingMin: 0, added: 0, removed: 0 };
 export const EMPTY_DRIFT: DriftState = { days: {}, meetings: [], checkedWeek: null, holding: {} };
 
 const DAY_MS = 86_400_000;
@@ -107,6 +110,8 @@ export interface DriftWeek {
   present: number;
   /** Days with at least 30 active minutes. */
   activeDays: number;
+  /** Active minutes over the whole week (hands on keyboard or mouse): "was I at it more this week than last". */
+  activeMin: number;
   /** Median last active minute of the working weekdays (waking minutes), over `dayEndN` days. */
   dayEnd: number | null;
   dayEndN: number;
@@ -139,6 +144,7 @@ export function weeklyDrift(days: Record<string, DriftDay>): DriftWeek[] {
       week,
       present,
       activeDays: active.length,
+      activeMin: Math.round(list.reduce((n, [, d]) => n + d.active, 0) / 6),
       dayEnd: workdays.length >= MIN_DAYS_PER_WEEK ? median(workdays.map(([, d]) => d.last!)) : null,
       dayEndN: workdays.length,
       weekendMin: full ? Math.round(weekend.reduce((n, [, d]) => n + d.active, 0) / 6) : null,

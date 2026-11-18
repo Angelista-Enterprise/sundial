@@ -40,4 +40,25 @@ describe('the theme mounts', () => {
     expect(paths.length).toBeGreaterThan(15)
     expect(paths.filter((p) => !READS.has(p))).toEqual([])
   })
+
+  // `sundial open` signs a new browser in; with setup done on this Mac it must land on the board, not /setup.
+  it('marks / as set up once the app has written .daemon/setup-done', async () => {
+    const { mkdirSync, mkdtempSync, writeFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { mountShell } = await import('./server.js')
+    const page = async (home) => {
+      const { ctx, routes } = fakeCtx()
+      ctx.connection.authorizeIndex = () => true
+      mountShell(ctx, { home })
+      let body = ''
+      await routes.get('/').handler({ url: '/', headers: {} }, { writeHead: () => {}, end: (b) => (body = String(b)) })
+      return body
+    }
+    const home = mkdtempSync(join(tmpdir(), 'sundial-setup-'))
+    expect(await page(home)).toContain('<html lang="en" data-gnomon>')
+    mkdirSync(join(home, '.daemon'), { recursive: true })
+    writeFileSync(join(home, '.daemon', 'setup-done'), '')
+    expect(await page(home)).toContain('<html lang="en" data-gnomon data-setup-done>')
+  })
 })

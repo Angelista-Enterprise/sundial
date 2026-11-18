@@ -9,10 +9,12 @@ import { readReach } from './read-reach.js'
 import { readLab } from './read-lab.js'
 import { readCalibration } from './read-calibration.js'
 import { readLedger } from './read-ledger.js'
-import { foldedScorecard } from '@sundial/kernel/read/scorecard.js'
-import { capabilities, earnedBy, levelOf } from '@sundial/kernel/autonomy.js'
+import { readAutonomy } from './read-autonomy.js'
 import { readSetup } from './read-setup.js'
 import { readTrust } from './read-trust.js'
+import { readBeliefs } from './read-beliefs.js'
+import { readLearnedRoutes } from './read-routes.js'
+import { readEye } from './read-eye.js'
 
 export function mountInstruments(ctx) {
   const instrument = (path, unavailable, read) => view(ctx, path, unavailable, read)
@@ -52,15 +54,14 @@ export function mountInstruments(ctx) {
   view(ctx, '/gnomon/setup', 'Setup could not be read.', () => readSetup({ state: ctx.gnomonKernel.getState(), now: Date.now() }))
 
   // W5 step 10: what each capability may do alone, the numbers that earn it, and the folded scorecard rows (the Settings card).
-  instrument('/gnomon/autonomy', 'What Gnomon may do alone could not be read.', async () => {
-    const state = ctx.gnomonKernel.getState()
-    const level = (cap) => state?.autonomy?.levels?.[cap] ?? { level: levelOf(state, cap), earned: false, since: null }
-    return {
-      capabilities: capabilities(state).map((capability) => ({ capability, ...level(capability), ...earnedBy(state, capability), granted: state?.autonomy?.granted?.[capability] ?? null, lowered: state?.autonomy?.lowered?.[capability] ?? null })),
-      scorecard: foldedScorecard(state, Date.now()),
-    }
-  })
+  instrument('/gnomon/autonomy', 'What Gnomon may do alone could not be read.', () => readAutonomy({ state: ctx.gnomonKernel.getState(), now: Date.now() }))
 
+  // Plan 15 step 5: About you.
+  view(ctx, '/gnomon/beliefs', 'The beliefs could not be read.', () => readBeliefs({ state: ctx.gnomonKernel.getState(), now: Date.now() }))
+  // Round 3: the routes Gnomon learned on screen, per app (the Routes card).
+  view(ctx, '/gnomon/api/routes', 'The routes could not be read.', () => readLearnedRoutes({ now: Date.now() }))
+  // Set 2 R5: the slip's "What I see" pane reads this when the `eye` frame (server.js) names a key it has not drawn.
+  view(ctx, '/gnomon/api/eye', 'The look could not be read.', () => readEye({ state: ctx.gnomonKernel.getState() }))
   view(ctx, '/gnomon/trust', 'The instruments could not be read.', () => readTrust({ state: ctx.gnomonKernel.getState(), now: Date.now(), questions: ctx.gnomonKernel.questionCatalog?.() ?? [] }))
 
   // Memory — every name Gnomon holds a belief about, with the beliefs ON it.

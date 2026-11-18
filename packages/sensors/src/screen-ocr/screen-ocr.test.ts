@@ -5,7 +5,7 @@ import path from 'node:path';
 import { readScreenOcrSnapshot, ScreenOcrSensor } from './index.js';
 
 let scratchDir: string;
-const ORIGINAL_GNOMON_DIR = process.env.SUNDIAL_HOME;
+const ORIGINAL_SUNDIAL_HOME = process.env.SUNDIAL_HOME;
 const isDarwin = process.platform === 'darwin';
 
 function writeSidecar(obj: Record<string, unknown>): void {
@@ -22,8 +22,8 @@ describe('screen-ocr sensor', () => {
 
   afterEach(() => {
     fs.rmSync(scratchDir, { recursive: true, force: true });
-    if (ORIGINAL_GNOMON_DIR === undefined) delete process.env.SUNDIAL_HOME;
-    else process.env.SUNDIAL_HOME = ORIGINAL_GNOMON_DIR;
+    if (ORIGINAL_SUNDIAL_HOME === undefined) delete process.env.SUNDIAL_HOME;
+    else process.env.SUNDIAL_HOME = ORIGINAL_SUNDIAL_HOME;
   });
 
   it('readScreenOcrSnapshot returns null when the sidecar is absent', () => {
@@ -82,5 +82,24 @@ describe('screen-ocr sensor', () => {
       return sensor.poll().length;
     };
     expect([poll('focused', 'the window'), poll('cursor', 'near the cursor'), poll('focused', 'the window'), poll('cursor', 'near the cursor')]).toEqual([1, 1, 0, 0]);
+  });
+});
+
+describe('accept: own window and slow apps', () => {
+  const snap = (processName: string, captureTimestamp: string, text = 'hello world', region = 'cursor') => ({ region, processName, bundleId: null, text, topics: [], captureTimestamp, secureInput: false });
+  it("drops Sundial's own window by name or bundle id", () => {
+    const s = new ScreenOcrSensor({ enabled: true });
+    expect(s.accept(snap('Sundial', '2026-10-14T09:00:00.000Z'))).toBe(false);
+    expect(s.accept({ ...snap('Web', '2026-10-14T09:00:01.000Z'), bundleId: 'dev.sundial.daemon' })).toBe(false);
+    expect(s.accept(snap('Arc', '2026-10-14T09:00:02.000Z'))).toBe(true);
+  });
+  it('keeps a slow app once a minute per region, other apps every change', () => {
+    const s = new ScreenOcrSensor({ enabled: true, slowApps: ['claude'], slowIntervalMs: 60_000 });
+    expect(s.accept(snap('Claude', '2026-10-14T09:00:00.000Z', 'a'))).toBe(true);
+    expect(s.accept(snap('Claude', '2026-10-14T09:00:30.000Z', 'b'))).toBe(false);
+    expect(s.accept(snap('Claude', '2026-10-14T09:00:30.000Z', 'c', 'focused'))).toBe(true);
+    expect(s.accept(snap('Claude', '2026-10-14T09:01:00.000Z', 'd'))).toBe(true);
+    expect(s.accept(snap('Arc', '2026-10-14T09:01:01.000Z', 'e'))).toBe(true);
+    expect(s.accept(snap('Arc', '2026-10-14T09:01:02.000Z', 'f'))).toBe(true);
   });
 });

@@ -20,7 +20,7 @@ export const COMPANION_SESSION_ID = 'gnomon-companion';
 export const VERDICTS = ['useful', 'not-now', 'wrong'] as const;
 
 /** Every kind of entity core memory holds (`EntityKind`). */
-export const ENTITY_KINDS = ['person', 'project', 'tool', 'topic', 'task', 'owner', 'goal'] as const;
+export const ENTITY_KINDS = ['person', 'project', 'tool', 'topic', 'task', 'owner', 'goal', 'app'] as const;
 
 /** What the nightly pass and an answered question may extract. `task` is not (owner decision 3 in the autonomy plan). */
 export const EXTRACTABLE_ENTITY_KINDS = ['person', 'project', 'tool', 'topic', 'owner', 'goal'] as const;

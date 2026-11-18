@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { choice, keyed, noul, questionId, score, wordingHash } from './index.js';
 import { QUESTION_SETS } from './registry.js';
-import { GOAL_ADVANCE_QUESTIONS, MOMENT_FANOUT_QUESTIONS, momentFanout, PROMISE_RESOLVE_QUESTIONS } from './moment-fanout.js';
+import { GOAL_ADVANCE_QUESTIONS, MOMENT_FANOUT_QUESTIONS, momentFanout } from './moment-fanout.js';
 import { INGEST_ANOMALY_QUESTIONS } from './ingest-anomaly.js';
 import { JOURNAL_RANK_QUESTIONS, journalRank, selectJournalMoments } from './journal-rank.js';
 import { actionLevelOf, carriedOutOf, CLASSIFY_ACTION_QUESTIONS, classifyAction, VERIFY_ACTION_QUESTIONS } from './classify-action.js';
@@ -72,22 +72,11 @@ describe('moment-fanout', () => {
     `);
   });
 
-  it('J4.4: pins the four promise-slot ids', () => {
-    const ids = Object.fromEntries(Object.entries(PROMISE_RESOLVE_QUESTIONS).map(([key, q]) => [key, wordingHash(q)]));
-    expect(ids).toMatchInlineSnapshot(`
-      {
-        "resolves_promise_p0": "32008a826593",
-        "resolves_promise_p1": "ce2c4e1ed78b",
-        "resolves_promise_p2": "37c2d3d17ca5",
-        "resolves_promise_p3": "7a4a2b89152f",
-      }
-    `);
-  });
-
-  it('builds the fixed seven for every moment, plus one slot per open goal and per open promise (the first sample carries the full width)', () => {
+  it('builds the fixed seven for every moment, plus one slot per open goal (the first sample carries the full width)', () => {
     const built = momentFanout.samples().map((input) => momentFanout.build(...input));
-    expect(Object.keys(built[0].questions)).toEqual([...Object.keys(MOMENT_FANOUT_QUESTIONS), ...Object.keys(GOAL_ADVANCE_QUESTIONS), ...Object.keys(PROMISE_RESOLVE_QUESTIONS)]);
-    expect(built[0].state).toMatchObject({ open_goals: { g0: 'a', g5: 'f' }, open_promises: { p0: 'ik stuur het vanavond door' } });
+    expect(Object.keys(built[0].questions)).toEqual([...Object.keys(MOMENT_FANOUT_QUESTIONS), ...Object.keys(GOAL_ADVANCE_QUESTIONS)]);
+    expect(built[0].state).toMatchObject({ open_goals: { g0: 'a', g5: 'f' } });
+    expect(built[0].state).not.toHaveProperty('open_promises');
     for (const b of built.slice(1)) expect(b.questions).toBe(MOMENT_FANOUT_QUESTIONS);
     expect(built[1].state).not.toHaveProperty('open_goals');
     expect(built[0].state).toMatchObject({ app: 'Code', project: 'sundial', minutes: 31, git_commits: 1, distinct_window_titles: 2 });

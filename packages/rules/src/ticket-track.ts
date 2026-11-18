@@ -105,7 +105,10 @@ const promote = (t: TicketThread, stage: TicketThread['stage']): TicketThread =>
 function bounded(tickets: Record<string, TicketThread>): Record<string, TicketThread> {
   const ids = Object.keys(tickets);
   if (ids.length <= MAX_TICKETS) return tickets;
-  const keep = ids.sort((a, b) => tickets[b]!.lastSeen.localeCompare(tickets[a]!.lastSeen)).slice(0, MAX_TICKETS);
+  // Worked-on threads first, then the most recent: a Jira board lists dozens of keys a day, and evicting by
+  // recency alone dropped tickets with merged PRs, which came back as "seen" with their work forgotten (2026-10-07).
+  const worked = (id: string) => (tickets[id]!.stage === 'seen' ? 1 : 0);
+  const keep = ids.sort((a, b) => worked(a) - worked(b) || tickets[b]!.lastSeen.localeCompare(tickets[a]!.lastSeen)).slice(0, MAX_TICKETS);
   return Object.fromEntries(keep.map((id) => [id, tickets[id]!]));
 }
 
@@ -135,7 +138,12 @@ export const ticketTrack: Rule = (state, event) => {
     // A branch sampled again is not a new sighting; only a commit, a PR state or a branch first seen counts.
     for (const id of ids) {
       const known = next[id];
-      if (event.type === 'git:commit') next[id] = { ...promote(touch(known, id, 'git', event.ts, day), 'commit'), commits: (known?.commits ?? 0) + 1 };
+      if (event.type === 'git:commit') {
+        // "Merge pull request #12 from acme/feature/BOX-471": the PR landed, whatever its last polled state said.
+        const merged = str(p.commitLine).match(/Merge pull request #(\d+)/);
+        const t = { ...promote(touch(known, id, 'git', event.ts, day), merged ? 'pr' : 'commit'), commits: (known?.commits ?? 0) + 1 };
+        next[id] = merged ? { ...t, pr: { number: Number(merged[1]), state: 'MERGED', reviewState: known?.pr?.reviewState ?? null } } : t;
+      }
       else if (event.type === 'git:pr-status') {
         const pr = { number: typeof p.number === 'number' ? p.number : null, state: str(p.state) || null, reviewState: str(p.reviewState) || null };
         next[id] = { ...promote(touch(known, id, 'pr', event.ts, day), 'pr'), pr };

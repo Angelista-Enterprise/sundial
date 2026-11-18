@@ -43,3 +43,30 @@ describe('mineRules — deterministic candidates, a holdout, then words (U4-F28)
     expect(enumerateCandidates(withAsks).filter((c) => c.source === 'ask').map((c) => (c.spec as { title: string }).title)).toEqual(['Chatter for a while']);
   });
 });
+
+describe('mineRules: every workday morning (Round 5, FORESIGHT 4e)', () => {
+  /** The tracker opened at 09:30 on the workdays `keep` picks, and once each afternoon too. */
+  const sweep = (keep: (d: number) => boolean): MineInput => {
+    const events: MineInput['events'] = [];
+    for (let d = 0; d < 30; d++) {
+      const weekday = new Date(T0 + d * 86_400_000).getUTCDay();
+      if (weekday === 0 || weekday === 6) continue;
+      if (keep(d)) events.push({ type: 'browser:tab', ts: at(d, 570), payload: { host: 'tracker.example.com', title: 'Board' } });
+      events.push({ type: 'browser:tab', ts: at(d, 900), payload: { host: 'tracker.example.com', title: 'Board' } });
+    }
+    return { events, now, days: 30, zone: 'UTC', routines: [], asks: [], useful: [], builtins: [], chores: [{ host: 'tracker.example.com', days: 4, minute: 570 }] };
+  };
+
+  it("a known morning site becomes a workday template, kept for firing on 70% of each half's workdays, which the 1-to-10 bar forbids", () => {
+    const [kept] = mineRules(sweep(() => true), 5);
+    expect(kept).toMatchObject({ source: 'weekday', spec: { when: { type: 'browser:tab' }, during: { days: [1, 2, 3, 4, 5], from: '08:30', to: '12:00' }, cooldownMin: 720 } });
+    // A daily habit fires on every workday: over ten in each half.
+    expect(kept!.older).toBeGreaterThan(10);
+    expect(kept!.recent).toBeGreaterThan(10);
+  });
+
+  it("a site seen on half the workday mornings is not a habit, and none is proposed without the chore learner's seed", () => {
+    expect(mineRules(sweep((d) => d % 2 === 0), 5).filter((m) => m.source === 'weekday')).toEqual([]);
+    expect(enumerateCandidates({ ...sweep(() => true), chores: [] }).filter((c) => c.source === 'weekday')).toEqual([]);
+  });
+});
